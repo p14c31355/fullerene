@@ -587,11 +587,11 @@ pub fn create_framebuffer_config(
     address: u64,
     width: u32,
     height: u32,
-    pixel_format: super::uefi::EfiGraphicsPixelFormat,
+    pixel_format: crate::common::uefi::EfiGraphicsPixelFormat,
     bpp: u32,
     stride: u32,
-) -> super::uefi::FullereneFramebufferConfig {
-    super::uefi::FullereneFramebufferConfig {
+) -> crate::common::uefi::FullereneFramebufferConfig {
+    crate::common::uefi::FullereneFramebufferConfig {
         address,
         width,
         height,

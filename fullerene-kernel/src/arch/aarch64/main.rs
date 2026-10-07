@@ -23,6 +23,19 @@ mod task;
 pub(crate) mod timer;
 mod uart;
 mod ufs;
+
+/// Pump the ANE fastboot responder from the syscall boundary.
+///
+/// `launchd::run()` enters EL0 and never returns to the wait loop, so from
+/// that point nothing in the kernel drives `ane_usb_dev::service` and every
+/// bench read times out while the USB link stays enumerated. The user task
+/// crosses the SVC boundary constantly, so the responder gets pumped from
+/// here instead (the log hook is a no-op: during user-task execution the
+/// ring must carry boot markers, not USB chatter).
+#[cfg(fullerene_aarch64_ane)]
+fn ane_service_pump() {
+    platform::ane_usb_dev::service(|_label: &str, _value: u64| {});
+}
 // ── Why the USB test/simulation modules are *siblings* of `usb`, not inside it
 //
 // `usb_protocol`, `usb_regs`, `usb_dwc3_sim`, `usb_qemu_sim` and
@@ -261,6 +274,35 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                 (s1 << 32) | v1,
             );
         }
+    }
+
+    // Tell the loader's BFM this boot reached the OS.
+    //
+    // The stock kernel writes STAGE_BOOTUP_END (250) to the PMIC bootup
+    // keypoint register from hisi_bootup_keypoint.c -
+    // BOOTUP_KEYPOINT_OFFSET = PMIC_HRST_REG1_ADDR(0) = PMIC reg 0x18C,
+    // byte 0xFFF34630 - as the OS half of the loader's boot chain-of-custody
+    // protocol. The loader reads it at its next start: any value but 250
+    // counts as an unfinished boot, and three of those escalate to the
+    // eRecovery rescue image. Fullerene never wrote it, so every boot looked
+    // unfinished to the BFM - the eRecovery landings of v100/v102/v105c came
+    // from there, not from any single crash. The PMIC cell is alive from
+    // power-on (no clock gate needed), so the write goes first, before the
+    // console: a crash later in this boot still leaves the loader a clean
+    // marker, and only a boot that dies before this line can count against us.
+    #[cfg(fullerene_aarch64_ane)]
+    {
+        platform::common::pmic::pmic_wr(0x18C, 250);
+        let rb = platform::common::pmic::pmic_rd(0x18C) as u64;
+        crate::blackbox::record(crate::blackbox::CODE_BOOT_KEYPOINT, 0, rb, 0);
+        // v174: feed the inherited loader watchdog before anything slow
+        // runs. The timer-IRQ feed only exists once exceptions::install()
+        // has run and the timer actually ticks; some boots demonstrably
+        // died 11-46 s after enumeration with no tick evidence, and the
+        // SP805 (programmed by the loader, counting down through our
+        // handoff) is the one always-running suspect. This early kick
+        // covers the whole pre-timer boot phase.
+        platform::ane::watchdog_tend();
     }
 
     // Establish a compiled-in console before looking at any bootloader
@@ -968,6 +1010,35 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
 
     #[cfg(fullerene_aarch64_ane)]
     {
+        // Wipe canvas rows inherited from the previous (warm-reset) boot;
+        // stale lines must never masquerade as current evidence in a photo.
+        platform::ane_fb::clear();
+        // Readable copy of the bootup-keypoint write for the durable log
+        // (the binary ring record was taken at entry, before this console
+        // exists). Re-writing is idempotent; the readback proves the value.
+        platform::common::pmic::pmic_wr(0x18C, 250);
+        uart::put_hex("bkp: rb=", platform::common::pmic::pmic_rd(0x18C) as u64);
+        uart::puts("\n");
+        // The loader wrote the reset reason into PMIC reg 0x18B (0x01 =
+        // bootloader reset, 0x02 = recovery, 0x10 = cold boot; anything else
+        // means a watchdog fired). Painting it puts the cause of the LAST
+        // reset on the panel where a photo can reach it.
+        uart::put_hex(
+            "rr: pmic18b=",
+            platform::common::pmic::pmic_rd(0x18B) as u64,
+        );
+        uart::puts("\n");
+        platform::ane_fb::RST_REASON.store(
+            platform::common::pmic::pmic_rd(0x18B) as u64,
+            core::sync::atomic::Ordering::Relaxed,
+        );
+        platform::ane_fb::paint_hex_at(
+            17,
+            300,
+            b"RST",
+            platform::common::pmic::pmic_rd(0x18B) as u64,
+        );
+        platform::ane_fb::flush_panel();
         let usb = platform::ane::usb_bringup();
         uart::put_hex("usb: abb=", usb.abb as u64);
         uart::put_hex(" ppll0=", usb.ppll0.0 as u64);
@@ -995,6 +1066,10 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         // lives in the DT's `graphic` reserve (0x31000000), which is also what
         // covers the loader's unlock warning on the panel.
         platform::ane_fb::report(&usb, ane_log);
+        // Previous boot's dying words (the durable block survives reboots):
+        // the rows above the tail window show the last panic file/line, the
+        // only fault channel that needs no USB to read.
+        platform::ane_fb::report_previous_panic();
         // Device-side USB: answer the host's control transfers now that the
         // link is up (EP0 + descriptors; fastboot bulk is the next stage).
         platform::ane_usb_dev::init(ane_log);
@@ -1014,6 +1089,21 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         // reset toggle + SDHCI software reset and clock re-init, then the
         // first card commands (CMD0/CMD1).
         platform::ane_emmc::probe(ane_log, 3);
+        // v197: attach only now - the whole bring-up above ran with the
+        // device soft-disconnected (usb_bringup step 10), so the host's
+        // fresh enumeration meets an armed responder and the live
+        // timer-IRQ pump instead of racing them. The old flow attached
+        // early and ~half the boots enumerated garbled ("Љ") or never.
+        // v210: the deferred attach returns to this site (the v208 experiment
+        // that moved it after the GIC/timer bring-up is REVERTED: it did not
+        // fix the first-read timeouts, and the longer IRQ-less pre-attach
+        // window only widened the exposure).
+        platform::ane::usb_attach();
+        // v199: stamp the attach tick for the enumeration sentinel.
+        platform::ane_usb_dev::ATTACH_BEAT
+            .store(exceptions::tick_count(), core::sync::atomic::Ordering::Relaxed);
+        ane_log("usb: attach=", 1);
+        platform::ane_usb_dev::service(ane_log);
     }
     // The usb report above is the newest text in the private block and sits
     // behind plain stores; the loader's reset comes long after the last
@@ -1097,6 +1187,15 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
 
     #[cfg(feature = "aarch64-user-launchd")]
     if allocator_ready {
+        uart::putc(b'.');
+        uart::putc(b'.');
+        uart::put_hex32(
+            "launchd: pre t=",
+            exceptions::TICK_NOW.load(core::sync::atomic::Ordering::Relaxed),
+        );
+        uart::puts("launchd: calling run\n");
+        #[cfg(fullerene_aarch64_ane)]
+        platform::ane_fb::event(b"LAUNCH RUN");
         launchd::run();
     } else {
         uart::puts("launchd: allocator unavailable; refusing to start userspace\n");

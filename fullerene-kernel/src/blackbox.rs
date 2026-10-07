@@ -219,6 +219,9 @@ pub const CODE_DT_RESERVED_REGION: u32 = 2;
 /// separates "the loader entered us and the early bring-up died" from "the
 /// loader never entered us", which nothing else on that board can report.
 pub const CODE_ANE_ENTRY: u32 = 64;
+/// The PMIC bootup-keypoint write (STAGE_BOOTUP_END = 250) that tells the
+/// loader's BFM this boot reached the OS - arg0 = readback value.
+pub const CODE_BOOT_KEYPOINT: u32 = 65;
 pub const CODE_USB_STAGE: u32 = 16;
 pub const CODE_USB_PHY_ENTER: u32 = 17;
 pub const CODE_USB_PHY_LEAVE: u32 = 18;
@@ -991,7 +994,190 @@ static mut TEE_LEN: usize = 0;
 /// Capacity of the boot tee; the renderer's window is far smaller.
 const TEE_CAP: usize = 4096;
 
+// ── Forward-progress watchdog ──────────────────────────────────────
+
+/// Tracks the boot thread's forward progress so a silent stall cannot hang
+/// the handset forever.
+///
+/// Every kernel-console write from non-IRQ context counts as progress: the
+/// boot thread narrates what it does, so its own logging is the heartbeat.
+/// The timer IRQ compares the counter against its last observation - after
+/// `WARN_US` without progress it writes a stall note into the durable ring
+/// (the unmanned collector reads it), and after `RESET_US` it panics, which
+/// lands the device in the loader's fastboot where the armed engine flashes
+/// the next image. This is the ANE counterpart of the x86 watchdog NMI that
+/// draws the `SCHEDULER STALLED` / `PCIe MMIO HANG` diagnostics.
+///
+/// Lives in this module because both the console writer (the heartbeat
+/// source) and the exception layer (the check) already depend on it, and it
+/// must exist in every crate root that compiles the UART.
+pub struct ProgressWatchdog {
+    count: core::sync::atomic::AtomicU32,
+    last_seen: core::sync::atomic::AtomicU32,
+    stalled_since_us: core::sync::atomic::AtomicU64,
+    warned: core::sync::atomic::AtomicBool,
+    in_irq: core::sync::atomic::AtomicBool,
+}
+
+/// The single watchdog instance.
+pub static PROGRESS_WATCHDOG: ProgressWatchdog = ProgressWatchdog {
+    count: core::sync::atomic::AtomicU32::new(0),
+    last_seen: core::sync::atomic::AtomicU32::new(0),
+    stalled_since_us: core::sync::atomic::AtomicU64::new(0),
+    warned: core::sync::atomic::AtomicBool::new(false),
+    in_irq: core::sync::atomic::AtomicBool::new(false),
+};
+
+impl ProgressWatchdog {
+    /// Stall thresholds, chosen well above the slowest legitimate stall (an
+    /// ELF load over the 48 KB/s eMMC path runs tens of seconds).
+    const WARN_US: u64 = 20_000_000;
+    // v169: raised from 120 s. The measured uptime runs ~2.5x real time on
+    // this board and the boot's storage phase crawls at 48 KB/s (400 kHz
+    // eMMC), so a legitimate VFS/initramfs load easily crosses three
+    // minutes of real time with no console output - the old threshold
+    // turned that into a false panic and the reset loop (the "probabilistic
+    // progress" seen by hand). 900 s of uptime is ~6 minutes real: roomy
+    // for the slow storage but still a fail-safe.
+    //
+    // v179 EXPERIMENT: the boots keep dying ~+12 s after enumeration with
+    // no interaction, and the stall WARNING shows up on-screen within
+    // single-digit seconds of real time (photo 13576: S=8 ticks, warning
+    // already at the ring tail). That says the uptime clock races far
+    // faster than the 2.5x the earlier measurement suggested - possibly
+    // only during the early boot phase - which would turn this reset into
+    // a ~12 real-second false panic. Disable the RESET (keep the warning,
+    // keep the fail-safe story via the SP805 feed) and watch whether the
+    // short lives vanish. If they do, the real fix is the uptime source
+    // (timer base) or a tick-count-based stall metric; if they do not,
+    // this was never the killer.
+    const RESET_US: u64 = 0x4000_0000_0000_0000;
+
+    /// Count one unit of forward progress (boot thread only).
+    pub fn note(&self) {
+        // v227: the PC instrument found the boot thread parked on the LL/SC
+        // retry of this fetch_add (text_byte+0x20, 0x58AE04) in two boots,
+        // and inside the console path in all twelve v226 collections. The
+        // counter is only ever compared for inequality by the timer-side
+        // check, and the kernel is single-core - a plain load/store cannot
+        // spin and carries the same signal.
+        let c = self.count.load(core::sync::atomic::Ordering::Relaxed);
+        self.count
+            .store(c.wrapping_add(1), core::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Mark IRQ-handler context: handler diagnostics are not boot progress.
+    pub fn set_irq_context(&self, v: bool) {
+        self.in_irq.store(v, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Called from the console funnel on every write.
+    pub fn note_from_console(&self) {
+        if !self.in_irq.load(core::sync::atomic::Ordering::Relaxed) {
+            self.note();
+        }
+    }
+
+    /// Timer-side check: warn once, finally reset, if progress has stopped.
+    pub fn check(&self, now_us: u64) {
+        use core::sync::atomic::Ordering;
+        let count = self.count.load(Ordering::Relaxed);
+        if count != self.last_seen.load(Ordering::Relaxed) {
+            self.last_seen.store(count, Ordering::Relaxed);
+            self.stalled_since_us.store(now_us, Ordering::Relaxed);
+            self.warned.store(false, Ordering::Relaxed);
+            return;
+        }
+        let since = self.stalled_since_us.load(Ordering::Relaxed);
+        if since == 0 {
+            self.stalled_since_us.store(now_us, Ordering::Relaxed);
+            return;
+        }
+        let stalled_us = now_us.saturating_sub(since);
+        if stalled_us > Self::WARN_US && !self.warned.swap(true, Ordering::Relaxed) {
+            crate::blackbox::text_puts("WD: BOOT PROGRESS STALLED\n");
+        }
+        if stalled_us > Self::RESET_US {
+            panic!("boot progress watchdog: no forward progress");
+        }
+    }
+}
+
+/// Console-funnel hook: count progress when the boot thread is running.
+pub fn watchdog_note() {
+    PROGRESS_WATCHDOG.note_from_console();
+}
+
+/// Deadline (process uptime, us) for a deliberate reset requested by the ADB
+/// cycle magic. The reply that precedes the request must reach the host
+/// before the link drops, so the reset is scheduled ~2 s out and fired from
+/// the timer tick instead of panicking inline.
+static RESET_DEADLINE_US: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Schedule a deliberate panic+reset at the given uptime (us). 0 disarms.
+pub fn schedule_reset_at(deadline_us: u64) {
+    RESET_DEADLINE_US.store(deadline_us, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Timer-tick check for a scheduled deliberate reset.
+pub fn check_scheduled_reset(now_us: u64) {
+    let d = RESET_DEADLINE_US.load(core::sync::atomic::Ordering::Relaxed);
+    if d != 0 && now_us >= d {
+        RESET_DEADLINE_US.store(0, core::sync::atomic::Ordering::Relaxed);
+        panic!("cycle reset: deliberate");
+    }
+}
+
+/// IRQ-context flag for the watchdog (set by the exception layer).
+pub fn set_irq_context(v: bool) {
+    PROGRESS_WATCHDOG.set_irq_context(v);
+}
+
+/// Timer-side watchdog check.
+pub fn watchdog_check(now_us: u64) {
+    PROGRESS_WATCHDOG.check(now_us);
+}
+
+/// Append a plain string to the durable text ring (upper-cased on the way in,
+/// like every other console byte).
+pub fn text_puts(message: &str) {
+    for &b in message.as_bytes() {
+        text_byte(b);
+    }
+}
+
+/// v225: append a step byte to the ANE's private VFS trail block
+/// (0x348de800: count u32 @+0, bytes @+4, cap 16). A shared helper so both
+/// fs.rs and the contexts layer can mark progress around a suspected lock -
+/// plain stores survive even when the ring path is wedged.
+#[cfg(fullerene_aarch64_ane)]
+pub fn step_probe(byte: u8) {
+    unsafe {
+        const BASE: usize = 0x348d_e800;
+        let cnt = core::ptr::read_volatile(BASE as *const u32);
+        if cnt < 16 {
+            core::ptr::write_volatile((BASE + 4 + cnt as usize) as *mut u8, byte);
+            core::ptr::write_volatile(BASE as *mut u32, cnt + 1);
+        }
+    }
+}
+
+/// v226: record a u64 (normally a static's address) into a probe slot; the
+/// IRQ's 256-beat re-stamp prints it back as "Vx:<16 hex>" once the +8
+/// marker byte is set. Used to compare the VFS static's identity between
+/// the init site and the read site when they disagree about being Some.
+#[cfg(fullerene_aarch64_ane)]
+pub fn addr_probe(slot: usize, value: u64) {
+    unsafe {
+        core::ptr::write_volatile(slot as *mut u64, value);
+        core::ptr::write_volatile((slot + 8) as *mut u8, 1);
+    }
+}
+
 pub fn text_byte(byte: u8) {
+    // Heartbeat for the progress watchdog: any console write from non-IRQ
+    // context is forward progress.
+    watchdog_note();
     // Upper-case on the way in: the read-back font carries digits, A-F and
     // the punctuation subset only, so folding letters keeps every log line
     // renderable on the device's own screen console.

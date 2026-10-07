@@ -1408,3 +1408,824 @@ and the identical build connects successfully under Linux. The fix still
 requires a fresh Nitrogen hardware run. The expected next trace is one
 `CONNECT_ADD_STA` per attempt, no `0x2073` assert on reconnect, and q5
 `RDPTR` progress or a `REPLY_TX` for the 5 GHz authentication test.
+
+
+## Entry 044 — 2026-10-07 JST Host-side verification sweep (no hardware attached)
+
+### Evidence
+
+- The `202608231920/202608231913` desktop-attachment logs plus commit
+  `af09121f` settle the TIME_EVENT question definitively: the 7265D-29
+  firmware (build `4063824552`) advertises `session_prot=false`
+  (`firmware.capabilities api_index=0/2 ... dqa=true session_prot=false`;
+  `time_event.api_selection ... session_prot_cap=false`). The experiment
+  flag stays `false` and any send is gated on
+  `fw_session_prot_supported` — which matches Linux's skip path for this
+  firmware. The missing-TIME_EVENT root-cause theory is therefore
+  rejected; the earlier skill note claiming `API29_TIME_EVENT_EXPERIMENT
+  = true` was stale and has been corrected.
+- `cargo test -p nitrogen --lib iwlwifi`: **79/79 green** (includes the
+  Entry-042 replay test `five_ghz_auth_selects_ofdm_rate_before_association`).
+- Source presence of the three active candidates verified: 041 wake gate
+  (`tx.rs:139`, `CSR_UCODE_GP1_BIT_MAC_SLEEP`), 042 BSSID-before-auth
+  (`connection_state.rs:2225`), 043 `reset_failed_connection`
+  (`connection_state.rs:2159`).
+- Linux v4.14 `iwl_trans_pcie_txq_enable` (cfg==NULL DQA path) diffed
+  against fullerene's `enable_dqa_tx_queue`: for the boot case
+  (ssn==write_ptr==0) they match — the initial doorbell is
+  `HBUS_TARG_WRPTR = queue << 8` in both; the 7265D `scd_bug` ssn++
+  workaround correctly does not trigger; no second zero-pointer doorbell
+  after `SCD_QUEUE_CFG` (Linux's first post-config doorbell is the TFD's
+  own write pointer).
+
+### Disposition
+
+No further host-side change is warranted from this sweep. The next
+decisive datum is a fresh Nitrogen run on the 7265D. Success markers:
+q5 `RDPTR` 0 -> 1 or a `REPLY_TX` for the 5 GHz authentication, one
+`CONNECT_ADD_STA` per attempt, and no `0x2073` assert on reconnect.
+
+
+## Entry 045 — 2026-10-07 JST Ventoy log sweep: fl-wifi39/40/41 analysis
+
+### Evidence
+
+- **Firmware swapped since the Aug-23 captures**: `bonder/iwlwifi` now carries
+  `iwlwifi-7265D-29.ucode` = 1,036,312 B, build `2666559981` / `CoreCycle26_stab::9ef079ed`
+  (file dated Aug 16). The Aug-23 attachment logs used the earlier
+  `f2390aa8` / 4063824552 (1,036,772 B). fl-wifi39/40/41 all run the NEW blob
+  (2 occurrences per log = INIT + runtime).
+- fl-wifi41 (newest) flow: full INIT + runtime ALIVE, scan, then connect to
+  `Buffalo-G-2218` (2.4 GHz): `CONNECT_MAC_CONTEXT` acked (rptr=28),
+  `CONNECT_ADD_STA` acked, `CONNECT_ADD_STA_QUEUE` acked, `SCD_EN_CTRL=0x23`
+  q5 SET, capability gate correctly SKIPS TIME_EVENT ("session protection
+  skipped ... using bound PHY channel 11" — bit 22 of the TLV capability
+  bitmap is clear for this firmware too).
+- **The q5 stall persists unchanged**: auth TX (rate 0x420a, legal for the
+  2.4 GHz AP), doorbell `wrptr=0x501`, SCD `hw_wrptr=1/hw_rdptr=0` through
+  polls 64/512/1024; FH TRB active `0x80305000`, FIFO-3 credit reduced
+  once (0x1ff8 -> 0x1f98) then frozen; `fifo_buf=0x20000700` (channel 3 not
+  empty). Identical signature to the Aug-23 captures: the FH fetched the
+  TFD once and loaded FIFO 3; nothing consumes it, so the SCD read pointer
+  never advances.
+- SCD queue status decode (registers.rs): q0=0x9F/q5=0x9B/q1=0x9D differ
+  only in the low-3-bit FIFO number (7/3/5) — same ACTIVE|WSL|bit7 layout,
+  so the status word is NOT the differentiator.
+- The 041 wake fix is live in the log: polls show `gp1=0x00000000`,
+  `gp_cntrl=0x080403c5` (no persistent MAC_ACCESS_REQ hold).
+
+### Disposition
+
+The stack of committed fixes (041 wake, 042 BSSID, 043 teardown) changes the
+init/preamble state but not the core stall: the MAC never consumes FIFO 3.
+The next experiments should target the MAC/radio-level configuration that
+grants channel access for management TX (Linux connects with identical
+hardware and firmware, so this remains a software-parity gap). Candidate
+areas: PHY context / channel-context parity at the moment of auth, and the
+`FH_TSSR_TX_STATUS` channel-3 backpressure versus the firmware's expected
+TX-path state right after `SCD_QUEUE_CFG`.
+
+
+## Entry 046 — 2026-10-07 JST ANE: the "Љ" descriptor corruption is a boot-race, root-caused and fixed (v197)
+
+### Symptom and host-side evidence
+
+Roughly half of all boots enumerated with corrupted descriptors: the host
+read "Љ" (U+0409 = the langid descriptor's 0x0409 value) where the
+manufacturer/product strings belong, the product string surfaced in the
+SerialNumber slot, and "config index 0 descriptor too short (expected 32,
+got 9)" appeared while reading the configuration descriptor — the classic
+"every answer one request behind" signature. The worse variant never
+enumerated at all: `device descriptor read/64, error -110` (5 s timeout) on
+the first read, then `-71` and `-75` storms across repeated port resets.
+
+The host's journal (`journalctl -k`, the `usb 1-1:` lines) separates the two
+boot classes cleanly, boot by boot:
+  good: `new high-speed USB device number N` → `New USB device found` →
+        `Product: ANE fastboot` in ~1 s, no error lines before it.
+  bad:  errors (`-110`, `-71`, `-75`, `-90`) then a garbled or no product.
+
+### Root cause
+
+`usb_bringup()` step 10 cleared DCTL.SftDiscon and attached the device to
+the host immediately — while `ane_usb_dev::init` (the EP0 arm, called later
+at main.rs:1075), the v162 timer-IRQ responder pump, and the storage
+bring-up were still starting. The host begins its enumeration the moment it
+sees the attach. Whether its descriptor reads land before or after the
+responder comes alive is a race — and that race is the ~50/50.
+
+When a request is answered *late* (host already timed out, `-110`) and the
+port reset then lands mid-answer, the EP0 TxFIFO keeps stale words. Every
+later answer is served from the FIFO head, so it trails one request behind
+— forever, for that boot. This is the same "one request behind" the
+v49/v52 era fought (see the service()-before-storage comments in main.rs);
+those fixes added more service() calls, but the attach itself still
+preceded the responder.
+
+### Fix (v197)
+
+Keep the device soft-disconnected through the whole bring-up:
+
+- `platform/ane/mod.rs` `usb_bringup()` step 10: **sets** DCTL.SftDiscon
+  (bit 1) instead of clearing it (the USB core stays off the bus).
+- `platform/ane/mod.rs`: new `pub fn usb_attach()` clears SftDiscon
+  (with a ~50 ms settle).
+- `arch/aarch64/main.rs`: `usb_attach()` is called after
+  `ane_emmc::probe`, so the host's fresh enumeration meets an armed
+  responder and a live timer-IRQ pump. First measurements pending; the
+  prediction is: every boot shows a clean `New USB device found` →
+  `Product: ANE fastboot` with no `-110/-71/-75/-90` lines before it.
+
+### Engine v11 (host side, same session)
+
+Two fixes to `night_engine.sh` (deployed as `night_engine_v11.sh`):
+- `flash_now()` now resets `STALL=0`: the v193 stall rescue had misfired at
+  15:27 by counting stall time *across* a live replacement boot and firing
+  `oem crash` seconds after a fresh boot enumerated.
+- The 180 s settle is now a watch loop: the moment the loader's
+  "Fastboot2.0" product takes over (kernel died), it re-flashes instead of
+  waiting out the full settle.
+
+
+### Entry 046 addendum — v197 first boots: attach race was not the whole story; v198 targets the real mechanism
+
+First two v197 boots: **boot 1 garbled** (dev 62: "config index 0
+descriptor too short (expected 32, got 13)", Product/Manufacturer "Љ" =
+the langid descriptor payload, SerialNumber = the product string), **boot
+2 clean** (dev 65: "Product: ANE fastboot", no error lines before it). The
+deferred attach removes the pre-responder -110 window but does NOT stop
+the one-behind shift: it still fires mid-enumeration on a late-attached
+fresh session.
+
+Mechanism pinned in code (the "stale belt"): service_ep0's belt answered
+when `SETUP_BYTES_READY` was set, but that flag can still be true from the
+PREVIOUS setup while `SETUP_BUF` holds its bytes - this core can surface
+the DOEPINT0.SETUP latch before the RX entry is readable, so the belt
+occasionally served the OLD request's data as the answer to the NEW
+request ("got 9" = the 9-byte config header re-served to the full-config
+read; the string shift = langid/product payloads one slot late).
+
+v198 fix: answering moves to ONE site at the end of `service()`, gated by
+a new `SETUP_BYTES_FRESH` flag (set only by the RX pop, for THIS setup)
+and `!TRANSACTION_BUSY` (never mid-transfer; a pending setup is picked up
+on the next pass). The inline RX answer and the belt are removed. Plus a
+bounded forensic trace (`ud: q=BBWWWWWW LLLL` ring lines per answered
+request) so the EP0 request stream survives in EP1 pulls and eMMC slices.
+
+
+### Entry 046 addendum 2 — the /sys descriptor dump instrument; the v198 regression; the v200 shape
+
+**New observability channel (works even for garbled/failed boots):**
+`/sys/bus/usb/devices/1-1/descriptors` holds the raw descriptor bytes the
+HOST kernel read, cached per device - readable with no USB session at all
+(plus the parsed fields: bMaxPacketSize0, bConfigurationValue,
+bNumInterfaces, manufacturer/product/serial). Captured per boot by
+`~/dev/p20-root/forensics_snap.sh` into `forensics/snap_<time>{.txt,.bin}`.
+
+First byte-level contrast, same handset, same evening:
+  CLEAN (v200 boot, dev 80): 50 B = 18 B device desc (perfect) + 32 B
+  config desc (perfect: `09 02 20 00 01 01 00 80 32 ...`).
+  GARBLED (v199 boot, dev 78): 27 B = 18 B device desc (perfect!) + a
+  9-byte config read = `09 02 20 00 | 09 02 20 00 | 01` vs the expected
+  header `09 02 20 00 | 01 01 00 80 | 32`: word0 duplicated, remainder
+  truncated. The device-descriptor phase is CLEAN even on garbled boots;
+  the corruption starts exactly at the first CONFIG read. The duplicated
+  word0 = a FIFO head anomaly (an extra partial push or a duplicated
+  answer word), matching the "one request behind" host symptoms.
+
+**The v198 answering experiment (failed on hardware, reverted in v200):**
+v198 moved EP0 answering to a single site at the end of service() gated
+by SETUP_BYTES_FRESH + !TRANSACTION_BUSY. Result: 2/2 hard enumeration
+failures (`-90` device-descriptor short reads, host power-cycles the
+port and gives up) - WORSE than the ~50% garble it was meant to cure.
+v200 restores the proved v197 answering shape (inline answer at the RX
+pop + belt) and keeps: the v197 deferred attach, the v199 enumeration
+sentinel (panic if attached but never SET_CONFIGURATION within ~2048
+beats), and the v198 forensic `ud: q=` ring trace. First v200 boot
+enumerated cleanly (dev 80, 16:10:57).
+
+**Boot-death cadence discovered:** non-enumerating boots die at ~4 m 45 s
+(~beat 8192 at the measured rate) - the same constant across five boots
+(15:22, 15:34, 15:39, 15:55, 16:00). Clean boots pass 8192 and end via
+the 16384-beat cap (~9-10 min) or the engine's magic. The 8192 constant
+coincides with the IRQ-time eMMC persist lane's first write; treat it as
+the prime suspect for the bad-boot deaths (a stalled boot thread + the
+IRQ SDHCI write). Not yet conclusive.
+
+
+### Entry 046 addendum 3 — the clean trace baseline, the persist-lane kill, and the v202 self-heal
+
+**The clean enumeration script (from `ud: q=` traces of collected rings
+adb_118/adb_13, extracted to forensics/trace_c*.txt):**
+```
+GET_DESC wv=0x0100 len=0x40    (device desc, 64)
+SET_ADDR wv=0x00NN len=0       (addr varies per boot: 7, 9)
+GET_DESC wv=0x0100 len=0x12
+GET_DESC wv=0x0200 len=0x9     (config header)
+GET_DESC wv=0x0200 len=0x20    (config full)
+GET_DESC wv=0x0300 len=0xff    (string0)
+GET_DESC wv=0x0302 len=0xff    (product)
+GET_DESC wv=0x0301 len=0xff    (manufacturer)
+GET_DESC wv=0x0303 len=0xff    (serial)
+SET_CONFIG wv=0x0001           (value 1!)
+GET_CONFIG len=0x1
+GET_DESC wv=0x0300 len=0x4
+GET_DESC wv=0x0303 len=0xff
+GET_DESC wv=0x0600 len=0xa     (device qualifier)
+GET_STATUS len=0x2
+GET_DESC wv=0x0600 len=0xa
+GET_DESC wv=0x0a00 len=0x4     (debug descriptor)
+GET_STATUS len=0x2
+```
+Identical across clean boots (the address + a debug-descriptor retry vary).
+
+**v201: the IRQ-time eMMC persist lane is DISABLED.** All non-completing
+boots died at ~4 m 45 s ~ beat 8192 = that lane's first write (the same
+deadlock noted at v124). The on-demand `oem ringsave` remains. Result:
+clean boots now survive to the collection window reliably.
+
+**v202: the self-heal reconnect.** When a boot's SET_CONFIGURATION value
+never becomes 1 (host failed the reads, OR accepted a garbled
+bConfigurationValue of 2+), the timer IRQ drops the D+ pull-up for ~10
+beats, reconnects, and re-stamps the attach beat - up to 3 draws, then
+the old panic. Each reconnect makes the host enumerate afresh: the ~50%
+garble lottery becomes several independent draws, and a healed boot
+shows up as a NEW event the engine then collects. (`usb_config_value()`
+added; CONFIG_VALUE latched on every SET_CONFIGURATION.)
+
+**Engine v12:** the v11 settle loop ran a full `journalctl -k` per
+iteration (~1 s each), stretching the nominal 180 s to ~280 s real and
+missing the window; v12 uses bounded `journalctl -k -n 40` checks,
+40 x 3 s ~ 130 s real. v12 also captures the host-side descriptor
+snapshot (`forensics_snap.sh`) automatically for every boot event.
+
+**Client-path findings (all dead ends recorded):** the Android fastboot
+tool cannot talk to the kernel responder at all (LK only; silent empty
+output) - never poke a kernel window with it (it consumes/breaks the
+window: a later pyusb CNXN fails with the SET_CONFIGURATION dance -110).
+pyusb fails on garbled boots at descriptor parsing; raw libusb (python
+usb1) fails too because the host registered ZERO interfaces for the
+garbled config (`claimInterface` -> LIBUSB_ERROR_NOT_FOUND). A garbled
+boot is unreachable from the host, period - only /sys dumps + the
+device's own self-heal can act on it.
+
+
+### Entry 046 addendum 4 — the double-answer root cause candidate + v203 self-heal + v204
+
+- **/sys descriptor dumps are THE instrument for suspect boots** (works
+  without any USB session; the host kernel caches the raw bytes it read).
+  Clean boot = 50 B: 18-B device descriptor + 32-B config, perfect.
+  Garbled boot (observed twice: dev 78 and dev 105, byte-identical) = 27 B:
+  perfect first 18 B + a config-header read served as
+  `09 02 20 00 | 09 02 20 00 | 01` - expected `09 02 20 00 | 01 01 00 80 |
+  32`. The FIRST WORD of the response is served TWICE, then the stream
+  truncates. The stray 0x02 lands in bConfigurationValue, the host picks
+  "config 2" with 0 interfaces - the whole downstream mess.
+- **Mechanism (candidate): the double-answer.** The RX-pop path pushes
+  the answer; later in the SAME service() pass a stale XFERCOMPL from the
+  previous transfer clears SETUP_HANDLED; then the SETUP-branch belt
+  (`SETUP_BYTES_READY && !SETUP_HANDLED`) re-answers the SAME setup. Two
+  copies of one response staged in the EP0 FIFO; the surplus surfaces on
+  later reads (duplicated word0, truncated reads, the "got 9"/"got 13"
+  variants). Timing-dependent -> the ~50% boot lottery.
+- **v203 self-heal confirmed live**: a boot that saw >= 1 SETUP but never
+  SET_CONFIGURATION(1) power-cycles the USB link (DCTL.SftDiscon, ~10-beat
+  hold) up to 3 times, then panics to LK. Observed (boot #9): reconnect at
+  ~70 s after the first SETUP (the host logged a fresh connect), the
+  redraw was still garbled, further host retries failed, retries
+  exhausted -> panic -> LK -> reflash. NOTE: the redraws were NOT
+  independent - consistent with EP0 FIFO residue surviving reconnects
+  (nothing flushes it). Candidate v205: flush TxFIFO on handle_reset.
+- **v204 (double-answer eliminator)**: the RX pop now consumes the
+  DOEPINT0.SETUP latch and CNAKs before handle_setup(), so the belt
+  cannot re-fire for the same setup in the same pass. First boot (dev
+  115) clean; rate check pending across the next boots.
+- **Instruments written tonight**: `forensics/boot_ledger.py` +
+  `forensics/boot_ledger.tsv` (classifies every usb 1-1 attach:
+  CLEAN/GARBLED/LOADER/FAILED), `forensics_snap.sh` (per-boot /sys
+  descriptor dump + parsed fields), and the `ud: q=` request traces now
+  riding in the ring (readable from EP1 pulls on clean boots).
+- **Clean enumeration script** (from ring traces, consistent across
+  boots): GET_DESC(dev,64) -> SET_ADDRESS -> GET_DESC(dev,18) ->
+  GET_DESC(cfg,9) -> GET_DESC(cfg,32) -> str0,str2,str1,str3 ->
+  SET_CONFIG(1) -> GET_CONFIG -> str0(4), str3 -> qualifier(10) ->
+  GET_STATUS -> qualifier -> debug(4) -> GET_STATUS -> SET_CONFIG(1)...
+  (arch + BOS probes are what follow).
+
+
+### Entry 046 addendum 5 — THE MECHANISM CONFIRMED: EPENA-stuck + stale TSIZ (v206, 17:04)
+
+Boot #13 (v206, first boot with the guard+flush) produced the direct proof:
+
+- The host's enumeration (dev 29-31) hit the usual failure storm
+  (-110 -> -71 -> -75, power cycle, -75 again) - and then, WITHIN THE SAME
+  BOOT and without any device-side reconnect, the host's 4th attempt
+  (dev 32) enumerated PERFECTLY ("ANE fastboot", full strings). The first
+  in-boot recovery from the failure class ever observed.
+- The collected ring (adb_101.bin) carries the causal chain:
+  - `WD: EP0 EPENA` x 4 - ep0_send found DIEPCTL0.EPENA still set (the
+    previous control transfer was never retired - the host aborted it
+    mid-flight during the failed attempts). Four aborted transfers / four
+    detections. WITHOUT the v206 force-disable, the following
+    `DIEPTSIZ0` write is SILENTLY DROPPED by the core (EPENA=1) and the
+    OLD xfersize drives the next packet -> stale-size/short/duplicated
+    reads. That is the "one request behind" / [09 02 20 00 | 09 02 20 00
+    | 01] garble class, at last pinned to a register-level mechanism.
+  - `UD: FFLUSH` x 7 - the new per-bus-reset Tx+Rx FIFO flush ran at
+    every port reset (including the host's own retry resets), sweeping
+    the residue that used to make every later attempt inherit the same
+    bad hand.
+  - `WD: RECONNECT` x 0 - no self-heal needed this boot: the host's own
+    retries + the active dirty state being cleared converged to clean.
+- q= trace shows the host's retried reads (cfg9 x2, cfg32 x2 before the
+  good attempt) - matching the failure/retry cadence in the journal.
+- v206 = ep0_send EPENA guard (bounded wait, then EPENA|EPDIS force-
+  disable, counted in DBG_EPENA_STUCK, ring marker "WD: EP0 EPENA") +
+  GRSTCTL Tx/Rx flush at handle_reset ("UD: FFLUSH") + GRSTCTL_AHBIDLE
+  const. First boot: clean, self-recovered. Scoreboard continues below.
+
+### THE ROOT CAUSE, FINAL FORM (2026-10-07 ~17:10)
+
+1. At enumeration, host attempts have timing margins (cold responder ->
+   -110 timeouts sometimes; WHY the first reads sometimes time out is
+   still the remaining open sub-question - likely the responder latency
+   vs the host's first-read window).
+2. Any aborted/timed-out control transfer leaves DIEPCTL0.EPENA set on
+   the device (the core never retires it without a host handshake).
+3. The NEXT ep0_send writes DIEPTSIZ0 while EPENA=1 -> the core drops
+   the size write -> the response is driven by the STALE size and the
+   FIFO accumulates data out of order -> the garbled/short/duplicated
+   reads ("Љ" strings, "got 9"/"got 13", the duplicated first word).
+4. Which boot/attempt lands in this state = timing -> the ~50% lottery.
+   The dirty state also persists across D+-only reconnects, which is why
+   v203's self-heal redraws kept failing until v206's flush.
+
+Fix surface (now live): v206 EPENA-guard (kills 3) + per-reset FIFO flush
+(sweeps 2's residue and gives every retry/reconnect a clean slate).
+
+
+### Entry 046 addendum 6 — the engine v13-v16 hardening + LK idle auto-boot (17:10-17:30)
+
+- **Boot lifetime is bounded by the us-based ProgressWatchdog** (self-
+  clocked, race factor varies per boot): observed deaths ~3 m 50 s to
+  ~5 m 50 s from boot start. The engine's collection must land inside
+  that. v13 = skip the ring-xfers after a successful CNXN (~3 min/cycle
+  saved); v14 = settle 25 x 3 s (~75 s real) so a recovered boot's
+  attempt starts ~+180 s; v13's ~130 s settle had lost the race by
+  seconds (boot #15).
+- **v15/v16 = the event-detection hole.** `last_event()` matched the
+  "Product:" line; a product-less kernel attach (kernel strings never
+  printed: dev 49 at 17:20, dev 53 at 17:26) returned the PREVIOUS
+  attach's line -> CUR == EV -> the whole boot was skipped in silence
+  (no snapshot, no log, no recovery). v15 triggers on the attach line
+  itself ("new high-speed USB device number N" - unique per attach).
+  v16 scopes the product search to THAT attach's device number
+  (`-A8 "device number $DEVNO "`) - the unscoped tail-1 had mislabelled
+  dev 53 as "loader attach" using the older LK line.
+- **THE LK AUTO-BOOTS THE KERNEL AFTER ~80-100 s IDLE.** Observed: LK
+  (dev 50) at 17:24:42 sat unflashed (engine swap window); at ~17:26 the
+  kernel came up by itself (dev 51-53, shifted strings = its own boot).
+  Operational rule: an LK window is SHORT - flash promptly or the loader
+  continues into the old kernel on its own.
+- **firmware-updater daemon interference**: `usbfs: USBDEVFS_CONTROL
+  failed cmd fwupd` lines appear when fwupd probes our 18d1:d00d device
+  mid-enumeration (rq 8 = GET_DESCRIPTOR). Harmless so far, but it is a
+  third party poking the device during our windows - expect occasional
+  extra control traffic in the journal.
+- Engine generation at 17:30: **night_engine_v16.sh** (attach-line
+  trigger + scoped classifier + v13/v14 behavior). Ledger dedupe fixed
+  to a (device, time) key (host Device numbers got reused after the
+  host-side USB renumber around 16:55; dev-only keys silently skipped
+  fresh boots).
+
+
+### Entry 046 addendum 7 — ring-window semantics, the v208 experiment, v210 (17:30-18:10)
+
+- **The CNXN piggyback is the LAST min(used,2048) bytes of the ring**
+  (`ane_usb_dev.rs`: `let take = min(used, 2048); let start = used - take;`
+  then a raw copy from TEXT_BLOCK_BASE+start). Consequences:
+  - The collected 2049-byte files are TAILS. The window slides forward as
+    a boot writes more; a line's absence from a collection is NOT proof
+    it was never written (it may have slid out). The launchd-line
+    presence in the v206-era rings vs absence in later rings may be pure
+    window slide - the full 32 KiB `oem xfer r 348d0000 8000` read is the
+    only definitive source for "how far did the launchd get".
+  - The ring content is stored/rendered UPPERCASE ("ud: q=" appears as
+    "UD: Q="). Grep the collections case-insensitively or in uppercase.
+- **v207 prepare_attach (EP0 cleanup + FIFO flush right before the
+  attach) WEDGED the USB core**: the v208 boot never attached at all
+  (no host device for 4+ min). Same signature as the v26-era "GRSTCTL
+  write wedged the core" note. REVERTED; do not touch GRSTCTL before the
+  host's first bus reset. The v206 flushes inside handle_reset (after
+  resets) remain and are proven.
+- **v208 (attach moved after the timer/GIC bring-up) is REVERTED in
+  v210**: it did NOT stop the first-read -110s, and it lengthened the
+  IRQ-less pre-attach window. The attach returns to the post-probe site.
+- **The -110 hypothesis (v210 fix, test pending)**: the v206 EPENA
+  guard's bounded wait was 0x2_0000 iterations of MMIO reads - on this
+  slow bus that can be SECONDS, i.e., the guard itself could eat the
+  host's 5 s timeout when the endpoint was genuinely stuck at the first
+  read. v210 shortens both guard waits to 0x400 (a healthy completion
+  clears EPENA in microseconds; a stuck one is force-disabled
+  immediately). Watch the first-attempt quality in the ledger.
+- **Kept from the v208 batch**: the launchd milestone MARKS (L0..L6) now
+  re-stamp into the ring every 256 beats ("mark: ..." - uppercase in
+  ring) with the deepest mark in LAST_MARK - the launchd-depth
+  instrument. Reading it needs a collection window wide enough, or the
+  full-ring xfer.
+
+
+### Entry 046 addendum 8 - engine v17/v18: the missed-boot bug (18:00-18:15)
+
+- The v16 classifier decided ~2 s after an attach event. When the
+  enumeration was still in flight (retries, the -110 dance), it saw no
+  product line and skipped the attach - **boot #22 (a CLEAN boot) was
+  missed entirely**.
+- v17: on a product-less attach, wait (bounded, 42 s) for THIS attach's
+  product before deciding.
+- v18 (current): the wait is 90 s (30 x 3 s) and the product search is
+  `journalctl -k --since "@<epoch-8s>" | grep "usb 1-1: Product: "` -
+  the old `grep -A8` window missed product lines pushed more than 8
+  lines below the attach line by the -110/config error bursts (boot #26
+  was skipped this way).
+- Boot #26 (v210) also showed the self-heal reconnect did NOT fire
+  (no re-attach between the garbled attach and the watchdog death) -
+  worth a look next session (the SETUP-conditional sentinel may need
+  the same start-conditioning as the enumeration sentinel).
+
+
+### Entry 046 addendum 9 - engine v19/v20 + v210 samples (18:10-18:22)
+
+- v19: empty event baseline at start (the in-flight boot at a restart
+  gets processed). v20: the product-wait `--since` anchor = the ATTACH's
+  own epoch (journalctl -o short-unix), not now-8s - boot #27 was
+  falsely declared product-less when a 33 s restart gap hid its (attach
+  + 6 s) product line. Both verified live (c15: product arrived late,
+  boot #28 collected as rings_night/adb_1.bin).
+- v210 samples so far: #26 garble (self-heal did NOT fire - investigate),
+  #27 -110 -> CLEAN recovery on the SAME device (first time), #28 -110 ->
+  CLEAN same-device + collected, #29 product-less failure (correct skip).
+  The first-read -110 persists on every boot; the v210 guard shorten is
+  not its cause. Same-device recovery now common.
+- Full-ring read attempt on boot #28: `OKAY len: 32768` (responder
+  accepted) then host-side EIO + cfg0 -110 (the boot died mid-read at
+  ~18:17). A full-ring read must start within the first ~90 s of a boot
+  to fit the lifetime. The 2 KB CNXN piggyback cannot reach the launchd
+  era: the enumeration-retry Q= lines fill the window (adb_1.bin's tail
+  = the repeated 060A/0000/0606 trio + SET_CONFIG(1)).
+- The launchd-depth instrument (mark: re-stamps every 256 beats) is in
+  the running kernel but invisible in 2 KB windows - the full-ring read
+  is the only reader.
+
+
+### Entry 046 addendum 10 - the launchd-entry stall's first wall fell (18:30-18:45)
+
+THE FINDING: the "LAUNCHD: PRE -> WD STALLED" stall was TWO stacked walls,
+and the first fell tonight:
+
+1. **uart::putc on the ANE path = [ring tee] + [watchdog_tend()]**. The
+   SP805 tend does a volatile READ at 0xe8a06000+4. The historical stall
+   ELR sat "inside putc" (0x1BFD1A4/0x1BFD1C0), and the ring's last line
+   was "launchd: pre t=" WITHOUT a newline: the main thread froze on the
+   very next console byte - while the timer IRQ kept writing (its own
+   SP805 feed is a write-only kick; a read is the one access class that
+   can stall on this bus). An unbounded bus stall cannot be fixed by
+   spin counts (the v39 dwmmc lesson) - the fix is to not issue the
+   access: **v211 removes watchdog_tend() from putc on the ANE build**
+   (env FULLERENE_ANE_NO_PUTC_WD_TEND=1 -> cfg fullerene_ane_no_putc_wd_tend).
+   The SP805 stays fed by the timer IRQ (beats % 8), the USB path and the
+   storage loops' own tend calls.
+2. EVIDENCE: the first v211 collection (rings_night/adb_144.bin) contains
+   "..LAUNCHD: PRE T=00000000" **followed by "LAUNCHD: CALLING RUN"** -
+   the line that never before existed. The main thread now passes the
+   putc and walks into the launchd block's next statement:
+   `platform::ane_fb::event(b"LAUNCH RUN")` - the panel paint
+   (paint_at + flush_row), the same class as the v145 freeze
+   (Line::draw clear loop, ELR 0x1BE6C54).
+
+3. **v212**: ane_fb::event() now (a) mirrors every ledger tag to the ring
+   ("EVT: <tag>"), and (b) under FULLERENE_ANE_MARKS_UART_ONLY SKIPS the
+   panel paint entirely. The next clean boot's ring will show whether the
+   event call completes ("EVT: LAUNCH RUN") and whether launchd::run()'s
+   first mark ("MARK: L0 RUN ENTERED") follows.
+
+Build recipe delta: FULLERENE_ANE_NO_PUTC_WD_TEND=1 is now part of the
+standard boot-image recipe alongside FULLERENE_ANE_MARKS_UART_ONLY=1.
+
+
+### Entry 046 addendum 11 - THE BREAKTHROUGH: launchd::run() reached (18:44)
+
+rings_night/adb_14.bin (boot #34, v212) - the first ring in this project's
+history to contain:
+
+- **EVT: LAUNCH RUN** - the ane_fb::event() call completed (the second
+  wall after v211's putc fix).
+- **MARK: L0 RUN ENTERED x21** - launchd::run() was ENTERED; the v208
+  re-stamp instrument works (one-shot marks would have been invisible).
+- **EVT: VFS OPEN** - the bootstrap's VFS is opening the image.
+- **EVT: UD RST x4, EP1 DN, SENT1, NG 19 67657476, DEC OK, ADB C...** -
+  the responder + ADB decode working while the launchd runs.
+
+The old signature ("LAUNCHD: PRE -> WD STALLED", the ELR frozen inside
+putc) is GONE. The boot now dies ~3 min in (the ProgressWatchdog) with
+the L1 mark ("img read") NEVER printed: **the next wall is inside
+launchd::run() between the L0 mark and the L1 mark - the launchd image
+read (the VFS read path).** Next investigation: the fs read between L0
+and L1 in launchd.rs and the storage path it drives.
+
+v211 + v212 recipe: FULLERENE_ANE_MARKS_UART_ONLY=1
+FULLERENE_ANE_NO_PUTC_WD_TEND=1 (+ the standard pic/pie/notext/lld).
+
+Status ledger: the boot is now RECYCLABLE through this new wall (the
+watchdog kills it, the LK reflashes, the loop continues) - no manual
+presses anywhere in the chain.
+
+
+### Entry 046 addendum 12 - the L0->L1 wall: frozen at the VFS resolve entry (18:50)
+
+With v211/v212 the boot reaches launchd::run() and dies (watchdog) INSIDE
+the first fs call: `fs::read_kernel_path("/bin/launchd", ...)` ->
+`read_vfs_path` (arch/aarch64/fs.rs:7633). The ring (adb_14.bin) shows:
+
+    MARK: L0 RUN ENTERED      <- run() entered
+    VFS: OPEN BEGIN           <- read_vfs_path entry (line 7640)
+    EVT: VFS OPEN             <- the ledger event (line 7644)
+    VF<frozen>                <- 2 bytes of "vfs: resolve begin" (line 7652)
+
+The main thread's byte stream stops there (verified by fragment search:
+no "RESOLVE"/"VE BEGIN"/"PRE-SPLIT"/"IT MADE"/"COMP=" anywhere - not a
+contiguity artifact). The IRQ continues: further marks (MARK: L0 re-stamps,
+WD: BOOT PROGRESS STALLED) keep landing in the same ring, so the ring
+write path demonstrably works from IRQ context.
+
+Dead ends checked tonight: putc's ANE path = ring tee + atomics only (the
+v211 SP805 read removed); text_byte = watchdog_note() (atomics), upper-
+case, then plain stores at fixed addresses - no loops, no locks. The
+freeze is main-thread-specific and happens BETWEEN two text_byte calls.
+
+Open hypotheses for the next session (in order):
+1. A sync exception (data abort) taken on one of the ring stores while
+   IRQ writes still succeed - would need an MMU mapping gap for
+   TEXT_BLOCK_BASE+12+size (block = 0x348d0000..0x348de00c, cap 0xe000;
+   FIXED copy at +0x4000..+0x5c00; step-marks at 0x348df000). Check the
+   MMU tables for this window (both copies, incl. past 0x348d8000 - the
+   collection's 32 KiB read window ends there and the block does not).
+2. The exception handler itself wedging when it tries to print (the
+   exception prints go through the same funnel).
+Next instruments if needed:
+- v213: non-text step markers at StepMarks (0x348df000), read back with a
+  tiny xfer (4-64 B - likely EIO-safe) instead of the ring.
+- Check whether the FIXED copy (0x348d4000) contains content PAST "VF"
+  (the two copies diverge if the main ring's header-size read misbehaves).
+
+
+### Entry 046 addendum 13 - SMK result, the xfer root cause, the 84 s cycle (19:00-19:15)
+
+**The VFS freeze point is now pinned by a non-text instrument.**
+v213 put step markers in read_vfs_path; v215 moved them to a PRIVATE trail
+at 0x348de800 (the shared step-mark block 0x348df000 fills with the boot's
+own stage letters - '1','9','q','r','s','e','a','h','f','k','l','m','n',
+'o','p' - before the VFS ever runs; the first SMK read proved it). v214/
+v215 dump the private trail into the ring as "SMK:<hex>" every 256 beats,
+so the normal CNXN collection carries it (a separate fetch would be
+conversation #2 and race the magic reset - measured: the v22 40 s marks
+fetch died with no OKAY).
+
+Result (rings_night/adb_24.bin): **SMK trail = "12"** - '1' (fn entry),
+'2' (before event("VFS OPEN")), and NOTHING more. The freeze sits between
+vfs_step('2') and vfs_step('3'): the event's ring mirror completes
+("EVT: VFS OPEN" is present), then the very next construct is
+`with_vfs(|vfs| ...)` -> `vfs.lock()`. The lock-holder hypothesis is now
+the prime suspect (a spin lock held elsewhere = a silent main-thread
+freeze with the IRQ alive, exactly the signature).
+
+**The `oem xfer` root cause (why streams never worked).**
+`ep1_send` arms DIEPTSIZ with the FULL packet count, then the fill loop
+writes ALL bytes into the EP FIFO with no free-space gating and no
+completion wait. For a reply larger than the TX FIFO's depth the overrun
+writes wedge EP1 (the v172 note: "asking for more than is present once
+wedged the endpoint"). The CNXN piggyback (2049 B) fits; the xfer streams
+do not. FIX (v216): chunked fill gated on DTXFSTS free words + a
+completion-aware loop, then the fb/screenshot channel and the fast bulk
+ring read both become possible.
+
+**The fast cycle works (v23).** Measured from the engine log: attach
+19:00:57 -> CNXN collection 19:01:34 (37 s!) -> magic reset -> LK ->
+flashed+rebooted 19:02:21. **84 seconds attach-to-next-flash** (the old
+cycles ran 4-6 min). The v23 clean-state poll + 9 s grace replaced the
+fixed 45 s settle; the v17-21 classification chain + the descriptor
+fallback keep the collection first-try on clean boots.
+
+**User directives (19:05-19:10): make enumeration/ADB/fastboot as reliable
+as possible and speed the dev cycle; make fastboot + screen screenshots
+usable; the whole screen area is available for captures.** Plan:
+A. ep1_send chunked fill (v216) -> working xfer -> fb dumps + full ring reads.
+B. Screenshot channel: read the canvas (0x31000000, 1080x2340x4) in
+   regions over the fixed xfer, render host-side to PNG (no camera).
+C. The VFS-lock holder hunt (the freeze's prime suspect).
+D. Keep the engine chain fast (Settle ~9 s grace after clean).
+
+
+### Entry 046 addendum 14 - the xfer works (v216, 19:25)
+
+The v216 ep1_send fix (DTXFSTS-gated chunked fill + an arming wait for a
+pending transfer) made the first successful `oem xfer` of the current era:
+
+    sent: oem xfer r 348d0000 800
+    OKAY len: 2048
+    wrote 2048 bytes    (real 18.6 s ~ 110 B/s)
+
+Content is byte-exact: "FTLX" magic, size 0xE000, then the ring's base -
+the boot's very first log lines ("FULLERENE: ENTERED ... BOOT: X0=...").
+
+Historical root cause (now fixed): the old blind fill wrote all `n` bytes
+regardless of the TX FIFO's free space; any reply larger than the depth
+overran the FIFO and wedged EP1 forever (the v172 lesson). The CNXN
+piggyback (2049 B) fit, so collections lived while every big read died.
+
+Test method (repeatable): SIGSTOP the engine on a fresh clean attach
+(kill -STOP <pid>), run the xfer as the sole conversation, SIGCONT.
+The paused engine keeps its state; its product-wait loop is a safe pause
+point (no conversation in flight).
+
+KNOWN LIMIT: 110 B/s (2 KB in 18.6 s) - the xfer sender still paces on
+the CNXN-style per-chunk FIFO-full-drain waits. v217 plan: rework the
+xfer sender to back-to-back 4 KB ep1_send chunks (the v216 path is
+multi-packet safe now: arm once with the full packet count, gated fill,
+no per-chunk re-arm) -> unlocks the framebuffer screenshot (full screen
+1080x2340x4) and fast full-ring reads.
+
+
+### Entry 046 addendum 15 - the DWC2 IN multi-transfer wall (v217-v219, 19:30-19:45)
+
+The v216 fix (gated fill + arming wait) made the FIRST successful `oem
+xfer` of the era: `r 348d0000 800` -> OKAY, 2048 bytes byte-exact, 18.6 s
+(~110 B/s). The 512 B chunked path works; the speed is the limit.
+
+The speed attempts and what they measured:
+- v217 (one 128 KiB arm; fill straight from RAM): "OKAY len: 131072"
+  then a 4-minute stall with NO "WD: EP1 FILL" marker. The fill's
+  re-reading loop (free-words per round) is unsafe: DTXFSTS is not
+  trustworthy on this bus (v176), a stale "free" reading sends the fill
+  writing into a full FIFO, and the AHB write then stalls forever.
+- v218 (12 KiB windowed arms, ONE free-read per arm, fill capped):
+  "OKAY len: 32768" then a 150 s timeout - the second arm never
+  completed. The DWC2 IN-transfer completion/re-arm semantics across
+  sequential multi-transfer arms are NOT what the current code assumes
+  (the arming wait burns its bound, later arms drop).
+- v219: REVERTED to the proven 512 B chunked path (with the v216 gated
+  fill and the arming wait kept). The next bulk attempt must begin by
+  re-reading the vendor gadget.c (hi6250) IN-endpoint re-arm/complete
+  pattern - source first, per the working discipline.
+
+Screenshot pipeline status (user directive: whole screen allowed):
+- The path is proven end-to-end EXCEPT the speed: `oem xfer r <fb> <len>`
+  reads any RAM (the canvas = 0x31000000, 1080x2340x4) and render_fb.py
+  turns raw bytes into PNG without deps.
+- At ~110 B/s a full screen (10.1 MB) needs ~26 hours; even a 100 KB
+  strip needs ~15 min. The screenshot becomes practical once the bulk
+  IN protocol is understood - that is the next big rock, together with
+  the tight-refill pattern.
+- Operating recipe for xfer tests: SIGSTOP the engine on a fresh clean
+  attach (kill -STOP <pid>), run the xfer as the sole conversation, then
+  kill -CONT. The product-wait loop is a safe pause point.
+
+
+### Entry 046 addendum 16 - the vendor-pattern xfer pump + the EOVERFLOW wall
+
+Source work: re-read the vendor gadget.c (hi6250-src drivers/usb/dwc2/
+gadget.c, s3c_hsotg_write_fifo, lines 315-471). Confirmed:
+- NON-periodic writes are capped at 512 B per call, with the explicit
+  warning that >512 B requests "cause the endpoint to get stuck with a
+  fragment of the end of the transfer in it" (401-407). This is the
+  documented root of the v217/v218 stalls.
+- For dedicated FIFOs (our case) the vendor reads DTXFSTS for can_write,
+  arms the transfer once, and feeds the remaining bytes from the
+  IN-complete/FIFO-space interrupt path.
+
+Implementation (v220/v221, in ane_usb_dev.rs):
+- Stream statics XFER_ON/XFER_FEED/XFER_END/XFER_WIN_END + `xfer_pump()`:
+  arm bounded 64 KiB windows (PKTCNT=ceil(win/512), only when EPENA is
+  clear), feed <=512 B chunks per DTXFSTS read, max 16 chunks/pass;
+  re-arm when FEED reaches WIN_END; "XF: DONE" when fully fed.
+- `oem xfer r` handler starts the pump instead of streaming inline; the
+  pump is hooked into service() every pass. v221 adds a double-read hedge
+  on DTXFSTS (stale-low reading would starve the wire) + "XF: STALL".
+
+Test results (32 KiB fb read, SIGSTOP recipe, fresh clean boots):
+- The reply header arrives promptly ("OKAY len: 32768"), so the command
+  path works; the payload then fails with the HOST-side
+  "[Errno 75] Overflow" (EOVERFLOW) and never completes (120-200 s).
+- Same with 128 KiB. The device-side markers are not readable in these
+  sole-conversation boots (ring uncollected).
+
+Next-session suspects, in order:
+1. The IN-complete path already exists in service_ep1 (EPINT_XFERCOMPL ->
+   EP1_IN_IDLE=true, comment: "the stream may send the next one") but the
+   pump is NOT hooked there, and the vendor's per-packet refill trigger
+   (the non-periodic TX FIFO empty interrupt, GINTSTS_NPTXFEMP, enabled
+   in write_fifo) is not used at all. Wire xfer_pump() into service_ep1
+   and/or enable+handle the FIFO-space interrupt.
+2. The host EOVERFLOW itself: pyusb read size / usbfs behavior; check the
+   interface state on a boot where the descriptors are known clean, and
+   try smaller reads (e.g. 4096) with a tighter loop.
+3. fb_xfer's error path sleeps 50 ms per error and can thrash; make the
+   error handling rate-limited and the read size adaptive.
+
+The pump is dormant unless an `oem xfer` is commanded: all normal flows
+(CNXN collections, engine cycles) verified working with v220/v221 images.
+
+
+### Entry 046 addendum 17 - the pump test: stream stops after ~56 bytes (20:14)
+
+Test (v222 image + the improved host tool: 4 KiB reads, EOVERFLOW-tolerant,
+progress prints): `oem xfer r 31000000 8000` on a fresh clean boot,
+engine SIGSTOPped.
+
+Observed:
+    OKAY len: 32768
+    overflow x 1  got 56        <- then silence: reads all time out
+    (150 s timeout, no completion)
+
+So: the command path and the reply header work; exactly ~56 bytes of
+payload arrive; the host's subsequent reads time out (the one EOVERFLOW is
+followed by silence, not a stream). The device-side feed stops after the
+first packet or two - the pump is not sustaining the stream.
+
+Open questions for the next session, with the test design that answers
+them:
+1. Is the pump running at all during a sole-conversation boot? The pump
+   counters live in the ring, but sole-conversation boots are never
+   collected. **Change the test design**: run a normal engine cycle first
+   (CNXN collection = conversation #1), but with a NON-magic arg0 so the
+   deliberate reset is NOT scheduled (the responder resets only on
+   arg0 0xC0DE0001) - the boot then stays alive, the ring (with XF:
+   markers) is in hand, and the xfer can run as conversation #2. Trigger
+   the reset afterwards.
+2. The device-side feed cadence: verify that the timer-IRQ service passes
+   actually call xfer_pump during the epoch (add a counter if needed).
+3. The FIFO-space interrupt (GINTSTS_NPTXFEMP, enabled by the vendor in
+   write_fifo) remains unhooked - the vendor's per-packet refill trigger.
+4. The 56-byte stop is consistent with: the arm happened, a packet or two
+   left, then the feeding gated forever (DTXFSTS or the pass cadence).
+
+No regression: the pump is dormant without an `oem xfer`; the engine's
+collections keep working on v222.
+
+
+### Entry 046 addendum 18 - the PC instrument: 12 boots, stationary PCs (21:20)
+
+v224 added LAST_IRQ_PC (the interrupted PC of the most recent IRQ, stored at
+the IRQ's top, printed by the 256-beat re-stamp as "PC:<16 hex>"). v226 added
+the VFS static's identity probes (VA at init, VB at the read site) and the 'N'
+probe on the with_vfs None branch.
+
+The 12 most recent v226 collections (20:53-21:0x) all show the same shape:
+within one boot the PC line is printed 2-6 times and is EXACTLY CONSTANT;
+across boots every value is different (0x1BED1D4, 0x1C080E8, 0x1BEACB0,
+0x1BEAE88, 0x1BEADE4 x3, 0x1BEAE48, 0x1BED41C, 0x1BEAE04, 0x1C08574, ...).
+Mapped with base 0x1660000 (the image load; NOT 0x480000 - the old pc_lookup
+base was wrong), the values land in elf 0x58ACB0..0x5A8574. That is the
+blackbox/print module and its neighbours: 10 of 12 values sit within ~10KB
+of text_byte itself (0x58ADE4..0x58AE94).
+
+Disassembly of the two repeated stops:
+- 0x58AE04 (text_byte+0x20) = the cbnz of the LL/SC retry loop of the
+  inlined watchdog fetch_add (ldxr/add/stxr/cbnz at 58adf8..58ae04).
+- 0x58AE88 (text_byte+0xa4) = the final ring append store (strb to
+  0x348d000c+size, then size+1, then ret at 58ae94).
+Both are "about to execute" points: the thread never advances past them.
+
+Reading: a stationary thread whose stop point varies per boot, always in or
+beside the console/print path. The VA==VB result (same static address
+0x36F7CA0 both sides) rules out a duplicate-static bug, and no 'N' in the
+trail means the with_vfs None branch was never taken after the read wipe, and
+no 'l' means the blocking spin::Mutex acquire was never reached from the read
+- consistent with the freeze sitting inside the console writes around the
+event() call, not in the VFS lock.
+
+Open candidates (next session):
+1. The D-cache-off LL/SC pathology: the ANE runs with SCTLR.C=0; if the
+   exclusive monitor does not complete for normal memory with the cache
+   off, stxr fails forever. But then every early spinlock would hang too,
+   and the boot works up to launchd - so if real, it must be timing-window
+   specific (e.g. only after the timer IRQ starts clearing the monitor
+   every tick, with the IRQ itself storing to the same cacheline granule).
+2. A stalled store to the ring/SRAM on the final strb (the +0xa4 sample).
+3. Distinguish "stationary" from "slow": print a second PC line right at
+   the IRQ exit if the same value repeats (cheap, no new state).
+
+Next experiments (cheap, no new asm):
+- Wider PC histogram: keep the 256-beat print in more boots; chart the
+  per-boot constant values against the boot's other features (warm/cold,
+  USB state) to find the timing variable.
+- v227 candidate: replace ProgressWatchdog::note()'s fetch_add with a plain
+  load/store (single-core; the counter is only compared for inequality) to
+  remove the LL/SC loop from the console path entirely. If the freeze then
+  moves elsewhere, the atomic theory dies with one build; if it vanishes,
+  the console hot path is healed.
+
+Also tonight: v223 added the 'e' probe (after the event, before with_vfs);
+v225 added the 'l'/'L' probes around the blocking spin::Mutex acquire and
+blackbox::step_probe as a shared helper; v226 added 'B' after the VFS
+assignment, VA/VB address probes and the 'N' None-branch probe.

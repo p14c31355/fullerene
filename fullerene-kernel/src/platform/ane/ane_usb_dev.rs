@@ -88,6 +88,8 @@ const GRSTCTL_RXFFLSH: u32 = 1 << 4;
 const GRSTCTL_TXFFLSH: u32 = 1 << 5;
 /// TXFNUM = 0x10 means "all TX FIFOs" (gadget.c flushes use it).
 const GRSTCTL_TXFNUM_ALL: u32 = 0x10 << 6;
+/// GRSTCTL bit 31: AHB idle (1 = idle). Flushes must wait for this.
+const GRSTCTL_AHBIDLE: u32 = 1 << 31;
 
 // ---- GINTSTS / GINTMSK bits ------------------------------------------------
 
@@ -145,6 +147,11 @@ const DCFG_DEVADDR_MASK: u32 = 0x7f << 4;
 // fastboot protocol class - with the pair of bulk endpoints the protocol
 // uses. The VID:PID mirrors the LK's fastboot ids (18d1:d00d, measured from
 // the host journal) so the host tooling finds it without new rules.
+//
+// ANE_ADB_PROTOCOL flips the protocol byte to 0x01 (the ADB class) so a host
+// `adb` claims the interface and sends its CNXN over EP1, where adb_dispatch
+// answers. Measured open question: whether the fastboot client still matches
+// the interface with 0x01 - our own tools (pyusb/xfer/adbtest) do not care.
 
 const DEV_DESC: [u8; 18] = [
     18, 0x01, // bLength, DEVICE
@@ -158,13 +165,46 @@ const DEV_DESC: [u8; 18] = [
     1, // bNumConfigurations
 ];
 
+#[cfg(fullerene_ane_adb_protocol)]
+const IFACE_PROTOCOL: u8 = 0x01;
+#[cfg(not(fullerene_ane_adb_protocol))]
+const IFACE_PROTOCOL: u8 = 0x03;
+
 const CFG_DESC: [u8; 32] = [
     // configuration
-    9, 0x02, 32, 0x00, 1, 1, 0, 0x80, 50, // bus powered, 100 mA
+    9,
+    0x02,
+    32,
+    0x00,
+    1,
+    1,
+    0,
+    0x80,
+    50, // bus powered, 100 mA
     // interface: fastboot (class 0xff, subclass 0x42, protocol 0x03)
-    9, 0x04, 0, 0, 2, 0xff, 0x42, 0x03, 0, // endpoint IN, bulk, 512
-    7, 0x05, 0x81, 0x02, 0x00, 0x02, 0, // endpoint OUT, bulk, 512
-    7, 0x05, 0x01, 0x02, 0x00, 0x02, 0,
+    9,
+    0x04,
+    0,
+    0,
+    2,
+    0xff,
+    0x42,
+    IFACE_PROTOCOL,
+    0, // endpoint IN, bulk, 512
+    7,
+    0x05,
+    0x81,
+    0x02,
+    0x00,
+    0x02,
+    0, // endpoint OUT, bulk, 512
+    7,
+    0x05,
+    0x01,
+    0x02,
+    0x00,
+    0x02,
+    0,
 ];
 
 const STR_LANG: [u8; 4] = [4, 0x03, 0x09, 0x04];
@@ -189,6 +229,17 @@ const STR_SER: [u8; 34] = [
 static mut SETUP_BUF: [u8; 8] = [0; 8];
 /// True once the host has issued SET_CONFIGURATION with a non-zero value.
 static mut CONFIGURED: bool = false;
+/// v205: sticky "the host once configured us with the REAL config (1)".
+/// The self-heal must never fire on a boot that ever reached config 1 -
+/// the host's driver-rebind dance (SET_CONFIG(0) then (1) again) opens a
+/// `config_value == 0` window minutes into a perfectly healthy boot, and
+/// the v203 gate mis-fired there (fresh re-enumeration at +2 min broke a
+/// collection with ENODEV).
+static mut CONFIG_WAS_1: bool = false;
+/// v202: the last SET_CONFIGURATION value. 1 = the real configuration;
+/// anything else (2+, from a garbled bConfigurationValue) or 0 (never
+/// configured) marks an enumeration the self-heal retry should redo.
+static mut CONFIG_VALUE: u8 = 0;
 /// True while EP0 is armed to receive a SETUP; the service pass re-arms it
 /// whenever the core consumed the previous one (the DWC2 disables the OUT
 /// endpoint after each setup stage, measured on the vendor stack).
@@ -200,6 +251,14 @@ static mut SETUP_ARMED: bool = false;
 /// setup slot late - every control answer came back as the previous
 /// request's, which is exactly the broken enumeration of v49/v52.
 static mut SETUP_BYTES_READY: bool = false;
+/// v198: true only between an RX-pop storing THIS setup's bytes and its
+/// answering (or a bus-reset wipe). The old inline/belt answering could
+/// fire on BYTES_READY while SETUP_BUF still held the PREVIOUS setup's
+/// bytes (this core can surface the DOEPINT0.SETUP latch before the RX
+/// entry is readable), which served the previous request's answer to the
+/// new request - the observed one-request-behind "Љ" corruption. The
+/// answering site is now single and gated on this flag.
+static mut SETUP_BYTES_FRESH: bool = false;
 static mut SETUP_HANDLED: bool = false;
 /// True from the moment a SETUP was answered until its control transfer
 /// finishes (the data phase plus the status phase). The auto re-arm of the
@@ -225,9 +284,128 @@ static mut DL_LEN: usize = 0;
 static mut DL_T0: u64 = 0;
 /// One-time per boot: the first EP1 reply sweeps the core's stale TX FIFO.
 static mut SWEPT_FIRST_REPLY: bool = false;
+
+/// v165: byte count of the most recent EP1 IN reply, surfaced to the tick
+/// instrument (S4) together with the live FIFO free-word count. A multi-
+/// packet reply that wedges in the core shows as a free count stuck below
+/// depth; a healthy transfer drains back to depth as the host reads.
+static LAST_SEND_N: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// (last reply byte count << 32) | (FIFO free words << 16): read every tick
+/// by the S4 instrument.
+pub fn last_send_state() -> u64 {
+    let n = LAST_SEND_N.load(core::sync::atomic::Ordering::Relaxed) as u64;
+    let free = (unsafe { rd(DTXFSTS1) } & 0xffff) as u64;
+    (n << 32) | (free << 16)
+}
 /// The paced `oem log` stream: one INFO line per service pass.
 static mut LOG_ACTIVE: bool = false;
 static mut LOG_CURSOR: usize = 0;
+
+// ---- v220: the `oem xfer` bulk stream (vendor-pattern pump) ----------------
+// The vendor gadget.c (drivers/usb/dwc2/gadget.c, s3c_hsotg_write_fifo)
+// writes AT MOST 512 bytes per call into the non-periodic TX FIFO and says
+// why: "requests of >512 cause the endpoint to get stuck with a fragment of
+// the end of the transfer in it" (gadget.c:401-407). Transfers are armed
+// once (PKTCNT = ceil(size/MPS)) and the remaining bytes are fed from the
+// IN-complete path as FIFO space frees - so this stream keeps cursors and
+// is advanced from service() every pass: arm a bounded window, feed <=512 B
+// chunks while DTXFSTS advertises room, re-arm only after the previous
+// window is fully fed and EPENA has cleared (a DIEPTSIZ write while armed
+// is silently dropped - the EP0 lesson).
+
+/// Stream on/off.
+static mut XFER_ON: bool = false;
+/// Feed cursor: the next byte to hand the FIFO.
+static mut XFER_FEED: usize = 0;
+/// End of the whole command's range.
+static mut XFER_END: usize = 0;
+/// End of the currently armed window (a new arm happens when FEED reaches it).
+static mut XFER_WIN_END: usize = 0;
+
+/// Advance the bulk xfer stream (statics above). Safe to call every pass.
+pub fn xfer_pump() {
+    if !unsafe { core::ptr::addr_of!(XFER_ON).read() } {
+        return;
+    }
+    // 1. Arm the next window when the current one is fully fed. Skip while
+    //    EPENA is set (the in-flight window has not completed); the caller's
+    //    next pass retries - never write DIEPTSIZ while armed.
+    let feed = unsafe { core::ptr::addr_of!(XFER_FEED).read() };
+    let end = unsafe { core::ptr::addr_of!(XFER_END).read() };
+    let win_end = unsafe { core::ptr::addr_of!(XFER_WIN_END).read() };
+    if feed >= win_end && feed < end && (rd(DIEPCTL1) & EPCTL_EPENA) == 0 {
+        let win = core::cmp::min(end - feed, 0x1_0000);
+        let pktcnt = ((win + BULK_MPS as usize - 1) / BULK_MPS as usize) as u32;
+        wr(
+            DIEPTSIZ1,
+            (1 << 29) | (pktcnt << 19) | ((win & 0x7ffff) as u32),
+        );
+        wr(
+            DIEPCTL1,
+            (rd(DIEPCTL1) & !EPCTL_SNAK) | EPCTL_EPENA | EPCTL_CNAK | EPCTL_USBACTEP,
+        );
+        unsafe {
+            core::ptr::addr_of_mut!(XFER_WIN_END).write(feed + win);
+        }
+    }
+    // 2. Feed <=512 B chunks while the FIFO advertises room (bounded per
+    //    pass so the pump cannot monopolise the IRQ). v221: DTXFSTS is not
+    //    fully trustworthy on this bus - a stale LOW reading would starve
+    //    the wire and hang the host's read (measured: header out, payload
+    //    stalled). Hedge with a second read after a short spin and take
+    //    the larger; a persistent zero marks "XF: STALL" for forensics.
+    let mut k = 0u32;
+    while k < 16 {
+        let feed = unsafe { core::ptr::addr_of!(XFER_FEED).read() };
+        let win_end = unsafe { core::ptr::addr_of!(XFER_WIN_END).read() };
+        if feed >= win_end {
+            break;
+        }
+        let mut free = (rd(DTXFSTS1) & 0xffff) as usize * 4;
+        if free < 512 {
+            for _ in 0..64 {
+                core::hint::spin_loop();
+            }
+            let free2 = (rd(DTXFSTS1) & 0xffff) as usize * 4;
+            if free2 > free {
+                free = free2;
+            }
+        }
+        if free < 512 {
+            crate::blackbox::text_puts("XF: STALL\n");
+            break;
+        }
+        let chunk = core::cmp::min(win_end - feed, 512);
+        let mut i = 0;
+        while i < chunk {
+            let mut word = 0u32;
+            for j in 0..4 {
+                if i + j < chunk {
+                    word |= (unsafe { ptr::read_volatile((feed + i + j) as *const u8) } as u32)
+                        << (8 * j);
+                }
+            }
+            unsafe {
+                ptr::write_volatile((USB_CORE_BASE + EPFIFO1) as *mut u32, word);
+            }
+            i += 4;
+        }
+        unsafe {
+            core::ptr::addr_of_mut!(XFER_FEED).write(feed + chunk);
+        }
+        k += 1;
+    }
+    // 3. All bytes fed: the wire drains the remainder by itself.
+    let feed = unsafe { core::ptr::addr_of!(XFER_FEED).read() };
+    let end = unsafe { core::ptr::addr_of!(XFER_END).read() };
+    if feed >= end {
+        unsafe {
+            core::ptr::addr_of_mut!(XFER_ON).write(false);
+        }
+        crate::blackbox::text_puts("XF: DONE\n");
+    }
+}
 static mut LOG_LINES: u32 = 0;
 /// The frozen end of the stream window (this boot's log length when the
 /// command arrived). Re-reading it live would make the stream chase the
@@ -259,6 +437,10 @@ static mut DBG_CMD_HEAD: u64 = 0;
 static mut LK_SNAP: [u32; 6] = [0; 6];
 /// The dedicated-FIFO scan result at init (informational; 0 = none found).
 static mut EP1_TX_IDX: u32 = 0;
+/// v206: how many times ep0_send found EPENA still set (bounded wait
+/// exhausted). A nonzero value in the UD8-era diag means the stale-TSIZ
+/// class was live on this boot.
+static mut DBG_EPENA_STUCK: u32 = 0;
 
 /// A live snapshot of the fastboot responder, for the on-screen strip.
 pub struct FbDiag {
@@ -338,6 +520,7 @@ fn arm_setup_receive() {
     unsafe {
         SETUP_ARMED = true;
         SETUP_BYTES_READY = false;
+        SETUP_BYTES_FRESH = false;
         SETUP_HANDLED = false;
     }
 }
@@ -371,6 +554,31 @@ fn ep0_send(data: &[u8]) {
     unsafe {
         TRANSACTION_BUSY = true;
         IN_WAS_DATA = n > 0;
+    }
+    // v206: never write TSIZ while a transfer is still armed. While EPENA
+    // reads 1 the core ignores TSIZ/EPENA writes - the new xfersize is
+    // silently dropped and the OLD size drives the packet (stale-size
+    // responses, a leading edge of the "one request behind" class).
+    // v210: the wait is SHORT (0x400): a healthy completion clears EPENA
+    // in microseconds, and the old 0x2_0000 bound cost SECONDS of slow-bus
+    // MMIO reads - long enough to be the -110 timeout itself when the
+    // endpoint was genuinely stuck. A stuck EPENA is force-disabled
+    // immediately instead.
+    let mut spins = 0u32;
+    while (rd(DIEPCTL0) & EPCTL_EPENA) != 0 && spins < 0x400 {
+        spins += 1;
+    }
+    if spins >= 0x400 {
+        let c = rd(DIEPCTL0) | EPCTL_EPENA | EPCTL_EPDIS;
+        wr(DIEPCTL0, c);
+        let mut s2 = 0u32;
+        while (rd(DIEPCTL0) & EPCTL_EPENA) != 0 && s2 < 0x400 {
+            s2 += 1;
+        }
+        crate::blackbox::text_puts("WD: EP0 EPENA\n");
+        unsafe {
+            DBG_EPENA_STUCK = DBG_EPENA_STUCK.wrapping_add(1);
+        }
     }
     wr(DIEPTSIZ0, (1 << 19) | ((n & 0x7f) as u32));
     wr(
@@ -406,6 +614,8 @@ fn handle_setup(log: fn(&str, u64)) {
     let wlength = unsafe { u16::from_le_bytes([SETUP_BUF[6], SETUP_BUF[7]]) };
     let kind = bmrt & 0x60;
 
+    // v198 forensic: one bounded ring line per answered request.
+    trace_request(breq, wvalue, wlength);
     log("ud: req=", ((kind as u64) << 8) | breq as u64);
     log("ud: wv=", wvalue as u64);
 
@@ -449,7 +659,13 @@ fn handle_setup(log: fn(&str, u64)) {
         }
         0x09 => {
             // SET_CONFIGURATION
-            unsafe { CONFIGURED = wvalue != 0 };
+            unsafe {
+                CONFIGURED = wvalue != 0;
+                CONFIG_VALUE = (wvalue & 0xff) as u8;
+                if wvalue == 1 {
+                    CONFIG_WAS_1 = true;
+                }
+            }
             if wvalue != 0 {
                 // Activate the bulk pair only now, like a gadget driver's
                 // set_config: before this the host never touches EP1, and a
@@ -479,7 +695,7 @@ fn handle_setup(log: fn(&str, u64)) {
     }
 }
 
-/// Reset handling: back to address 0 and re-arm the SETUP receive.
+/// Reset handling: back to address 0, void the EP0 state machine, re-arm.
 fn handle_reset(log: fn(&str, u64)) {
     log("ud: usbreset=", 1);
     // A bus reset voids any fastboot session: drop a half-received
@@ -491,6 +707,47 @@ fn handle_reset(log: fn(&str, u64)) {
         core::ptr::addr_of_mut!(DL_LEN).write(0);
         core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
     }
+    // v159: a bus reset also voids the control-transfer state machine. If
+    // the boot thread froze mid-enumeration, TRANSACTION_BUSY could stay
+    // latched forever, which blocks the SETUP re-arm gate in service() and
+    // leaves the device unable to answer descriptor reads (the host then
+    // retries port resets forever: -110 / -62 storms). The vendor's reset
+    // path resets its pcd state the same way; clear every latch here.
+    unsafe {
+        core::ptr::addr_of_mut!(TRANSACTION_BUSY).write(false);
+        core::ptr::addr_of_mut!(SETUP_HANDLED).write(false);
+        core::ptr::addr_of_mut!(SETUP_BYTES_READY).write(false);
+        core::ptr::addr_of_mut!(SETUP_BYTES_FRESH).write(false);
+        core::ptr::addr_of_mut!(SETUP_ARMED).write(false);
+    }
+    // Ring marker (the pump's log callback is a no-op, so speak directly):
+    // photo-visible proof that port resets are reaching this handler.
+    crate::blackbox::text_puts("UD: RST\n");
+    super::ane_fb::event(b"UD RST");
+    // v206: flush the FIFOs at every bus reset. Residue words from an
+    // aborted/retried control transfer survived the D+-only reconnects
+    // (the self-heal's redraws kept drawing the same bad hand), and a
+    // stale leading word is exactly the [09 02 20 00 | 09 02 20 00 | 01]
+    // config-header signature read from /sys. The vendor's reset path
+    // starts from a clean FIFO; ours did not. Wait for AHB idle, flush
+    // Tx (all numbers) then Rx, bounded so a stuck flush cannot hang.
+    {
+        let mut spins = 0u32;
+        while (rd(GRSTCTL) & GRSTCTL_AHBIDLE) == 0 && spins < 0x2_0000 {
+            spins += 1;
+        }
+        wr(GRSTCTL, GRSTCTL_TXFNUM_ALL | GRSTCTL_TXFFLSH);
+        let mut spins = 0u32;
+        while (rd(GRSTCTL) & GRSTCTL_TXFFLSH) != 0 && spins < 0x2_0000 {
+            spins += 1;
+        }
+        wr(GRSTCTL, GRSTCTL_RXFFLSH);
+        let mut spins = 0u32;
+        while (rd(GRSTCTL) & GRSTCTL_RXFFLSH) != 0 && spins < 0x2_0000 {
+            spins += 1;
+        }
+    }
+    crate::blackbox::text_puts("UD: FFLUSH\n");
     wr(DCFG, rd(DCFG) & !DCFG_DEVADDR_MASK);
     // Clear any stale endpoint interrupts before re-arming.
     wr(DOEPINT0, 0xffff_ffff);
@@ -522,13 +779,24 @@ fn pop_rx(log: fn(&str, u64)) {
                     SETUP_ARMED = false;
                     SETUP_BYTES_READY = true;
                 }
+                SETUP_SEEN.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                 log("ud: setupbcnt=", bcnt as u64);
-                // Answer the moment the bytes exist. The vendor computes its
-                // answer around the SETUP interrupt (dwc_otg handle_ep0 ->
-                // pcd_setup, fed by the RX path's stored packet); doing it
-                // here keeps no dependency on any later status word.
+                // Answer the moment the bytes exist. v200: the v198 single-
+                // site experiment (answer only from service()'s tail, gated
+                // on a per-setup FRESH flag) produced 2/2 hard enumeration
+                // failures on hardware, so the proven v197 shape is back.
                 if unsafe { !SETUP_HANDLED } {
                     unsafe { SETUP_HANDLED = true };
+                    // v204: own the setup handshake when we answer. Consume
+                    // the DOEPINT0.SETUP latch and CNAK here, so the belt in
+                    // service_ep0 cannot re-answer the SAME setup when a
+                    // stale XFERCOMPL clears HANDLED later in the same pass -
+                    // that double push staged two copies of one response in
+                    // the EP0 FIFO, and the surplus surfaced as the next
+                    // read's truncated/corrupted data ([09 02 20 00 | 09 02
+                    // 20 00 | 01] in the host's descriptor dump).
+                    wr(DOEPINT0, EPINT_SETUP);
+                    wr(DOEPCTL0, rd(DOEPCTL0) | EPCTL_CNAK);
                     handle_setup(log);
                 }
             }
@@ -544,6 +812,7 @@ fn pop_rx(log: fn(&str, u64)) {
                     // The OUT transfer boundary is the command terminator:
                     // the real fastboot client sends no NUL byte after the
                     // command, so dispatch here (not on a NUL).
+                    super::ane_fb::event(b"EP1 DN");
                     fb_poll(log);
                 } else if ep == 1 {
                     // The fastboot command stream on EP1 OUT. The RX FIFO is
@@ -602,9 +871,146 @@ fn pop_rx(log: fn(&str, u64)) {
     }
 }
 
+/// v184: EP1 diagnostics for the live screen instruments: the IN-endpoint
+/// control register (EPENA bit 31 tells whether a transfer is armed or
+/// stuck) and the TX FIFO free-words status. Photographed while host reads
+/// fail with EIO, this pins down which side of the endpoint is wedged.
+///
+/// v186: reading the DWC2 registers before the controller is up turns out
+/// to disturb enumeration (v184/v185 boots never enumerated; v182 with no
+/// such reads lived 30 min). Gate all such reads behind USB_ENUMERATED.
+static mut USB_ENUMERATED: bool = false;
+
+pub fn usb_enumerated() -> bool {
+    unsafe { core::ptr::addr_of!(USB_ENUMERATED).read() }
+}
+
+/// v199: the tick count when the boot attached (0 = not yet). The timer-IRQ
+/// sentinel panics a boot whose enumeration never gets configured.
+pub static ATTACH_BEAT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// v203: total SETUP packets received this boot. The self-heal uses this as
+/// "the host has talked to us" evidence - no attach-beat series dependency.
+pub static SETUP_SEEN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+pub fn setups_seen() -> u32 {
+    SETUP_SEEN.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// v199: whether the host completed SET_CONFIGURATION for this boot.
+pub fn usb_configured() -> bool {
+    unsafe { core::ptr::addr_of!(CONFIGURED).read() }
+}
+
+/// v202: the SET_CONFIGURATION value seen last (1 = real config).
+pub fn usb_config_value() -> u8 {
+    unsafe { core::ptr::addr_of!(CONFIG_VALUE).read() }
+}
+
+/// v205: true once the host configured us with value 1 (healthy boot).
+pub fn usb_config_was_1() -> bool {
+    unsafe { core::ptr::addr_of!(CONFIG_WAS_1).read() }
+}
+
+/// v207: clean the EP0 machinery right before the deferred attach. The
+/// first enumeration's answers inherit whatever endpoint state an earlier
+/// era left behind (EPENA latched -> the first TSIZ writes get dropped ->
+/// the -110/-71 first-read dance seen on every boot's first attempt).
+/// Called from usb_attach() while the device is still soft-disconnected,
+/// so nothing can be in flight.
+pub fn prepare_attach() {
+    // Hard-clear any armed transfer on EP0 (both directions).
+    let c = rd(DIEPCTL0);
+    if c & EPCTL_EPENA != 0 {
+        wr(DIEPCTL0, c | EPCTL_EPENA | EPCTL_EPDIS);
+        let mut s = 0u32;
+        while (rd(DIEPCTL0) & EPCTL_EPENA) != 0 && s < 0x2_0000 {
+            s += 1;
+        }
+    }
+    let c = rd(DOEPCTL0);
+    if c & EPCTL_EPENA != 0 {
+        wr(DOEPCTL0, c | EPCTL_EPENA | EPCTL_EPDIS);
+        let mut s = 0u32;
+        while (rd(DOEPCTL0) & EPCTL_EPENA) != 0 && s < 0x2_0000 {
+            s += 1;
+        }
+    }
+    // Flush the FIFOs - with the device off the bus this is the safest
+    // moment for it.
+    {
+        let mut s = 0u32;
+        while (rd(GRSTCTL) & GRSTCTL_AHBIDLE) == 0 && s < 0x2_0000 {
+            s += 1;
+        }
+        wr(GRSTCTL, GRSTCTL_TXFNUM_ALL | GRSTCTL_TXFFLSH);
+        let mut s = 0u32;
+        while (rd(GRSTCTL) & GRSTCTL_TXFFLSH) != 0 && s < 0x2_0000 {
+            s += 1;
+        }
+        wr(GRSTCTL, GRSTCTL_RXFFLSH);
+        let mut s = 0u32;
+        while (rd(GRSTCTL) & GRSTCTL_RXFFLSH) != 0 && s < 0x2_0000 {
+            s += 1;
+        }
+    }
+    // Clear stale endpoint interrupts, reset the transfer latches and
+    // re-arm the setup receiver so the first SETUP after attach lands in
+    // a primed machine.
+    wr(DOEPINT0, 0xffff_ffff);
+    wr(DIEPINT0, 0xffff_ffff);
+    unsafe {
+        core::ptr::addr_of_mut!(TRANSACTION_BUSY).write(false);
+        core::ptr::addr_of_mut!(SETUP_HANDLED).write(false);
+        core::ptr::addr_of_mut!(SETUP_BYTES_READY).write(false);
+        core::ptr::addr_of_mut!(SETUP_BYTES_FRESH).write(false);
+        core::ptr::addr_of_mut!(SETUP_ARMED).write(false);
+    }
+    arm_setup_receive();
+    crate::blackbox::text_puts("UD: PREP\n");
+}
+
+/// v202 self-heal: drop the D+ pull-up so the host sees a disconnect.
+pub fn usb_reconnect_begin() {
+    wr(DCTL, rd(DCTL) | 0x2);
+}
+
+/// v202 self-heal: re-attach; the host enumerates afresh.
+pub fn usb_reconnect_end() {
+    wr(DCTL, rd(DCTL) & !0x2);
+}
+
+pub fn ep1_diag() -> u64 {
+    ((rd(DIEPCTL1) as u64) << 32) | (rd(DTXFSTS1) as u64)
+}
+
 /// Send `data` on the EP1 bulk IN endpoint (the fastboot response path).
 fn ep1_send(data: &[u8]) {
-    let n = data.len();
+    // v217: shared implementation - the pointer form lets the `oem xfer r`
+    // stream arm ONE transfer per window straight from the source RAM (no
+    // intermediate buffer). The v218 windowed fill makes long transfers safe.
+    let _ = ep1_send_ptr(data.as_ptr() as usize, data.len());
+}
+
+/// v217: send `n` bytes straight from `src` (raw address). Returns the
+/// bytes actually handed to the FIFO (v218: capped per call - see below).
+fn ep1_send_ptr(src: usize, n: usize) -> usize {
+    // v218: decide how much this call transfers BEFORE arming. Small sends
+    // (<= one packet: every control-style reply) keep the proven blind
+    // path. Larger sends read DTXFSTS ONCE, capped at 12 KiB (< the
+    // measured 16 KiB depth): the register is not trustworthy on this bus
+    // (the v176 note), and a fill loop that RE-reads and keeps writing can
+    // push into a full FIFO - the AHB write then stalls forever (measured
+    // on v217's 128 KiB arm: the header went out, then a 4-minute freeze).
+    // A single read cannot overrun by more than one stale headroom
+    // reading, and every caller arms exactly what this returns.
+    let take = if n <= 512 {
+        n
+    } else {
+        let free_words = (rd(DTXFSTS1) & 0xffff) as usize;
+        core::cmp::min(n, core::cmp::min(free_words * 4, 0x3000))
+    };
+    let n = take;
     // Send the padded word count so no stale bytes stay in the FIFO (a
     // leftover word used to surface as junk on a later reply). The host
     // reads C strings, so the trailing NULs are harmless.
@@ -622,13 +1028,42 @@ fn ep1_send(data: &[u8]) {
     unsafe {
         if !core::ptr::addr_of!(SWEPT_FIRST_REPLY).read() {
             core::ptr::addr_of_mut!(SWEPT_FIRST_REPLY).write(true);
+            super::ane_fb::event(b"SENT1");
             let free = ((rd(DTXFSTS1) & 0xffff) as usize) * 4;
             let depth = ((rd(DPTXFSIZ1) >> 16) as usize) * 4;
             let stale = depth.saturating_sub(free);
-            if stale > 0 && stale < 0x7_0000 {
-                padded += stale;
-            }
+            // v161 marker: the sweep's inputs. If the reply never reaches
+            // the host, this line (photo-read from the panel tail, or the
+            // next piggyback) separates an inaccurate free-read from a
+            // truly stale FIFO.
+            crate::blackbox::text_puts("TX0:");
+            ring_hex8(free as u32);
+            crate::blackbox::text_byte(b',');
+            ring_hex8(depth as u32);
+            crate::blackbox::text_byte(b',');
+            ring_hex8(stale as u32);
+            crate::blackbox::text_puts(" S:");
+            ring_hex8(padded as u32);
+            crate::blackbox::text_byte(b'\n');
+            // v172: do NOT extend the transfer by `stale`. The FIFO really
+            // does hold loader leftovers ahead of our reply, but a transfer
+            // sized beyond what is present wedges EP1 forever (the comment
+            // above predicted it: "asking for more than is present once
+            // wedged the endpoint"). Observed consequence: the host's very
+            // first read after a boot returns EIO - the first reply of
+            // every boot was the casualty, which is exactly why the CNXN
+            // ring piggyback and the `oem xfer` streams never arrived.
+            // Every host parser already scans for its own header ("OKAY",
+            // the ADB magic) and skips any stale prefix, so the stale bytes
+            // can simply flow out ahead of the payload on the first reply.
         }
+    }
+    // v216: never arm on top of an active EP1 transfer. The stream callers
+    // re-enter per chunk, and arming over a pending one drops the new arm
+    // (the same class as the EP0 EPENA issue). Bounded.
+    let mut w = 0u32;
+    while (rd(DIEPCTL1) & EPCTL_EPENA) != 0 && w < 0x2_0000 {
+        w += 1;
     }
     // DIEPTSIZ, exactly as the vendor gadget.c programs it (primary source:
     // hi6250 gadget.c:584-614): MC(1) for every non-EP0 IN endpoint,
@@ -644,12 +1079,21 @@ fn ep1_send(data: &[u8]) {
         DIEPCTL1,
         (rd(DIEPCTL1) & !EPCTL_SNAK) | EPCTL_EPENA | EPCTL_CNAK | EPCTL_USBACTEP,
     );
+    // v216: gate every FIFO write on the advertised free space. The old
+    // blind fill wrote all `n` bytes regardless of room; replies larger
+    // than the TX FIFO's depth overran it and wedged EP1 forever (the v172
+    // lesson - the oem-xfer streams were the casualty: the CNXN piggyback
+    // fit, so collections lived while every big read died). DTXFSTS1
+    // counts free words (the vendor gadget.c "can_write"). Bounded: a FIFO
+    // that never drains truncates the reply instead of hanging the IRQ.
+    // v218: fill exactly the window decided above - no re-reads, no loop.
     let mut i = 0;
     while i < n {
         let mut word = 0u32;
         for j in 0..4 {
             if i + j < n {
-                word |= (data[i + j] as u32) << (8 * j);
+                word |= (unsafe { ptr::read_volatile((src + i + j) as *const u8) } as u32)
+                    << (8 * j);
             }
         }
         unsafe {
@@ -660,6 +1104,10 @@ fn ep1_send(data: &[u8]) {
     unsafe {
         DBG_FB_REPLY = DBG_FB_REPLY.wrapping_add(1);
     }
+    // v165: expose this reply's real transfer size to the S4 tick instrument.
+    LAST_SEND_N.store(padded as u32, core::sync::atomic::Ordering::Relaxed);
+    // v218: the caller must know exactly what this arm covers.
+    take
 }
 
 /// Trim a command to its first known fastboot verb, skipping any stale
@@ -676,6 +1124,21 @@ fn anchor_verb(raw: &[u8]) -> &[u8] {
         {
             return s;
         }
+    }
+    raw
+}
+
+/// Scan for the ADB header magic ("CNXN") so a frame glued behind stale
+/// loader-session FIFO bytes still decodes. A false anchor is harmless: the
+/// final magic check (`magic == command ^ 0xffff_ffff`) only passes on a
+/// real header, and the length/checksum checks follow.
+fn anchor_adb(raw: &[u8]) -> &[u8] {
+    let mut i = 0;
+    while i + 4 <= raw.len() {
+        if &raw[i..i + 4] == b"CNXN" {
+            return &raw[i..];
+        }
+        i += 1;
     }
     raw
 }
@@ -703,6 +1166,20 @@ fn fmt_okay_hex(value: u64, out: &mut [u8; 32]) -> usize {
     i
 }
 
+/// Dispatch scratch buffers. These live in .bss, not on the interrupt
+/// stack: adb_dispatch runs from the timer IRQ, and the CNXN reply alone
+/// needs 6 KiB (4 KiB out + 2 KiB banner) - more than the boot thread's
+/// remaining stack at the stall depth, which is why the CNXN froze the
+/// world between its entry marker and the magic check (v166). The dispatch
+/// is inherently serialized (one conversation at a time), so sharing one
+/// set of buffers is safe.
+static mut ADB_OUT: [u8; 4096] = [0u8; 4096];
+static mut ADB_BANNER: [u8; 2080] = [0u8; 2080];
+static mut ADB_RUN: [u8; 8192] = [0u8; 8192];
+static mut ADB_LOG_CHUNK: [u8; 2048] = [0u8; 2048];
+static mut ADB_PAYLOAD: [u8; 2049] = [0u8; 2049];
+static mut ADB_LOG_BUF: [u8; 512] = [0u8; 512];
+
 /// Parse a hex offset ("1c00"); stops at the first non-hex byte.
 fn parse_hex(bytes: &[u8]) -> usize {
     let mut v: usize = 0;
@@ -728,6 +1205,193 @@ fn main_log_len() -> usize {
         as usize;
     let cap = crate::blackbox::TEXT_BLOCK_CAP as usize;
     if raw < cap { raw } else { 0 }
+}
+
+/// Minimal ADB wire responder: handshake plus enough of OPEN/write/close to
+/// give a host `adb` a live device. The framing itself lives in
+/// `crate::adb_wire` (pure, host-tested); this is only the plumbing that
+/// drives the module's encoders onto the bulk endpoint.
+fn adb_dispatch(pkt: &crate::adb_wire::Packet<'_>, log: fn(&str, u64)) {
+    let out = unsafe { &mut *core::ptr::addr_of_mut!(ADB_OUT) };
+    match pkt.command {
+        crate::adb_wire::CNXN => {
+            // Ring marker first: a photo (or the piggyback of a later boot)
+            // proves whether this CNXN reached the ADB dispatch at all.
+            crate::blackbox::text_puts("ADB: CNXN\n");
+            super::ane_fb::event(b"ADB CNXN");
+            // Announce version + max payload. The banner is what `adb
+            // devices -l` shows, so it carries the device identity.
+            //
+            // v155 piggyback: the stale-boot responder reliably services the
+            // FIRST conversation only (the CNXN); the follow-up OPEN dies
+            // unanswered, which is why every automated ring pull has come
+            // back 0 bytes. So the CNXN reply's payload itself carries the
+            // banner plus the durable ring tail: the host splits at the
+            // banner's NUL and writes the rest to disk in one conversation.
+            let banner = unsafe { &mut *core::ptr::addr_of_mut!(ADB_BANNER) };
+            super::ane_fb::event(b"BG");
+            let head = b"device::fullerene-ane\0";
+            banner[..head.len()].copy_from_slice(head);
+            let mut blen = head.len();
+            let used = main_log_len();
+            let take = core::cmp::min(used, 2048);
+            let start = used - take;
+            for i in 0..take {
+                banner[blen + i] = unsafe {
+                    ptr::read_volatile(
+                        (crate::blackbox::TEXT_BLOCK_BASE as usize + start + i) as *const u8,
+                    )
+                };
+            }
+            blen += take;
+            super::ane_fb::event(b"RD");
+            if let Some(n) = crate::adb_wire::cnxn_reply(
+                crate::adb_wire::VERSION,
+                crate::adb_wire::MAX_PAYLOAD as u32,
+                &banner[..blen],
+                &mut out[..],
+            ) {
+                super::ane_fb::event(b"RP");
+                super::ane_fb::event(b"SS");
+                // v175: send the reply as paced 512-byte chunks with the same
+                // bounded drain wait as the xfer stream, instead of one big
+                // transfer. Why: the first reply of a boot shares the TX FIFO
+                // with the loader's stale leftovers ([stale][reply]); a single
+                // n-byte transfer then delivers [stale][reply-head] and
+                // truncates the rest (the host's frame parse rejects a header
+                // whose payload is cut -> "cnxn reply: False frames: 0"),
+                // while a stale-aware oversized transfer wedges EP1 (the v172
+                // lesson). Chunking sidesteps both: every transfer stays
+                // small AND the reply bytes end up contiguous right after the
+                // stale prefix, which every host parser skips by design.
+                let full = &out[..n];
+                let mut off = 0usize;
+                while off < full.len() {
+                    let chunk = core::cmp::min(full.len() - off, 512);
+                    ep1_send(&full[off..off + chunk]);
+                    super::ane::watchdog_kick();
+                    let depth_words = ((rd(DPTXFSIZ1) >> 16) & 0xffff) as usize;
+                    let mut spins = 0u32;
+                    while (((rd(DTXFSTS1) & 0xffff) as usize) < depth_words)
+                        && spins < 0x20_0000
+                    {
+                        spins += 1;
+                    }
+                    off += chunk;
+                }
+                log("adb: cnxn sent", n as u64);
+                // v156 cycle magic: the unmanned loop sends CNXN with arg0
+                // 0xC0DE0001. The reply (with the ring) is already drained to
+                // the wire above, so the deliberate panic that follows costs
+                // nothing: the host keeps the ring and the device lands in
+                // the loader's fastboot, where the engine flashes the next
+                // image. One conversation now does collect + reset.
+                //
+                // v160: schedule the reset ~2 s out instead of panicking
+                // immediately - the earlier shape reset the link before the
+                // host's read URB could complete, so the reply was lost in
+                // every attempt. The timer tick fires the delayed panic.
+                if pkt.arg0 == 0xC0DE_0001 {
+                    crate::blackbox::text_puts("ADB: MAGIC\n");
+                    super::ane_fb::event(b"ADB MAGIC");
+                    crate::blackbox::schedule_reset_at(
+                        // v190: was 2 s. The uptime clock runs 1.3-18x real
+                        // and the v189-fixed reply (up to 2093 bytes, sent
+                        // in ~1-2 s paced chunks) needs a full host drain:
+                        // the c17 attempt received only 496 of 2093 bytes
+                        // before the reset cut the link.
+                        // v191: 20 s still cut the c318 drain at 2544/3103
+                        // bytes (the complete CNXN frame WAS there - stale
+                        // 1008 + frame 2095). 50 s of uptime (~25-35 real
+                        // seconds) clears the host's whole 20 s read window.
+                        crate::timer::uptime_us().saturating_add(50_000_000),
+                    );
+                }
+            }
+        }
+        crate::adb_wire::OPEN => {
+            // OPEN's payload is the service string, NUL-terminated.
+            let svc = pkt.payload;
+            let svc = &svc[..svc.iter().position(|&b| b == 0).unwrap_or(svc.len())];
+            let remote: u32 = 1;
+            // One bulk send for the whole OKAY + WRTE + CLSE run: back-to-back
+            // ep1_send calls arm over each other's pending transfers and wedge
+            // the endpoint (same lesson as the xfer stream), and a byte stream
+            // of concatenated frames is exactly what the ADB host parses.
+            let run = unsafe { &mut *core::ptr::addr_of_mut!(ADB_RUN) };
+            let log_chunk = unsafe { &mut *core::ptr::addr_of_mut!(ADB_LOG_CHUNK) };
+            let mut at = 0usize;
+            if let Some(n) =
+                crate::adb_wire::encode(crate::adb_wire::OKAY, pkt.arg0, remote, &[], &mut out[..])
+            {
+                run[at..at + n].copy_from_slice(&out[..n]);
+                at += n;
+            }
+            let text: &[u8] = match svc {
+                b"shell:crash" => {
+                    // The unmanned loop's reset trigger: the v63 panic chain
+                    // lands in the loader's fastboot, where the armed engine
+                    // flashes the next image. This is the ADB twin of the
+                    // fastboot `oem crash` command.
+                    panic!("adb crash: deliberate");
+                }
+                b"shell:log" => {
+                    // Stream the durable ring's tail as one WRTE run: the most
+                    // recent bytes are what a boot post-mortem needs, and a
+                    // single send avoids the arm-over-pending wedge. 2 KiB is
+                    // plenty for the last screens of log.
+                    let base = crate::blackbox::TEXT_BLOCK_BASE;
+                    let cap = crate::blackbox::TEXT_BLOCK_CAP as usize;
+                    let raw =
+                        unsafe { core::ptr::read_volatile((base + 4) as *const u32) } as usize;
+                    let used = if raw < cap { raw } else { 0 };
+                    let take = core::cmp::min(used, 2048);
+                    let start = used - take;
+                    for i in 0..take {
+                        log_chunk[i] = unsafe {
+                            core::ptr::read_volatile((base as usize + start + i) as *const u8)
+                        };
+                    }
+                    &log_chunk[..take]
+                }
+                b"shell:ver" => b"fullerene-ane\r\n",
+                _ => b"fullerene-ane adb up\r\n",
+            };
+            let payload = unsafe { &mut *core::ptr::addr_of_mut!(ADB_PAYLOAD) };
+            if let Some(m) =
+                crate::adb_wire::shell_v2_chunk(crate::adb_wire::SHELL_STDOUT, text, &mut payload[..])
+            {
+                if let Some(n) = crate::adb_wire::encode(
+                    crate::adb_wire::WRTE,
+                    remote,
+                    pkt.arg0,
+                    &payload[..m],
+                    &mut out[..],
+                ) {
+                    run[at..at + n].copy_from_slice(&out[..n]);
+                    at += n;
+                }
+            }
+            if let Some(n) =
+                crate::adb_wire::encode(crate::adb_wire::CLSE, remote, pkt.arg0, &[], &mut out[..])
+            {
+                run[at..at + n].copy_from_slice(&out[..n]);
+                at += n;
+            }
+            if at > 0 {
+                ep1_send(&run[..at]);
+            }
+            log("adb: open", svc.len() as u64);
+        }
+        crate::adb_wire::AUTH => {
+            // No authentication is offered; older adb accepts silence here.
+            log("adb: auth ignored", pkt.payload.len() as u64);
+        }
+        crate::adb_wire::WRTE | crate::adb_wire::CLSE | crate::adb_wire::OKAY => {
+            log("adb: post-open frame", pkt.command as u64);
+        }
+        _ => {}
+    }
 }
 
 /// Fastboot protocol: run when bytes arrived on EP1 OUT. The host's command
@@ -773,6 +1437,59 @@ fn fb_poll(log: fn(&str, u64)) {
     unsafe {
         core::ptr::addr_of_mut!(LOG_ACTIVE).write(false);
     }
+    // ADB wire path: a host `adb` speaks the binary 24-byte framing whose
+    // header contains NUL bytes, so this check runs on the RAW transfer
+    // length before the fastboot NUL-trim below can cut it short. Text
+    // commands fail the frame magic instantly and fall through untouched.
+    if len >= crate::adb_wire::HEADER_BYTES {
+        let raw =
+            unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(FB_CMD) as *const u8, len) };
+        // The RX FIFO can carry loader-session leftovers in front of our
+        // frame (the same glued-prefix defect the text path anchors around).
+        // Decoding the raw buffer made every CNXN fail the magic check and
+        // slide into the fastboot fallback. Anchor on the ADB header magic
+        // first; a false anchor cannot pass the trailing magic check.
+        let anchored = anchor_adb(raw);
+        match crate::adb_wire::decode(anchored) {
+            Ok(pkt) => {
+                if anchored.len() != raw.len() {
+                    super::ane_fb::event(b"DEC ANCH");
+                }
+                super::ane_fb::event(b"DEC OK");
+                adb_dispatch(&pkt, log);
+                unsafe {
+                    core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
+                }
+                return;
+            }
+            Err(_) => {
+                // Hex clue for the photo ledger: raw length + the first four
+                // bytes (an intact header at offset 0 reads "434E584E").
+                let mut ev = [b' '; 18];
+                ev[0] = b'N';
+                ev[1] = b'G';
+                ev[2] = b' ';
+                let hexd = |v: u8| -> u8 {
+                    if v < 10 {
+                        b'0' + v
+                    } else {
+                        b'A' + v - 10
+                    }
+                };
+                ev[3] = hexd(((len >> 4) & 0xf) as u8);
+                ev[4] = hexd((len & 0xf) as u8);
+                ev[5] = b' ';
+                let mut i = 0;
+                while i < 4 {
+                    let b = if i < len { raw[i] } else { 0 };
+                    ev[6 + i * 2] = hexd(b >> 4);
+                    ev[7 + i * 2] = hexd(b & 0xf);
+                    i += 1;
+                }
+                super::ane_fb::event(&ev);
+            }
+        }
+    }
     // The command ends at the transfer boundary; when the wire carried a
     // NUL too, everything past the first NUL is padding/junk and ignored.
     let mut end = len;
@@ -812,13 +1529,20 @@ fn fb_poll(log: fn(&str, u64)) {
     // platform compile this branch out and fall through to the unknown-
     // command reply below.
     #[cfg(fullerene_aarch64_ane)]
-    if cmd == b"oem log" || cmd == b"oem log full" || cmd.starts_with(b"oem log main") {
+    if cmd == b"oem log"
+        || cmd == b"oem log full"
+        || cmd == b"oem log raw"
+        || cmd.starts_with(b"oem log main")
+    {
         // The durable log as INFO lines, one per service pass. Plain
         // `oem log` streams the last stretch of the fixed copy; `oem log
         // full` the whole fixed copy (7 KiB - the boot's first ~200 lines
         // fill it on this platform). `oem log main [hexoff]` streams the
         // main text block (cap 0xE000) where the later sections (usb /
-        // sd / emmc) actually live.
+        // sd / emmc) actually live. `oem log raw` streams the WHOLE
+        // 0xE000 ring, both sides of `raw` - after the ring wraps, the
+        // pre-wrap content lives in [raw..0xE000) and the plain `main`
+        // stream cannot reach it.
         let mut main = false;
         let mut written = crate::blackbox::fixed_log_len();
         let mut start = 0usize;
@@ -828,6 +1552,10 @@ fn fb_poll(log: fn(&str, u64)) {
             let rest = &cmd[b"oem log main".len()..];
             let off = parse_hex(rest.strip_prefix(b" ").unwrap_or(rest));
             start = off.min(written);
+        } else if cmd == b"oem log raw" {
+            main = true;
+            written = crate::blackbox::TEXT_BLOCK_CAP as usize;
+            start = 0;
         } else if cmd == b"oem log" {
             // Back up ~12 lines from the end of this boot's content: the
             // host reads at its own pace, so the default dump is kept short
@@ -937,6 +1665,176 @@ fn fb_poll(log: fn(&str, u64)) {
         return;
     }
 
+    #[cfg(fullerene_aarch64_ane)]
+    if cmd == b"oem crash" {
+        // Deliberate panic for the BFM/escalation test: exercises the v63
+        // panic -> PMIC reset -> loader path on demand. The bootup-keypoint
+        // write has already stamped this boot, so a crash here must NOT
+        // compound into the loader's failure count.
+        log("fb: crash_req=", 1);
+        panic!("oem crash: deliberate");
+    }
+
+    #[cfg(fullerene_aarch64_ane)]
+    if let Some(args) = cmd.strip_prefix(b"oem scan ") {
+        // `oem scan <lba-hex> <count-hex>`: compact non-zero-word scan.
+        let mut lba = 0u32;
+        let mut count = 0u32;
+        let mut it = args.split(|&b| b == b' ');
+        if let Some(a) = it.next() {
+            lba = parse_hex(a) as u32;
+        }
+        if let Some(b) = it.next() {
+            count = parse_hex(b) as u32;
+        }
+        if count == 0 || count > 256 {
+            ep1_send(b"FAILbad range");
+        } else {
+            log("fb: scan_req=", ((lba as u64) << 32) | count as u64);
+            super::ane_emmc::scan_sectors(lba, count, log);
+            ep1_send(b"OKAYscan");
+        }
+        unsafe {
+            core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
+        }
+        return;
+    }
+
+    #[cfg(fullerene_aarch64_ane)]
+    if cmd.starts_with(b"oem ringsave") {
+        // On-demand full-ring persistence from the command context (see
+        // ane_emmc::persist_all for why it must not run from the IRQ).
+        let (ok, bad) = super::ane_emmc::persist_all(log);
+        log("em: rs_ok=", ok);
+        log("em: rs_bad=", bad);
+        ep1_send(b"OKAYsaved");
+        unsafe {
+            core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
+        }
+        return;
+    }
+
+    #[cfg(fullerene_aarch64_ane)]
+    if let Some(args) = cmd.strip_prefix(b"oem xfer ") {
+        // `oem xfer r <addr-hex> <len-hex>`    - raw RAM bytes
+        // `oem xfer m <lba-hex> <sectors-hex>` - raw eMMC sectors
+        // Reply `OKAY<16-hex-byte-count>` then stream the payload as raw
+        // bulk packets. The host tool reads them directly, which drains tens
+        // of KiB per second instead of one INFO line per service pass.
+        let mut kind = 0u8;
+        let mut arg = 0u64;
+        let mut len = 0u64;
+        let mut it = args.split(|&b| b == b' ');
+        if let Some(k) = it.next() {
+            kind = k.first().copied().unwrap_or(0);
+            if let Some(a) = it.next() {
+                arg = parse_hex(a) as u64;
+            }
+            if let Some(l) = it.next() {
+                len = parse_hex(l) as u64;
+            }
+        }
+        let total: u64 = if kind == b'r' as u8 { len } else { len * 512 };
+        if total == 0 || total > 0x40_0000 || (kind != b'r' as u8 && kind != b'm' as u8) {
+            ep1_send(b"FAILbad xfer");
+        } else {
+            let mut hdr = [0u8; 20];
+            hdr[..4].copy_from_slice(b"OKAY");
+            let hexd = b"0123456789abcdef";
+            let mut v = total;
+            for i in (4..20).rev() {
+                hdr[i] = hexd[(v & 0xf) as usize];
+                v >>= 4;
+            }
+            ep1_send(&hdr);
+            if kind == b'r' as u8 {
+                // v220: vendor-pattern pump stream. Arm bounded windows and
+                // feed <=512 B chunks from service() (a >512 B request into
+                // the non-periodic FIFO is the documented wedge). The pump
+                // feeds the first chunks immediately; the timer-IRQ passes
+                // carry the rest while the host reads.
+                unsafe {
+                    core::ptr::addr_of_mut!(XFER_FEED).write(arg as usize);
+                    core::ptr::addr_of_mut!(XFER_END).write((arg + total) as usize);
+                    core::ptr::addr_of_mut!(XFER_WIN_END).write(arg as usize);
+                    core::ptr::addr_of_mut!(XFER_ON).write(true);
+                }
+                xfer_pump();
+            } else {
+                let mut remain = total;
+                let buf = unsafe { &mut *core::ptr::addr_of_mut!(ADB_LOG_BUF) };
+                while remain > 0 {
+                    let chunk = core::cmp::min(remain, 512) as usize;
+                    let lba = arg + (total - remain) / 512;
+                    if !super::ane_emmc::read_sectors_bytes(lba as u32, 1, &mut buf[..], log) {
+                        break;
+                    }
+                    ep1_send(&buf[..chunk]);
+                    // Keep the loader watchdog fed while the stream holds the CPU.
+                    super::ane::watchdog_kick();
+                    // Wait for the FIFO to drain (the host consumed this chunk's
+                    // transfer) before arming the next one: arming over a pending
+                    // transfer wedges the endpoint (a 112-chunk burst died with
+                    // host Errno 5). Bounded, so a stalled host cannot hang the
+                    // handler forever.
+                    let depth_words = ((rd(DPTXFSIZ1) >> 16) & 0xffff) as usize;
+                    let mut spins = 0u32;
+                    while (((rd(DTXFSTS1) & 0xffff) as usize) < depth_words) && spins < 0x20_0000 {
+                        spins += 1;
+                    }
+                    remain -= chunk as u64;
+                }
+            }
+        }
+        unsafe {
+            core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
+        }
+        return;
+    }
+
+    #[cfg(fullerene_aarch64_ane)]
+    if let Some(args) = cmd.strip_prefix(b"oem dump ") {
+        // `oem dump <lba-hex> <count-hex>`: read sectors and log them as
+        // "em: dd=" hex lines (2 words per line). BFM forensics: misc @
+        // 0x7C000, bootfail_info @ 0x1E8000, oeminfo @ 0x8000.
+        let mut lba: u32 = 0;
+        let mut count: u32 = 0;
+        let mut it = args.split(|&b| b == b' ');
+        if let Some(a) = it.next() {
+            lba = parse_hex(a) as u32;
+        }
+        if let Some(b) = it.next() {
+            count = parse_hex(b) as u32;
+        }
+        if count == 0 || count > 16 {
+            ep1_send(b"FAILbad range");
+        } else {
+            log("fb: dump_req=", ((lba as u64) << 32) | count as u64);
+            super::ane_emmc::dump_sectors(lba, count, log);
+            ep1_send(b"OKAYdump");
+        }
+        unsafe {
+            core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
+        }
+        return;
+    }
+
+    #[cfg(fullerene_aarch64_ane)]
+    if cmd == b"oem udmount" {
+        // On-demand userdata mount: crash-prone on the real 20 GB F2FS
+        // (the v102 boot-time attempt crash-looped), so it never runs in
+        // the boot path - a crash here self-limits, the next boot starts
+        // clean and does not remount.
+        log("fb: udm1=", crate::timer::uptime_us());
+        super::ane_emmc::emmc_userdata_mount(log);
+        log("fb: udm2=", crate::timer::uptime_us());
+        ep1_send(b"OKAYudm");
+        unsafe {
+            core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
+        }
+        return;
+    }
+
     if cmd == b"oem touch" {
         // One plain eMMC sector read from the USB command context (LBA 0):
         // isolates the post-boot read path from the GPT logic.
@@ -998,6 +1896,32 @@ fn fb_poll(log: fn(&str, u64)) {
         let mut gv = [0u8; 32];
         let n = fmt_okay_hex(ok as u64, &mut gv);
         ep1_send(&gv[..n]);
+        unsafe {
+            core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
+        }
+        return;
+    }
+
+    if let Some(part) = cmd.strip_prefix(b"erase:") {
+        let mut nm = 0u64;
+        for &b in part.iter().take(8) {
+            nm = (nm << 8) | b as u64;
+        }
+        log("fb: erase_name=", nm);
+        match super::ane_emmc::find_partition(part, log) {
+            None => ep1_send(b"FAILpartition not found"),
+            Some((first, last)) => {
+                log("fb: erase_fr=", ((first as u64) << 32) | last as u64);
+                let (ok, err) = super::ane_emmc::erase_sectors(first, last, log);
+                log("fb: erase_ok=", ok as u64);
+                log("fb: erase_err=", err as u64);
+                if ok {
+                    ep1_send(b"OKAY");
+                } else {
+                    ep1_send(b"FAILerase error");
+                }
+            }
+        }
         unsafe {
             core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
         }
@@ -1325,6 +2249,11 @@ fn service_ep1(log: fn(&str, u64)) {
         unsafe {
             core::ptr::addr_of_mut!(EP1_IN_IDLE).write(true);
         }
+        // v222: the IN completion is the vendor's refill moment (gadget.c
+        // feeds the remainder of an armed transfer from its completion
+        // path); advance the bulk stream here too.
+        #[cfg(fullerene_aarch64_ane)]
+        xfer_pump();
     }
     let doep = rd(DOEPINT1);
     if doep & EPINT_XFERCOMPL != 0 {
@@ -1446,9 +2375,77 @@ pub fn init(log: fn(&str, u64)) {
     log("ud: armed=", 1);
 }
 
+/// Write one 8-digit uppercase hex value into the durable ring (markers).
+fn ring_hex8(mut v: u32) {
+    let mut buf = [b'0'; 8];
+    for i in (0..8).rev() {
+        let d = (v & 0xf) as u8;
+        buf[i] = if d < 10 { b'0' + d } else { b'A' + d - 10 };
+        v >>= 4;
+    }
+    for b in buf {
+        crate::blackbox::text_byte(b);
+    }
+}
+
+/// v198 forensic: one short ring line per answered control request, from
+/// any context (bounded by the request count; ~20 bytes each). Format:
+/// `ud: q=BBWWWWWW LLLL` = bRequest, wValue, wLength. Readable from the
+/// EP1 ring pull on clean boots and from the eMMC slice persistence on
+/// garbled ones.
+fn trace_request(breq: u8, wvalue: u16, wlength: u16) {
+    crate::blackbox::text_puts("ud: q=");
+    ring_hex8(((breq as u32) << 24) | ((wvalue as u32) << 8));
+    crate::blackbox::text_byte(b' ');
+    ring_hex8(wlength as u32);
+    crate::blackbox::text_byte(b'\n');
+}
+
+/// Durable-ring EP0 state dump (v159): GINTSTS, DOEPCTL0, the latch nibble
+/// (ARMED | BUSY | HANDLED | BYTES_READY) and DOEPTSIZ0 as compact hex,
+/// emitted by the service pass every ~2 s so a photo names a wedged state
+/// without any USB access. Runs on whichever context services; its ring
+/// bytes are excluded from the progress heartbeat because it speaks only
+/// from IRQ context in the stall case.
+fn ep0_state_line() {
+    fn hex8(mut v: u32) {
+        let mut buf = [b'0'; 8];
+        for i in (0..8).rev() {
+            let d = (v & 0xf) as u8;
+            buf[i] = if d < 10 { b'0' + d } else { b'A' + d - 10 };
+            v >>= 4;
+        }
+        for b in buf {
+            crate::blackbox::text_byte(b);
+        }
+    }
+    crate::blackbox::text_puts("UD8:");
+    hex8(rd(GINTSTS));
+    crate::blackbox::text_byte(b',');
+    hex8(rd(DOEPCTL0));
+    crate::blackbox::text_byte(b',');
+    let packed = (unsafe { core::ptr::addr_of!(SETUP_ARMED).read() } as u32)
+        | ((unsafe { core::ptr::addr_of!(TRANSACTION_BUSY).read() } as u32) << 1)
+        | ((unsafe { core::ptr::addr_of!(SETUP_HANDLED).read() } as u32) << 2)
+        | ((unsafe { core::ptr::addr_of!(SETUP_BYTES_READY).read() } as u32) << 3);
+    hex8(packed);
+    crate::blackbox::text_byte(b',');
+    hex8(rd(DOEPTSIZ0));
+    crate::blackbox::text_puts("\n");
+}
+
 /// One service pass over the device interrupts. Cheap enough for the wait
 /// loop's polling cadence (the wait loop already wakes on the timer IRQ).
 pub fn service(log: fn(&str, u64)) {
+    use core::sync::atomic::{AtomicBool, Ordering};
+    // Reentrancy guard (v158): the timer-IRQ pump now runs every ~16 ms, so
+    // it can fire while the boot thread is inside its own service() call.
+    // The pass is a state machine over shared endpoint arming, so a nested
+    // pass would corrupt it. One pass at a time, on whichever context wins.
+    static IN_SERVICE: AtomicBool = AtomicBool::new(false);
+    if IN_SERVICE.swap(true, Ordering::Acquire) {
+        return;
+    }
     // A `download:` that stops receiving (client died mid-transfer) must
     // not eat every later command: abort it after ~15 s without a byte.
     if unsafe { core::ptr::addr_of!(DL_STATE).read() } == 1 {
@@ -1472,6 +2469,11 @@ pub fn service(log: fn(&str, u64)) {
         if sts & GINT_ENUMDONE != 0 {
             wr(GINTSTS, GINT_ENUMDONE);
             log("ud: enumdone=", ((rd(DSTS) >> 1) & 3) as u64);
+            // v186: from here on the USB block is up and safe to poll -
+            // the DS instrument reads its registers only after this.
+            unsafe {
+                core::ptr::addr_of_mut!(USB_ENUMERATED).write(true);
+            }
         }
         if sts & (GINT_RXFLVL | GINT_OEPINT | GINT_IEPINT) != 0 {
             pop_rx(log);
@@ -1479,6 +2481,10 @@ pub fn service(log: fn(&str, u64)) {
             service_ep1(log);
         }
     }
+    // v220: advance the bulk xfer stream every pass (the vendor pattern:
+    // the remaining bytes of an armed transfer are fed as FIFO space frees).
+    #[cfg(fullerene_aarch64_ane)]
+    xfer_pump();
     // The paced `oem log` stream ticks once per service pass, so the host's
     // reads never coalesce into unusable chunks.
     #[cfg(fullerene_aarch64_ane)]
@@ -1493,4 +2499,17 @@ pub fn service(log: fn(&str, u64)) {
     if rd(GINTSTS) & GINT_SOF != 0 {
         wr(GINTSTS, GINT_SOF);
     }
+    // v159 EP0-state visibility: one ring line per ~2 s of service passes.
+    // v191: the v162 every-tick pump multiplied the pass rate ~100x, so the
+    // old 128 gate flooded the durable ring with UD8 lines (the first ring
+    // recovery showed the tail almost entirely UD8 + newline padding, washing
+    // out the boot log). 8192 restores the "rare diagnostic" intent.
+    {
+        use core::sync::atomic::{AtomicU32, Ordering};
+        static PASSES: AtomicU32 = AtomicU32::new(0);
+        if PASSES.fetch_add(1, Ordering::Relaxed) % 8192 == 0 {
+            ep0_state_line();
+        }
+    }
+    IN_SERVICE.store(false, Ordering::Release);
 }

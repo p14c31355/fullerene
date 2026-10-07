@@ -10,7 +10,7 @@ rust-version.workspace = true
 [features]
 esp32 = []
 
-[target.'cfg(not(target_arch = "xtensa"))'.dependencies]
+[target.'cfg(not(any(target_arch = "xtensa", target_arch = "aarch64")))'.dependencies]
 x86_64 = { workspace = true, features = [
   "instructions",
 ] }
@@ -38,6 +38,17 @@ path = "src/lib.rs"
 petroleum = { path = "../petroleum", features = ["std"] }
 
 [target.'cfg(target_arch = "xtensa")'.dependencies]
+lattice = { path = "../lattice" }
+nozzle = { path = "../nozzle" }
+nitrogen = { path = "../nitrogen" }
+genome = { path = "../genome" }
+resonance = { path = "../resonance" }
+spin = { workspace = true, features = ["once", "mutex", "spin_mutex"] }
+log = { workspace = true }
+
+# aarch64 (the ANE desktop port): mirror the xtensa set as the starting
+# point; the compiler lists exactly what else the desktop path needs.
+[target.'cfg(target_arch = "aarch64")'.dependencies]
 lattice = { path = "../lattice" }
 nozzle = { path = "../nozzle" }
 nitrogen = { path = "../nitrogen" }

@@ -176,13 +176,23 @@ pub fn init(gicd_base: usize, gicr_base: usize, usb_irq: Option<u32>) -> bool {
         write32(sgi_base + GICR_ICENABLER1, 0xffff_ffff);
         core::arch::asm!("dsb sy", options(nostack));
 
-        let ppi_timer_bit = 1u32 << TIMER_PPI;
-        write32(
-            sgi_base + GICR_IGROUPR0,
-            read32(sgi_base + GICR_IGROUPR0) | ppi_timer_bit,
-        );
-        write8(sgi_base + GICR_IPRIORITYR0 + TIMER_PPI as usize, 0xa0);
-        write32(sgi_base + GICR_ISENABLER0, ppi_timer_bit);
+        #[cfg(not(fullerene_ane_no_timer))]
+        {
+            let ppi_timer_bit = 1u32 << TIMER_PPI;
+            write32(
+                sgi_base + GICR_IGROUPR0,
+                read32(sgi_base + GICR_IGROUPR0) | ppi_timer_bit,
+            );
+            write8(sgi_base + GICR_IPRIORITYR0 + TIMER_PPI as usize, 0xa0);
+            write32(sgi_base + GICR_ISENABLER0, ppi_timer_bit);
+        }
+        #[cfg(fullerene_ane_no_timer)]
+        {
+            // v153 bisection: deliver no timer PPI at all. If the boot then
+            // passes the point where it used to die at tick zero, the first
+            // timer interrupt / its handler return is the killer. The SP805
+            // goes unfed in this build, so the loader resets it after ~150 s.
+        }
 
         write32(
             gicd_base + GICD_CTLR,

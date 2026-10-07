@@ -306,6 +306,34 @@ const DIAG_ROWS: u32 = 9 * LINE_PITCH;
 /// the durable log both need working machinery; a photo of the screen needs
 /// nothing). Callers paint one line per measured value; a hung boot leaves
 /// the last completed line visible for the photo.
+/// Paint the tail of the durable text ring onto free canvas rows (60..66) so
+/// the uart log stays readable from a photo even when the USB channel is
+/// dead. The ring's used length = the raw cursor at TEXT_BLOCK_BASE + 4
+/// (same guard as the writer: an out-of-range cursor means empty). Called
+/// from the IRQ batch, so the six rows refresh a few times per second.
+pub fn paint_log_tail() {
+    use crate::blackbox::{TEXT_BLOCK_BASE, TEXT_BLOCK_CAP};
+    let cap = TEXT_BLOCK_CAP as usize;
+    let raw = unsafe { core::ptr::read_volatile((TEXT_BLOCK_BASE + 4) as *const u32) } as usize;
+    let used = if raw < cap { raw } else { 0 };
+    let take = 240usize;
+    let start = used.saturating_sub(take);
+    for r in 0..6u32 {
+        let mut buf = [b' '; 40];
+        for (c, slot) in buf.iter_mut().enumerate() {
+            let i = start + (r as usize) * 40 + c;
+            if i < used {
+                let b = unsafe {
+                    core::ptr::read_volatile((TEXT_BLOCK_BASE as usize + i) as *const u8)
+                };
+                *slot = if (0x20..0x7f).contains(&b) { b } else { b'.' };
+            }
+        }
+        paint(60 + r, &buf);
+        flush_row(60 + r);
+    }
+}
+
 pub fn paint(row: u32, text: &[u8]) {
     let canvas: &mut [u32] =
         unsafe { core::slice::from_raw_parts_mut(CANVAS as *mut u32, CANVAS_LEN / 4) };
@@ -321,6 +349,266 @@ pub fn paint(row: u32, text: &[u8]) {
     unsafe {
         crate::blackbox::cache_clean(CANVAS, CANVAS_LEN);
     }
+}
+
+/// Paint a labelled hex value on one line (rows follow `paint`'s convention).
+///
+/// no_std: the digits are formatted by hand. Fixed width (16 digits) keeps
+/// the on-panel string stable between successive frames.
+pub fn paint_hex(row: u32, label: &[u8], value: u64) {
+    let mut buf = [0u8; 48];
+    let mut n = 0;
+    for &b in label {
+        if n < buf.len() {
+            buf[n] = b;
+            n += 1;
+        }
+    }
+    if n < buf.len() {
+        buf[n] = b':';
+        n += 1;
+    }
+    for i in 0..16 {
+        let nib = ((value >> (4 * (15 - i))) & 0xf) as u8;
+        if n < buf.len() {
+            buf[n] = if nib < 10 {
+                b'0' + nib
+            } else {
+                b'a' + nib - 10
+            };
+            n += 1;
+        }
+    }
+    paint(row, &buf[..n]);
+}
+
+/// Copy only one text row's band from the canvas to every accepted window.
+/// A full flush is ~9.6 MiB; one row band is ~4 KiB per window, cheap enough
+/// for every-tick instrument paints.
+pub fn flush_row(row: u32) {
+    let y0 = DIAG_Y + (10 + row) * LINE_PITCH;
+    let y1 = (y0 + GLYPH_H).min(HEIGHT);
+    if y1 <= y0 {
+        return;
+    }
+    let start = (y0 as usize) * (WIDTH as usize) * 4;
+    let len = ((y1 - y0) as usize) * (WIDTH as usize) * 4;
+    for &ch in CHANNELS.iter() {
+        for &w in WINDOWS.iter() {
+            let addr = unsafe { ptr::read_volatile((ch + w) as *const u32) };
+            if blit_ok(addr) {
+                unsafe {
+                    ptr::copy_nonoverlapping(
+                        (CANVAS + start) as *const u8,
+                        (addr as usize + start) as *mut u8,
+                        len,
+                    );
+                    crate::blackbox::cache_clean(addr as usize + start, len);
+                }
+            }
+        }
+    }
+    unsafe {
+        crate::blackbox::cache_clean(CANVAS + start, len);
+    }
+}
+
+/// Fill the whole canvas with the background colour. Called once at boot so
+/// rows left by a previous (warm-reset) boot cannot masquerade as current
+/// evidence on the panel.
+pub fn clear() {
+    let canvas: &mut [u32] =
+        unsafe { core::slice::from_raw_parts_mut(CANVAS as *mut u32, CANVAS_LEN / 4) };
+    for px in canvas.iter_mut() {
+        *px = BG;
+    }
+    unsafe {
+        crate::blackbox::cache_clean(CANVAS, CANVAS_LEN);
+    }
+}
+
+/// Paint a text line at an explicit x (the right-column instruments). The
+/// cell band it clears is its own, so it never disturbs the left text rows
+/// painted by the boot report.
+pub fn paint_at(row: u32, x: u32, cols: usize, text: &[u8]) {
+    let canvas: &mut [u32] =
+        unsafe { core::slice::from_raw_parts_mut(CANVAS as *mut u32, CANVAS_LEN / 4) };
+    let y = DIAG_Y + (10 + row) * LINE_PITCH;
+    let x0 = x as usize;
+    let x1 = (x as usize + cols * 8).min(WIDTH as usize);
+    for ry in y..(y + GLYPH_H).min(HEIGHT) {
+        let base = ry as usize * WIDTH as usize;
+        for px in &mut canvas[base + x0..base + x1] {
+            *px = BG;
+        }
+    }
+    let mut buf = [b' '; 64];
+    let n = text.len().min(64);
+    buf[..n].copy_from_slice(&text[..n]);
+    lattice::font::render_text(canvas, WIDTH, HEIGHT, WIDTH, x, y, &buf[..n], FG, GLYPH_H);
+    unsafe {
+        crate::blackbox::cache_clean(CANVAS, CANVAS_LEN);
+    }
+}
+
+/// One-shot event ledger: the free rows under the instrument column
+/// (x = 300, rows 38..57). Each event is painted exactly once at its own
+/// row and never rewritten, so one photo shows the whole recent sequence
+/// instead of a single churning tail window. The tail window (rows 60+)
+/// is now a boot-time one-shot; this ledger is the live channel.
+const EVENT_ROW_BASE: u32 = 38;
+const EVENT_SLOTS: u32 = 20;
+static EVENT_NEXT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+pub fn event(tag: &[u8]) {
+    use core::sync::atomic::Ordering;
+    let idx = EVENT_NEXT.fetch_add(1, Ordering::Relaxed);
+    if idx >= EVENT_SLOTS {
+        return;
+    }
+    // v212: mirror every ledger tag into the durable ring. Two things make
+    // this necessary:
+    //   1. The panel half has twice been the freeze site in exactly this
+    //      boot region (v145: a Line::draw clear loop frozen for minutes;
+    //      with v211 unblocking the launchd-entry putc, the boot now walks
+    //      straight into this paint_at/flush_row).
+    //   2. Under the uart-only bisection build the panel half is skipped
+    //      entirely - the ring copy is then the only record of the event
+    //      sequence, i.e. the instrument that says whether the event call
+    //      itself completed.
+    crate::blackbox::text_puts("EVT: ");
+    crate::blackbox::text_puts(unsafe { core::str::from_utf8_unchecked(tag) });
+    crate::blackbox::text_puts("\n");
+    #[cfg(not(fullerene_ane_marks_uart_only))]
+    {
+        // Two-digit ordinal prefix keeps the order readable in photos.
+        let mut buf = [b' '; 27];
+        buf[0] = b'0' + ((idx / 10) % 10) as u8;
+        buf[1] = b'0' + (idx % 10) as u8;
+        buf[2] = b':';
+        let n = tag.len().min(buf.len() - 3);
+        buf[3..3 + n].copy_from_slice(&tag[..n]);
+        let row = EVENT_ROW_BASE + idx;
+        paint_at(row, 300, 27, &buf[..3 + n]);
+        flush_row(row);
+    }
+}
+
+/// Paint the previous boot's dying words: scan the durable block for the
+/// LAST panic marker and copy the text that followed it onto the free rows
+/// above the tail window. The block lives in reserved DRAM and survives the
+/// reboot, so the previous kernel's panic file/line is what a photo of the
+/// next boot shows - the one channel that needs no USB to read.
+pub fn report_previous_panic() {
+    const BASE: usize = crate::blackbox::TEXT_BLOCK_BASE as usize;
+    const CAP: usize = crate::blackbox::TEXT_BLOCK_CAP as usize;
+    let needle = b"FULLERENE AARCH64 PANIC";
+    let mut found: usize = usize::MAX;
+    let mut i = 0;
+    'scan: while i + needle.len() <= CAP {
+        let mut j = 0;
+        while j < needle.len() {
+            let b = unsafe { core::ptr::read_volatile((BASE + i + j) as *const u8) };
+            if b != needle[j] {
+                i += 1;
+                continue 'scan;
+            }
+            j += 1;
+        }
+        found = i;
+        i += 1;
+    }
+    if found == usize::MAX {
+        crate::blackbox::text_puts("PREV-PANIC: none found\n");
+        return;
+    }
+    // The marker is followed by "PANIC: FILE=... LINE=0X..." (upper-cased on
+    // the way into the ring); copy a printable run and paint two rows.
+    let mut buf = [b' '; 82];
+    let mut n = 0;
+    let start = found + needle.len();
+    while n < buf.len() && start + n < CAP {
+        let b = unsafe { core::ptr::read_volatile((BASE + start + n) as *const u8) };
+        if b == 0 {
+            break;
+        }
+        buf[n] = if (0x20..0x7f).contains(&b) { b } else { b' ' };
+        n += 1;
+    }
+    paint_at(58, 0, 40, &buf[..n.min(40)]);
+    flush_row(58);
+    let hi = n.min(80);
+    if hi > 40 {
+        paint_at(59, 0, 40, &buf[40..hi]);
+        flush_row(59);
+    }
+    crate::blackbox::text_puts("PREV-PANIC painted rows 58-59\n");
+}
+
+/// `paint_hex` at an explicit x on the right column (rows follow `paint`).
+pub fn paint_hex_at(row: u32, x: u32, label: &[u8], value: u64) {
+    let mut buf = [0u8; 48];
+    let mut n = 0;
+    for &b in label {
+        if n < buf.len() {
+            buf[n] = b;
+            n += 1;
+        }
+    }
+    if n < buf.len() {
+        buf[n] = b':';
+        n += 1;
+    }
+    for i in 0..16 {
+        let nib = ((value >> (4 * (15 - i))) & 0xf) as u8;
+        if n < buf.len() {
+            buf[n] = if nib < 10 {
+                b'0' + nib
+            } else {
+                b'a' + nib - 10
+            };
+            n += 1;
+        }
+    }
+    paint_at(row, x, 24, &buf[..n]);
+}
+
+/// Cached instrument values: the right-column probes are re-painted on every
+/// IRQ beat batch so a later left-column repaint (the 44-column clear band
+/// overlaps x=300) cannot permanently erase them.
+pub static ENTRY_PC: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub static RST_REASON: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub static LAST_FLT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub static LAST_FAR: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub static SVC_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+pub static SVC_LAST: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+pub static EL0_IRQS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Repaint the right-column instruments (rows 17-24 at x=300).
+pub fn refresh_instruments(irq_beats: u64) {
+    use core::sync::atomic::Ordering;
+    paint_hex_at(17, 300, b"RST", RST_REASON.load(Ordering::Relaxed));
+    paint_hex_at(18, 300, b"ENTRY", ENTRY_PC.load(Ordering::Relaxed));
+    paint_hex_at(19, 300, b"IRQ", irq_beats);
+    let svc = ((SVC_COUNT.load(Ordering::Relaxed) as u64) << 16)
+        | SVC_LAST.load(Ordering::Relaxed) as u64;
+    paint_hex_at(20, 300, b"SVC", svc);
+    paint_hex_at(21, 300, b"EL0IRQ", EL0_IRQS.load(Ordering::Relaxed) as u64);
+    let px = canvas_probe(400, 620) as u64;
+    paint_hex_at(22, 300, b"UMK", px);
+    paint_hex_at(23, 300, b"FLT", LAST_FLT.load(Ordering::Relaxed));
+    paint_hex_at(24, 300, b"FAR", LAST_FAR.load(Ordering::Relaxed));
+    flush_panel();
+}
+
+/// Read one canvas pixel (the identity mapping keeps VA == PA here). Used by
+/// the IRQ-era instrument probes to verify writes made from EL0.
+pub fn canvas_probe(y: u32, x: u32) -> u32 {
+    let index = (y as usize) * (WIDTH as usize) + (x as usize);
+    if index >= CANVAS_LEN / 4 {
+        return 0;
+    }
+    unsafe { ptr::read_volatile((CANVAS + index * 4) as *const u32) }
 }
 
 /// Copy the whole canvas to every accepted scan-out window (the same blit

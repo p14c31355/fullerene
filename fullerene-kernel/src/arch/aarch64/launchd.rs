@@ -40,7 +40,70 @@ const BOOT_TASK_NAME: &[u8] = b"launchd";
 
 static mut LAUNCHD_STAGING: [u8; MAX_LAUNCHD_IMAGE] = [0; MAX_LAUNCHD_IMAGE];
 
+/// v208: the deepest launchd milestone text. The one-shot marks fall out of
+/// the 2 KB piggyback window before a collection, so the timer IRQ re-stamps
+/// this every 256 beats ("mark: ...") - a stalled boot then shows exactly
+/// how deep the bootstrap got.
+static mut LAST_MARK: [u8; 40] = [0; 40];
+static mut LAST_MARK_LEN: usize = 0;
+
+/// v208: the deepest milestone reached (empty before the first mark).
+pub fn last_mark() -> &'static [u8] {
+    unsafe {
+        let n = core::ptr::addr_of!(LAST_MARK_LEN).read();
+        let m = &*core::ptr::addr_of!(LAST_MARK);
+        if n <= m.len() {
+            &m[..n]
+        } else {
+            &m[..0]
+        }
+    }
+}
+
+/// On-panel milestone for the bootstrap trace (rows 24+): the only channel
+/// that survives an EL0 stall on the ANE. No-op on other platforms.
+fn fb_mark(row: u32, text: &[u8]) {
+    #[cfg(fullerene_aarch64_ane)]
+    {
+        // Mirror every mark into the durable uart log: the launchd is
+        // otherwise silent (the ring goes quiet right as the flow starts), so
+        // the log needs these breadcrumbs to localize a stall inside it.
+        uart::puts("mark: ");
+        uart::puts(unsafe { core::str::from_utf8_unchecked(text) });
+        uart::puts("\n");
+        // v208: remember the deepest mark for the IRQ's periodic re-stamp.
+        unsafe {
+            let last = &mut *core::ptr::addr_of_mut!(LAST_MARK);
+            let n = text.len().min(last.len());
+            last[..n].copy_from_slice(&text[..n]);
+            core::ptr::addr_of_mut!(LAST_MARK_LEN).write(n);
+        }
+        // The panel half can be compiled out for bisection: the v145 boot
+        // reached this function and then stuck inside Line::draw's clear
+        // loop (ELR 0x1BE6C54 frozen for minutes), so the durable evidence
+        // for "does the launchd proceed past its first mark" only needs the
+        // ring copy. Re-enable the paint+flush once the stall is cornered.
+        #[cfg(not(fullerene_ane_marks_uart_only))]
+        {
+            super::platform::ane_fb::paint(row, text);
+            super::platform::ane_fb::flush_panel();
+        }
+        #[cfg(fullerene_ane_marks_uart_only)]
+        let _ = row;
+    }
+    #[cfg(not(fullerene_aarch64_ane))]
+    {
+        let _ = (row, text);
+    }
+}
+
 pub(super) fn run() -> ! {
+    // On-panel trace. The ANE has no readable console once EL0 runs, the USB
+    // wedge hides the durable log, and the ring wraps - so the framebuffer is
+    // the only channel that survives a stall. Stamp each bootstrap milestone
+    // (rows 24+, below the boot report and the diag strip); a frozen frame
+    // then shows exactly how far the flow reached.
+    fb_mark(24, b"L0 run entered");
     #[cfg(feature = "aarch64-android-init")]
     uart::puts(if fs::android_system_mounted() {
         "user-launchd: Fullerene Rust init source=initramfs; Android system mounted\n"
@@ -58,6 +121,8 @@ pub(super) fn run() -> ! {
         uart::puts("user-launchd: initramfs image is empty\n");
         cpu::wait_forever();
     }
+    uart::put_hex("user-launchd: staging-length=", image_length as u64);
+    fb_mark(25, b"L1 img read");
     let main_image = unsafe { &*core::ptr::addr_of!(LAUNCHD_STAGING) };
     let main_image = &main_image[..image_length];
     let Some(main_image) =
@@ -66,6 +131,7 @@ pub(super) fn run() -> ! {
         uart::puts("user-launchd: ELF load failed\n");
         cpu::wait_forever();
     };
+    fb_mark(26, b"L2 elf ok");
 
     // A dynamically linked Android executable is entered through its
     // PT_INTERP image. The main executable has already been copied into user
@@ -125,6 +191,7 @@ pub(super) fn run() -> ! {
         uart::puts("user-launchd: stack allocation failed\n");
         cpu::wait_forever();
     };
+    fb_mark(27, b"L3 stack ok");
 
     uart::put_hex("user-launchd: image-pages=", main_image.page_count as u64);
     uart::put_hex("user-launchd: entry=", main_image.entry);
@@ -143,10 +210,12 @@ pub(super) fn run() -> ! {
         uart::puts("user-launchd: task install failed\n");
         cpu::wait_forever();
     }
+    fb_mark(28, b"L4 task ok");
     if !mmu::activate_user_space(0) {
         uart::puts("user-launchd: address-space activation failed\n");
         cpu::wait_forever();
     }
+    fb_mark(29, b"L5 mmu ok");
     if personality == task::AbiPersonality::LinuxAarch64 {
         let Some(stack) = install_linux_stack(
             &mut frame,
@@ -162,6 +231,25 @@ pub(super) fn run() -> ! {
         }
     }
     uart::put_hex("user-launchd: ttbr0=", mmu::active_ttbr0());
+    fb_mark(30, b"L6 enter el0");
+    #[cfg(fullerene_aarch64_ane)]
+    {
+        // The exact PC the eret targets. A wrong entry is invisible in every
+        // other channel when the target page happens to be mapped.
+        super::platform::ane_fb::ENTRY_PC
+            .store(interpreter_entry, core::sync::atomic::Ordering::Relaxed);
+        super::platform::ane_fb::paint_hex_at(18, 300, b"ENTRY", interpreter_entry);
+        super::platform::ane_fb::flush_panel();
+        // Tick stamp at the pre-ERET moment: frozen S marks plus this value
+        // bracket the stopping tick against the eret moment.
+        super::platform::ane_fb::paint_hex_at(
+            32,
+            300,
+            b"ET",
+            super::exceptions::tick_count() as u64,
+        );
+        super::platform::ane_fb::flush_panel();
+    }
 
     unsafe { exceptions::enter_user(&*task::current_frame()) }
 }

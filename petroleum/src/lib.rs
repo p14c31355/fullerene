@@ -4,64 +4,27 @@ extern crate alloc;
 
 pub const FALLBACK_HEAP_START_ADDR: u64 = 0x100000;
 
-pub mod assembly;
-pub mod bare_metal_pci;
-pub mod early;
 #[macro_use]
 pub mod common;
-pub mod debug;
+pub mod arch;
 pub mod error;
-pub mod filesystem;
 pub mod graphics;
-pub mod initializer;
-pub mod io;
 pub mod page_table;
-pub mod serial;
-pub mod transition;
-pub mod uefi_helpers;
-pub mod vdso;
-pub mod vga_debug;
+
+// Platform surface: shared code names the platform layer through the crate
+// root (`crate::serial`, `crate::halt_loop`, ...). Which tree answers is
+// decided once, by directory, in `arch/` - the cfg never leaks past here.
+#[cfg(target_arch = "aarch64")]
+pub use arch::aarch64::*;
+#[cfg(not(target_arch = "aarch64"))]
+pub use arch::x86_64::*;
+
 pub use common::logging::{SystemError, SystemResult};
 pub use common::memory::*;
 pub use common::syscall::*;
 pub use common::{check_memory_initialized, set_memory_initialized};
 pub use error::MemoryError;
-pub use graphics::framebuffer_mapper::{CacheMode, FramebufferMapper};
-pub use graphics::uefi::*;
 pub use graphics::*;
-pub use sealant;
-
-pub fn clear_line_range<B: TextBufferOperations + ?Sized>(
-    buffer: &mut B,
-    start_row: usize,
-    end_row: usize,
-    col_start: usize,
-    col_end: usize,
-    blank_char: ScreenChar,
-) {
-    buffer_ops!(
-        clear_line_range,
-        buffer,
-        start_row,
-        end_row,
-        col_start,
-        col_end,
-        blank_char
-    );
-}
-
-pub use page_table::allocator::{BitmapFrameAllocator, bitmap};
-#[cfg(not(feature = "std"))]
-pub use page_table::heap::ALLOCATOR;
-pub use page_table::heap::HeapStats;
-pub use page_table::heap::allocate_heap_from_map;
-pub use page_table::heap::configure_heap_extension;
-pub use page_table::heap::extend_global_heap;
-pub use page_table::heap::heap_stats;
-pub use page_table::heap::heap_top;
-pub use page_table::heap::init_global_heap;
-pub use page_table::heap::set_heap_extension_guard;
-pub use page_table::heap::try_extend_global_heap;
 pub use page_table::page_buf::PageBuf;
 
 use crate::common::EfiSystemTable;
@@ -89,86 +52,21 @@ pub fn init_uefi_system_table(system_table: *mut EfiSystemTable) {
         .insert(UefiSystemTablePtr(system_table as usize));
 }
 
-pub fn halt_loop() -> ! {
-    loop {
-        x86_64::instructions::hlt();
-    }
-}
-
-#[inline(always)]
-pub fn cpu_pause() {
-    core::hint::spin_loop();
-}
-
-#[inline(always)]
-pub fn cpu_halt() {
-    x86_64::instructions::hlt();
-}
-
-/// Write raw bytes to a serial port. Used by early-boot and debug code.
-/// This function is safe to call; the unsafe port I/O is encapsulated internally.
-pub fn write_serial_bytes(port: u16, status_port: u16, bytes: &[u8]) {
-    #[cfg(not(feature = "std"))]
-    unsafe {
-        serial::write_serial_bytes(port, status_port, bytes);
-    }
-    #[cfg(feature = "std")]
-    {
-        let _ = (port, status_port, bytes);
-    }
-}
-
-#[macro_export]
-macro_rules! define_panic_handler {
-    () => {
-        #[cfg(all(any(target_os = "none", target_os = "uefi"), not(test)))]
-        #[panic_handler]
-        fn panic(info: &core::panic::PanicInfo) -> ! {
-            use core::fmt::Write;
-            $crate::serial::_print(format_args!("\n========== KERNEL PANIC ==========\n"));
-            if let Some(loc) = info.location() {
-                $crate::serial::_print(format_args!(
-                    "  at {}:{}:{}\n",
-                    loc.file(),
-                    loc.line(),
-                    loc.column()
-                ));
-            }
-            $crate::serial::_print(format_args!("  {}\n", info));
-            $crate::serial::_print(format_args!("==================================\n"));
-
-            loop {
-                x86_64::instructions::hlt();
-            }
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! define_alloc_error_handler {
-    () => {
-        #[cfg(all(any(target_os = "none", target_os = "uefi"), not(test)))]
-        #[alloc_error_handler]
-        fn alloc_error_handler(layout: core::alloc::Layout) -> ! {
-            // GlobalAlloc has already performed its bounded extension
-            // transaction.  Re-entering allocation here would hide the real
-            // OOM behind an infinite retry.  Keep this kernel-fatal path
-            // allocation-free and stop the CPU until the fault supervisor can
-            // report/restart the owning domain.
-            $crate::serial::_print(format_args!("ALLOC ERROR (no retry): {:?}\n", layout));
-            loop {
-                x86_64::instructions::interrupts::disable();
-                x86_64::instructions::hlt();
-            }
-        }
-    };
-}
-
-/// Returns (used, total, free) memory in bytes from the global page allocator.
-#[macro_export]
-macro_rules! get_memory_stats {
-    () => {{
-        let stats = $crate::page_table::heap_stats();
-        (stats.used, stats.total, stats.free)
-    }};
+pub fn clear_line_range<B: TextBufferOperations + ?Sized>(
+    buffer: &mut B,
+    start_row: usize,
+    end_row: usize,
+    col_start: usize,
+    col_end: usize,
+    blank_char: ScreenChar,
+) {
+    buffer_ops!(
+        clear_line_range,
+        buffer,
+        start_row,
+        end_row,
+        col_start,
+        col_end,
+        blank_char
+    );
 }

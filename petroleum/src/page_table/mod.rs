@@ -1,42 +1,21 @@
 //! Page table management module.
+//!
+//! Shared pieces: the frame-allocator registry (`constants`), the page-backed
+//! buffer (`page_buf`), and the two tiny facade functions. The x86 paging
+//! tree lives in `x86_64/` and is globbed in for PC builds only.
 
-pub mod allocator;
 pub mod constants;
-pub mod heap;
-pub mod kernel;
-pub mod memory_map;
 pub mod page_buf;
-pub mod pat;
-pub mod pe;
-pub mod process;
-pub mod raw;
-pub mod types;
-pub mod virtual_memory;
+
+#[cfg(not(target_arch = "aarch64"))]
+pub mod x86_64;
+#[cfg(not(target_arch = "aarch64"))]
+pub use x86_64::*;
 
 #[cfg(test)]
 mod tests;
-
-pub use allocator::bitmap::BitmapFrameAllocator;
-pub use allocator::traits::FrameAllocatorExt;
-pub use constants::{BootInfoFrameAllocator, HIGHER_HALF_OFFSET as KERNEL_OFFSET};
-#[cfg(not(feature = "std"))]
-pub use heap::ALLOCATOR;
-pub use heap::{HEAP_INITIALIZED, init_global_heap};
-pub use kernel::init::init;
-pub use kernel::init::{
-    InitAndJumpArgs, KernelMemoryOperations, active_level_4_table, init_and_jump,
-};
-pub use kernel::mapper::Mapper as KernelMapper;
-pub use memory_map::MemoryMapDescriptor;
-pub use process::table::ProcessPageTable;
-pub use raw::huge::map_range_with_huge_pages;
-pub use raw::utils::{map_identity_range, map_range_4kiB, map_to_higher_half_with_log};
-pub use types::PageTableEntry as Pte;
-pub use types::*;
-pub type EfiMemoryDescriptor = memory_map::MemoryMapDescriptor;
 
 pub fn init_kernel_mapper() {}
 pub fn find_free_virtual_address(_size: u64) -> Option<u64> {
     None
 }
-pub fn dump_page_table_walk(_root: &types::PageTable, _virt: types::CanonicalVirtAddr) {}

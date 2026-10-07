@@ -126,17 +126,73 @@ pub fn watchdog_state() -> WatchdogState {
     }
 }
 
-/// Feed the watchdog: unlock if the loader locked it, clear the counter,
-/// leave the lock as it was (relock when it was locked).
+/// Feed the watchdog: write the unlock key (unconditionally - see below),
+/// then clear/reload the counter. The watchdog is left unlocked; we own it
+/// for the rest of this boot.
 pub fn watchdog_kick() {
     unsafe {
-        let lock = core::ptr::read_volatile((WATCHDOG_BASE + 0xc00) as *const u32);
-        if lock != 0 {
-            core::ptr::write_volatile((WATCHDOG_BASE + 0xc00) as *mut u32, WATCHDOG_UNLOCK);
-        }
+        // v177: unlock UNCONDITIONALLY before feeding. The lock register
+        // read is not trustworthy on this bus (the DTXFSTS lesson), and a
+        // kick that skips the unlock while the core is really locked is a
+        // silent no-op - the watchdog then expires no matter how often we
+        // "feed" it. Writing the key when already unlocked is harmless.
+        //
+        // v185: back to the proven v182 shape - two plain writes, NO inline
+        // readbacks. The c30 boot (v182, 30+ min with kicks landing) used
+        // this exact shape combined with the %16 instrument reads; the
+        // v183 inline readbacks were a suspect in the v184 boot's failed
+        // enumeration, and the %16 reads already provide the flush effect.
+        core::ptr::write_volatile((WATCHDOG_BASE + 0xc00) as *mut u32, WATCHDOG_UNLOCK);
         core::ptr::write_volatile((WATCHDOG_BASE + 0x00c) as *mut u32, 1);
-        if lock != 0 {
-            core::ptr::write_volatile((WATCHDOG_BASE + 0xc00) as *mut u32, 0);
+    }
+}
+
+/// Kept for the on-screen evidence: the last lock readback request. The
+/// instrument now reads WDOGLOCK live through watchdog_state() instead of
+/// piggybacking on the kick, so this is simply the live value's cache.
+static mut WD_LOCK_RB: u32 = 0xffff_ffff;
+
+pub fn watchdog_lock_rb() -> u32 {
+    unsafe { core::ptr::addr_of!(WD_LOCK_RB).read() }
+}
+
+/// Store the live lock value for the instrument (callers pass what
+/// watchdog_state() read).
+pub fn set_watchdog_lock_rb(v: u32) {
+    unsafe { core::ptr::addr_of_mut!(WD_LOCK_RB).write(v) }
+}
+
+/// The loader's SP805 LOAD value, captured on first use. The countdown
+/// reloads from it on every kick, so half of it is a safe "running low"
+/// threshold without hardcoding the loader's window.
+static mut WD_LOAD: u32 = 0;
+
+/// Call counter for the unconditional periodic kick.
+static mut WD_CALLS: u32 = 0;
+
+/// Feed the loader watchdog only when its countdown is running low.
+/// Unlike the timer-IRQ feed (exceptions.rs `beats % 8`), this works from
+/// any context - including boots where the timer never came up, and long
+/// storage grinds where no console output happens. Call it from loops that
+/// can spin for seconds (eMMC command/data waits, console narration).
+pub fn watchdog_tend() {
+    unsafe {
+        let mut load = core::ptr::addr_of!(WD_LOAD).read();
+        if load == 0 {
+            load = core::ptr::read_volatile(WATCHDOG_BASE as *const u32);
+            core::ptr::addr_of_mut!(WD_LOAD).write(load);
+        }
+        let value = core::ptr::read_volatile((WATCHDOG_BASE + 0x004) as *const u32);
+        let half = if load / 2 > 0x2000 { load / 2 } else { 0x2000 };
+        // v176: belt and suspenders. The SP805's registers are not fully
+        // trustworthy on this bus (DTXFSTS taught that lesson), so also
+        // kick unconditionally every 64th call even when the value read
+        // looks healthy. Bounded cost (4 MMIO ops) and it guarantees a
+        // feed during any sustained activity, value read or not.
+        let n = core::ptr::addr_of!(WD_CALLS).read().wrapping_add(1);
+        core::ptr::addr_of_mut!(WD_CALLS).write(n);
+        if value < half || n % 64 == 0 {
+            watchdog_kick();
         }
     }
 }
@@ -285,12 +341,23 @@ pub fn usb_bringup() -> UsbState {
         usb_spin(0x4B0_0000); /* ~150 ms */
         usb_mask(core + 0x800, 0x3, 0);
 
-        // 10: attach - clear DCTL.SftDiscon (bit 1) and let the connect settle.
-        usb_mask(core + 0x804, 0x2, 0);
+        // 10: v197 - keep the device soft-disconnected. This step used to
+        // clear DCTL.SftDiscon and let the host enumerate immediately,
+        // while the responder arm (ane_usb_dev::init), the timer-IRQ pump
+        // and the storage bring-up were still starting. The host's first
+        // descriptor reads then raced the bring-up: timeouts (-110) and
+        // port resets landing mid-answer left stale words in the EP0
+        // TxFIFO, so every later answer trailed one request behind
+        // ("Љ" strings, -71/-75 storms) on roughly half the boots. The
+        // attach now happens explicitly through usb_attach(), after the
+        // storage bring-up, so the host's fresh enumeration meets an
+        // armed responder.
+        usb_or(core + 0x804, 0x2);
         usb_spin(0x190_0000); /* ~50 ms */
 
-        // The readbacks: DCTL is the critical one - if SftDiscon did not stay
-        // cleared there is no attach for the host to see.
+        // The readbacks: DCTL is the critical one - with the deferred
+        // attach, SftDiscon must READ SET here (the host sees no device
+        // until usb_attach()).
         UsbState {
             abb,
             ppll0: (ppll0_pre, ppll0_post),
@@ -308,4 +375,24 @@ pub fn usb_bringup() -> UsbState {
             ],
         }
     }
+}
+
+/// v197: the deferred attach - clears DCTL.SftDiscon (bit 1) so the host
+/// sees the connect only after the responder is armed (ane_usb_dev::init)
+/// and the storage bring-up has finished. The old flow attached during
+/// usb_bringup() itself, and the host's enumeration raced the bring-up:
+/// roughly half of the boots came up garbled ("Љ" descriptor shift) or
+/// never enumerated (-110/-71/-75). Call once, from the boot path, after
+/// the eMMC probe.
+pub fn usb_attach() {
+    // v209: the prepare_attach (EP0 cleanup + FIFO flush) experiment is
+    // REVERTED for now: the v208 boot never attached at all (the host
+    // saw no device for 4+ minutes) - the same signature as the v26-era
+    // "GRSTCTL write wedged the core" before the first bus reset. Do not
+    // touch GRSTCTL before the host's first reset (the v206 flushes at
+    // handle_reset remain, and those are proven).
+    unsafe {
+        usb_mask(USB_CORE_BASE + 0x804, 0x2, 0);
+    }
+    usb_spin(0x190_0000); /* ~50 ms connect settle */
 }

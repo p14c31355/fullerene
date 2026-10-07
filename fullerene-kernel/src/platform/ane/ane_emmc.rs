@@ -708,6 +708,135 @@ pub fn probe(log: fn(&str, u64), stage: u32) {
             }
         }
         log("em: m_rdiff=", rdiff as u64);
+
+        // Probe the eMMC for the block layer (before any clock games - the
+        // BlockDevice path is verified on the known-good 400 kHz state).
+        #[cfg(fullerene_aarch64_ane)]
+        {
+            emmc_block_probe(log);
+            // v98: the first filesystem access (ext4 on "system").
+            let mut xs2 = [0u32; 128];
+            let (okx, _sx, _ex) = sdhci_data_read(8, 0, &mut xs2, log);
+            if okx {
+                let secs = (xs2[53] & 0xFFFF_FFFF) as u64;
+                emmc_ext4_probe(secs, log);
+                // v100: the second partition through the android_fs prober.
+                emmc_userdata_probe(secs, log);
+            }
+        }
+
+        // v94: clock ladder. Rung 1 = a pure clock bump to 25 MHz at the
+        // default 1-bit timing (no card switches - within the default-speed
+        // spec). Rung 2 = the full HS (CMD6 HS_TIMING, 50 MHz, CMD6
+        // BUS_WIDTH, 8-bit host). Each rung is verified by a real read
+        // (MBR magic 0xAA55) and the sequence ALWAYS ends on a verified
+        // rung, falling back to the boot's 400 kHz state. The v93 lesson:
+        // the vendor's 8-clock settle after a clock change was missing.
+        let cc0 = rd16(SDHCI_BASE, 0x2C);
+        let hc0 = rd8(SDHCI_BASE, 0x28);
+        log("em: hs_cc0=", cc0 as u64);
+        log("em: hs_hc0=", hc0 as u64);
+
+        // Rung 1: 25 MHz, still 1-bit / default timing.
+        let mut r_ok = emmc_clock_set(4, log);
+        if r_ok {
+            let mut mbr = [0u32; 128];
+            let (ok, sts, err) = sdhci_data_read(17, 0, &mut mbr, log);
+            log("em: r1_rd=", ((ok as u64) << 32) | ((sts & 0xFFFF) as u64));
+            log("em: r1_err=", err as u64);
+            log("em: r1_mbr=", (mbr[127] & 0xFFFF) as u64);
+            r_ok = ok && (mbr[127] & 0xFFFF) == 0xAA55;
+        }
+        log("em: r1_ok=", r_ok as u64);
+
+        // Rung 2: full HS - CMD6 HS_TIMING=1, 50 MHz, CMD6 BUS_WIDTH=2,
+        // host 8-bit + HISPD (the stock's HOST_CONTROL reads 0x34).
+        let mut hs_ok = r_ok;
+        if hs_ok {
+            let (d_hs, s_hs, e_hs, _) = sdhci_cmd(6, 0x03B9_0100, 3, CMD_CRC | CMD_INDEX);
+            log(
+                "em: hs_sw1=",
+                ((d_hs as u64) << 32) | ((s_hs & 0xFFFF) as u64),
+            );
+            log("em: hs_sw1e=", e_hs as u64);
+            hs_ok = d_hs;
+        }
+        if hs_ok {
+            hs_ok = emmc_clock_set(2, log);
+        }
+        if hs_ok {
+            let (d_w, s_w, e_w, _) = sdhci_cmd(6, 0x03B7_0200, 3, CMD_CRC | CMD_INDEX);
+            log(
+                "em: hs_sw2=",
+                ((d_w as u64) << 32) | ((s_w & 0xFFFF) as u64),
+            );
+            log("em: hs_sw2e=", e_w as u64);
+            hs_ok = d_w;
+        }
+        if hs_ok {
+            wr8(SDHCI_BASE, 0x28, hc0 | 0x24);
+            log("em: hs_hc=", rd8(SDHCI_BASE, 0x28) as u64);
+        }
+        if hs_ok {
+            // Verify: EXT_CSD bytes 185 (HS_TIMING) and 183 (BUS_WIDTH).
+            let mut xs = [0u32; 128];
+            let (ok_x, ok_s, ok_e) = sdhci_data_read(8, 0, &mut xs, log);
+            log(
+                "em: hs_xrd=",
+                ((ok_x as u64) << 32) | ((ok_s & 0xFFFF) as u64),
+            );
+            log("em: hs_xerr=", ok_e as u64);
+            let hs_tim = ((xs[46] >> 8) & 0xFF) as u64;
+            let bus_w = ((xs[45] >> 24) & 0xFF) as u64;
+            log("em: hs_rev=", (xs[48] & 0xFF) as u64);
+            log("em: hs_tim=", hs_tim);
+            log("em: hs_bw=", bus_w);
+            hs_ok = ok_x && hs_tim == 1 && bus_w == 2;
+        }
+        if hs_ok {
+            // Identity write at the new clock (hisitest1 sector 10).
+            let mut w10 = [0u32; 128];
+            let (r_ok2, _sr, _er) = sdhci_data_read(17, 1921034, &mut w10, log);
+            let (w_ok, w_sts, w_err) = sdhci_data_write(24, 1921034, &w10, log);
+            let mut w10v = [0u32; 128];
+            let (v_ok, _sv, _ev) = sdhci_data_read(17, 1921034, &mut w10v, log);
+            let mut d10 = 0u32;
+            for i in 0..128 {
+                if w10[i] != w10v[i] {
+                    d10 += 1;
+                }
+            }
+            log("em: hs_prd=", r_ok2 as u64);
+            log("em: hs_pwr=", w_ok as u64);
+            log("em: hs_psts=", w_sts as u64);
+            log("em: hs_perr=", w_err as u64);
+            log("em: hs_pver=", v_ok as u64);
+            log("em: hs_pdf=", d10 as u64);
+            hs_ok = r_ok2 && w_ok && v_ok && d10 == 0;
+        }
+
+        // Back off to the highest verified rung.
+        if !hs_ok {
+            wr8(SDHCI_BASE, 0x28, hc0);
+            let (r1, _s1, _e1, _) = sdhci_cmd(6, 0x03B9_0000, 3, CMD_CRC | CMD_INDEX);
+            let (r2, _s2, _e2, _) = sdhci_cmd(6, 0x03B7_0100, 3, CMD_CRC | CMD_INDEX);
+            log("em: hs_rev1=", r1 as u64);
+            log("em: hs_rev2=", r2 as u64);
+            if r_ok {
+                let _ = emmc_clock_set(4, log);
+            } else {
+                let _ = emmc_clock_set(cc0 >> 8, log);
+            }
+        }
+
+        // The sequence which rung is live.
+        let mut m2 = [0u32; 128];
+        let (f_ok, _fs, _fe) = sdhci_data_read(17, 0, &mut m2, log);
+        log(
+            "em: final_rd=",
+            ((f_ok as u64) << 32) | ((m2[127] & 0xFFFF) as u64),
+        );
+        log("em: hs_ok=", hs_ok as u64);
         let mut l = [b' '; 44];
         let mut at = put(&mut l, 0, b"EMH C8=");
         at = hex2(&mut l, at, ok8 as u8);
@@ -764,7 +893,10 @@ fn sdhci_data_read(idx: u16, arg: u32, words: &mut [u32], log: fn(&str, u64)) ->
     let mut filled = 0u64;
     for w in words.iter_mut() {
         let mut ready = false;
-        for _ in 0..0x2_0000u32 {
+        for j in 0..0x2_0000u32 {
+            if j & 0xFFF == 0 {
+                super::ane::watchdog_tend();
+            }
             let ps = rd32(SDHCI_BASE, 0x24);
             if ps & 0x800 != 0 {
                 ready = true;
@@ -783,7 +915,10 @@ fn sdhci_data_read(idx: u16, arg: u32, words: &mut [u32], log: fn(&str, u64)) ->
     log("em: c8_filled=", filled);
     let mut sts = 0u32;
     let mut err = 0u32;
-    for _ in 0..0x80_0000u32 {
+    for i in 0..0x80_0000u32 {
+        if i & 0xFFF == 0 {
+            super::ane::watchdog_tend();
+        }
         sts = rd32(SDHCI_BASE, 0x30);
         if sts & (0x2 | 0x8000) != 0 {
             err = rd16(SDHCI_BASE, 0x32) as u32;
@@ -813,7 +948,10 @@ fn sdhci_data_write(idx: u16, arg: u32, words: &[u32], log: fn(&str, u64)) -> (b
     let mut sent = 0u64;
     for w in words.iter() {
         let mut ready = false;
-        for _ in 0..0x2_0000u32 {
+        for j in 0..0x2_0000u32 {
+            if j & 0xFFF == 0 {
+                super::ane::watchdog_tend();
+            }
             let ps = rd32(SDHCI_BASE, 0x24);
             if ps & 0x400 != 0 {
                 ready = true;
@@ -841,6 +979,31 @@ fn sdhci_data_write(idx: u16, arg: u32, words: &[u32], log: fn(&str, u64)) -> (b
     }
     wr32(SDHCI_BASE, 0x30, 0xFFFF_FFFF);
     (sts & 0x2 != 0, sts, err)
+}
+
+/// The vendor's clock sequence (sdhci_set_clock, spec-2.00 divisor): stop
+/// the clock, program the divisor, wait for INT_STABLE, enable the card
+/// clock, then the vendor's settle delay ("need to wait 8 sd clk before a
+/// new command" - 1 ms, missing in the v93 attempt that killed the first
+/// post-switch read).
+fn emmc_clock_set(field: u16, log: fn(&str, u64)) -> bool {
+    wr16(SDHCI_BASE, 0x2C, 0);
+    wr16(SDHCI_BASE, 0x2C, (field << 8) | 0x01);
+    let mut stable = false;
+    for _ in 0..0x2_0000u32 {
+        if rd16(SDHCI_BASE, 0x2C) & 0x02 != 0 {
+            stable = true;
+            break;
+        }
+    }
+    wr16(SDHCI_BASE, 0x2C, (field << 8) | 0x01 | 0x04);
+    let t0 = crate::timer::uptime_us();
+    while crate::timer::uptime_us().saturating_sub(t0) < 2000 {}
+    log(
+        "em: clk_set=",
+        ((stable as u64) << 32) | ((field as u64) << 8) | (rd16(SDHCI_BASE, 0x2C) as u64),
+    );
+    stable
 }
 
 /// Public single-sector read wrapper for cross-module probes (the USB-side
@@ -910,6 +1073,64 @@ pub fn find_partition(name: &[u8], log: fn(&str, u64)) -> Option<(u32, u32)> {
 /// 1024 sectors go out as single CMD25 bursts (fast); a failed burst
 /// falls back to per-sector CMD24 for that run. Reports (sectors written,
 /// sectors that errored).
+/// Read `count` sectors into `out` as the sector's raw byte sequence (the
+/// same big-endian 2-words-per-line order the forensics dump prints). Used by
+/// the raw `oem xfer` stream; `out` must be at least `count * 512` bytes.
+pub fn read_sectors_bytes(lba: u32, count: u32, out: &mut [u8], log: fn(&str, u64)) -> bool {
+    let mut words = [0u32; 128];
+    for s in 0..count {
+        let l = lba.wrapping_add(s);
+        let (ok, _st, _e) = sdhci_data_read(17, l, &mut words, log);
+        if !ok {
+            return false;
+        }
+        let base = (s as usize) * 512;
+        for pair in 0..64 {
+            let v = ((words[pair * 2] as u64) << 32) | words[pair * 2 + 1] as u64;
+            out[base + pair * 8..base + pair * 8 + 8].copy_from_slice(&v.to_be_bytes());
+        }
+    }
+    true
+}
+
+/// Persist one 8 KiB slice of the durable text ring to a scratch area at the
+/// far end of userdata (640 sectors below the disk end - clear of the GPT
+/// backup), rotating through the ring's exact seven slices so the whole ring
+/// is copied within seven calls. A later boot can read the scratch with
+/// `oem dump <lba> <count>` even after a crash or reset wiped RAM.
+pub fn persist_log_slice(slice: u32, log: fn(&str, u64)) -> (u64, u64) {
+    /// Measured disk layout: 0x3A3E000 sectors total, userdata is the last
+    /// partition, so the disk tail is userdata.
+    const SCRATCH_LBA: u32 = 61_078_912; // 0x3A3DD80
+    /// The 0xE000 ring is exactly seven 8 KiB slices; no wrap to handle.
+    const SLICE: usize = 0x2000;
+    let idx = (slice % 7) as usize;
+    let addr = crate::blackbox::TEXT_BLOCK_BASE as usize + idx * SLICE;
+    let data = unsafe { core::slice::from_raw_parts(addr as *const u8, SLICE) };
+    write_sectors(SCRATCH_LBA + (idx as u32) * (SLICE as u32 / 512), data, log)
+}
+
+/// Persist the WHOLE durable ring to the eMMC scratch, from the command
+/// context only. The automatic IRQ-time lane deadlocked against the boot
+/// thread's own SDHCI work (first lived proof: the v124 stall at the very
+/// first beat%8192), so the reliable save runs on demand instead, when the
+/// world is otherwise idle. Verify by reading `oem xfer m 3A3DD80 70` on a
+/// later boot. Returns (written, failed) sectors.
+pub fn persist_all(log: fn(&str, u64)) -> (u64, u64) {
+    const SCRATCH_LBA: u32 = 61_078_912; // 0x3A3DD80
+    const SLICE: usize = 0x2000;
+    let mut ok = 0u64;
+    let mut bad = 0u64;
+    for idx in 0..7usize {
+        let addr = crate::blackbox::TEXT_BLOCK_BASE as usize + idx * SLICE;
+        let data = unsafe { core::slice::from_raw_parts(addr as *const u8, SLICE) };
+        let (o, b) = write_sectors(SCRATCH_LBA + (idx as u32) * (SLICE as u32 / 512), data, log);
+        ok += o;
+        bad += b;
+    }
+    (ok, bad)
+}
+
 pub fn write_sectors(lba: u32, data: &[u8], log: fn(&str, u64)) -> (u64, u64) {
     const CHUNK: usize = 1024; // sectors per CMD25 run (512 KiB)
     let mut ok = 0u64;
@@ -1044,6 +1265,470 @@ fn sdhci_data_write_multi(
     (sts & 0x2 != 0, sts, err)
 }
 
+/// Erase sectors [first, last] inclusive (block addresses), the vendor's
+/// mmc_do_erase order: CMD35 (ERASE_GROUP_START, plain R1), CMD36
+/// (ERASE_GROUP_END, plain R1), CMD38 (ERASE, R1b - the card holds DAT0
+/// busy while it programs the erase, and the controller makes every
+/// following command wait for that). Reports (ok, error_status).
+pub fn erase_sectors(first: u32, last: u32, log: fn(&str, u64)) -> (bool, u32) {
+    let (d35, _s35, e35, _) = sdhci_cmd(35, first, 2, CMD_CRC | CMD_INDEX);
+    let (d36, _s36, e36, _) = sdhci_cmd(36, last, 2, CMD_CRC | CMD_INDEX);
+    log("em: er35=", d35 as u64);
+    log("em: er36=", d36 as u64);
+    if !d35 || !d36 {
+        return (false, if !d35 { e35 } else { e36 });
+    }
+    // CMD38 with a long bound: a real erase runs for seconds behind the
+    // R1b response, beyond sdhci_cmd's ~0.1 s budget.
+    wr32(SDHCI_BASE, 0x08, 0);
+    wr16(SDHCI_BASE, 0x0E, (38u16 << 8) | 3 | CMD_CRC | CMD_INDEX);
+    let mut done = false;
+    let mut sts = 0u32;
+    let mut err = 0u32;
+    for _ in 0..0x100_0000u32 {
+        sts = rd32(SDHCI_BASE, 0x30);
+        if sts & 0x8000 != 0 {
+            err = rd16(SDHCI_BASE, 0x32) as u32;
+            break;
+        }
+        if sts & 0x1 != 0 {
+            done = true;
+            break;
+        }
+    }
+    wr32(SDHCI_BASE, 0x30, 0xFFFF_FFFF);
+    log("em: er38=", ((done as u64) << 32) | ((sts & 0xFFFF) as u64));
+    log("em: er38e=", err as u64);
+    if !done {
+        return (false, err);
+    }
+    // The card's READY_FOR_DATA (R1 bit 8) confirms the erase retired.
+    let (d13, _s13, _e13, _) = sdhci_cmd(13, 1 << 16, 2, CMD_CRC | CMD_INDEX);
+    let r0 = rd32(SDHCI_BASE, 0x10);
+    log("em: er13=", ((d13 as u64) << 32) | ((r0 & 0xFFFF) as u64));
+    ((r0 & 0x100) != 0, err)
+}
+
+/// The eMMC as a genome BlockDevice: a thin synchronous view over the PIO
+/// paths, registered as "emmc0" so the devfs / fs layers can lease it like
+/// any other disk.
+#[cfg(fullerene_aarch64_ane)]
+pub struct EmmcBlockDevice {
+    pub total: u64,
+}
+
+#[cfg(fullerene_aarch64_ane)]
+fn block_no_log(_: &str, _: u64) {}
+
+#[cfg(fullerene_aarch64_ane)]
+impl genome::block::BlockDevice for EmmcBlockDevice {
+    fn read_sectors(
+        &mut self,
+        lba: u64,
+        count: u16,
+        buf: &mut [u8],
+    ) -> Result<(), genome::block::BlockError> {
+        let need = (count as usize) * 512;
+        if buf.len() < need {
+            return Err(genome::block::BlockError::BufferTooSmall {
+                required: need,
+                provided: buf.len(),
+            });
+        }
+        if lba.saturating_add(count as u64) > u32::MAX as u64 {
+            return Err(genome::block::BlockError::LbaOverflow);
+        }
+        let mut l = lba as u32;
+        let mut off = 0usize;
+        for _ in 0..count {
+            let mut words = [0u32; 128];
+            let (ok, _s, _e) = sdhci_data_read(17, l, &mut words, block_no_log);
+            if !ok {
+                return Err(genome::block::BlockError::Device);
+            }
+            for (i, w) in words.iter().enumerate() {
+                buf[off + i * 4..off + i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+            }
+            off += 512;
+            l += 1;
+        }
+        Ok(())
+    }
+
+    fn write_sectors(
+        &mut self,
+        lba: u64,
+        count: u16,
+        buf: &[u8],
+    ) -> Result<(), genome::block::BlockError> {
+        let need = (count as usize) * 512;
+        if buf.len() < need {
+            return Err(genome::block::BlockError::BufferTooSmall {
+                required: need,
+                provided: buf.len(),
+            });
+        }
+        if lba.saturating_add(count as u64) > u32::MAX as u64 {
+            return Err(genome::block::BlockError::LbaOverflow);
+        }
+        let (ok, bad) = write_sectors(lba as u32, &buf[..need], block_no_log);
+        if bad != 0 || ok == 0 {
+            return Err(genome::block::BlockError::Device);
+        }
+        Ok(())
+    }
+
+    fn sector_size(&self) -> u32 {
+        512
+    }
+
+    fn total_sectors(&self) -> u64 {
+        self.total
+    }
+}
+
+/// Probe the eMMC for the block layer: read SEC_COUNT (EXT_CSD bytes
+/// 212..215, word 53), build an `EmmcBlockDevice`, and read sector 0
+/// through the genome BlockDevice trait - the exact path the fs layers
+/// will use once this bin links the devfs registry (the boot-stage
+/// aarch64 bin deliberately carries a small module set).
+#[cfg(fullerene_aarch64_ane)]
+pub fn emmc_block_probe(log: fn(&str, u64)) {
+    let mut xs = [0u32; 128];
+    let (ok, _s, _e) = sdhci_data_read(8, 0, &mut xs, log);
+    if !ok {
+        log("em: blk_noext=", 1);
+        return;
+    }
+    let secs = (xs[53] & 0xFFFF_FFFF) as u64;
+    log("em: blk_secs=", secs);
+    let mut dev = EmmcBlockDevice { total: secs };
+    let mut mbr = [0u8; 512];
+    match genome::block::BlockDevice::read_sectors(&mut dev, 0, 1, &mut mbr) {
+        Ok(()) => {
+            let sig = ((mbr[510] as u64) << 8) | mbr[511] as u64;
+            log("em: blk_rd=", sig);
+        }
+        Err(_) => log("em: blk_rd=", 0),
+    }
+    // v97: the genome GPT parser over the same device - the exact path the
+    // fullerene fs stack uses. Fingerprint = count + the first names'
+    // leading bytes + the usable-LBA range.
+    let mut dev2 = EmmcBlockDevice { total: secs };
+    match genome::gpt::scan(&mut dev2) {
+        Ok(table) => {
+            log("em: gpt_n=", table.partitions.len() as u64);
+            log(
+                "em: gpt_usable=",
+                (table.header.first_usable_lba << 32) | table.header.last_usable_lba,
+            );
+            let mut h = 0u64;
+            for (i, p) in table.partitions.iter().take(3).enumerate() {
+                let mut q = 0u64;
+                for b in p.name().bytes().take(8) {
+                    q = (q << 8) | b as u64;
+                }
+                log("em: gpt_p=", ((i as u64) << 32) | (q & 0xFFFF_FFFF));
+                h = h
+                    .wrapping_add(q)
+                    .wrapping_add(p.first_lba)
+                    .wrapping_add(p.last_lba);
+            }
+            log("em: gpt_h=", h);
+        }
+        Err(_) => log("em: gpt_e=", 1),
+    }
+}
+
+/// A 512-byte-sector view of one partition range on the eMMC.
+#[cfg(fullerene_aarch64_ane)]
+struct PartView {
+    base: u64,
+    total: u64,
+}
+
+#[cfg(fullerene_aarch64_ane)]
+impl genome::block::BlockDevice for PartView {
+    fn read_sectors(
+        &mut self,
+        lba: u64,
+        count: u16,
+        buf: &mut [u8],
+    ) -> Result<(), genome::block::BlockError> {
+        let mut inner = EmmcBlockDevice { total: 0 };
+        genome::block::BlockDevice::read_sectors(&mut inner, self.base + lba, count, buf)
+    }
+    fn write_sectors(
+        &mut self,
+        lba: u64,
+        count: u16,
+        buf: &[u8],
+    ) -> Result<(), genome::block::BlockError> {
+        let mut inner = EmmcBlockDevice { total: 0 };
+        genome::block::BlockDevice::write_sectors(&mut inner, self.base + lba, count, buf)
+    }
+    fn sector_size(&self) -> u32 {
+        512
+    }
+    fn total_sectors(&self) -> u64 {
+        self.total
+    }
+}
+
+/// v98: mount the ext4 filesystem on the "system" partition through the
+/// genome stack (Ext4FileSystem over a PartView) and read the first bytes
+/// of /build.prop - the first filesystem access from this kernel.
+#[cfg(fullerene_aarch64_ane)]
+pub fn emmc_ext4_probe(secs: u64, log: fn(&str, u64)) {
+    let mut dev = EmmcBlockDevice { total: secs };
+    let table = match genome::gpt::scan(&mut dev) {
+        Ok(t) => t,
+        Err(_) => {
+            log("em: ex_gpt=", 0);
+            return;
+        }
+    };
+    let p = match table.partitions.iter().find(|q| q.name() == "system") {
+        Some(p) => *p,
+        None => {
+            log("em: ex_part=", 0);
+            return;
+        }
+    };
+    log("em: ex_lba=", p.first_lba);
+    let view = PartView {
+        base: p.first_lba,
+        total: p.last_lba - p.first_lba + 1,
+    };
+    match genome::ext4::Ext4FileSystem::new(alloc::boxed::Box::new(view)) {
+        Ok(mut fs) => {
+            log("em: ex_new=", 1);
+            use genome::vfs::FileSystem;
+            // v99: the directory listing and a full-file read (FNV-1a 64).
+            match fs.readdir("/") {
+                Ok(entries) => {
+                    log("em: ex_n=", entries.len() as u64);
+                    let mut h = 0u64;
+                    for e in entries.iter().take(8) {
+                        let mut q = 0u64;
+                        for b in e.name.bytes().take(6) {
+                            q = (q << 8) | b as u64;
+                        }
+                        h = h.wrapping_mul(31).wrapping_add(q);
+                    }
+                    let dirs = entries.iter().filter(|e| e.is_dir).count() as u64;
+                    log("em: ex_dirs=", dirs);
+                    log("em: ex_h=", h);
+                }
+                Err(_) => log("em: ex_n=", u64::MAX),
+            }
+            match fs.open("/build.prop", 0) {
+                Some(f) => {
+                    let fd = f.fd;
+                    log("em: ex_open=", 1);
+                    let mut total = 0u64;
+                    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+                    let mut buf = [0u8; 256];
+                    loop {
+                        match fs.read(fd, &mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                for &b in buf[..n].iter() {
+                                    hash ^= b as u64;
+                                    hash = hash.wrapping_mul(0x100_0000_01b3);
+                                }
+                                total += n as u64;
+                                if total > 65536 {
+                                    break;
+                                }
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    let _ = fs.close(fd);
+                    log("em: ex_len=", total);
+                    log("em: ex_fnv=", hash);
+                }
+                None => log("em: ex_open=", 0),
+            }
+        }
+        Err(_) => log("em: ex_new=", 0),
+    }
+}
+
+/// v101: identify the "userdata" partition's filesystem by RAW superblock
+/// magic only (ext4 0xEF53 @ 0x438, f2fs 0xF2F52010 @ 0x400, erofs @
+/// 0x400). No mount: the v100 full mount of a ~20 GB f2fs/erofs partition
+/// is suspected of exhausting the small boot heap and killing an idle
+/// wait loop (deferred OOM), so this stays allocation-free apart from the
+/// sector buffers.
+#[cfg(fullerene_aarch64_ane)]
+pub fn emmc_userdata_probe(secs: u64, log: fn(&str, u64)) {
+    let mut dev = EmmcBlockDevice { total: secs };
+    let table = match genome::gpt::scan(&mut dev) {
+        Ok(t) => t,
+        Err(_) => {
+            log("em: ud_gpt=", 0);
+            return;
+        }
+    };
+    let p = match table.partitions.iter().find(|q| q.name() == "userdata") {
+        Some(p) => *p,
+        None => {
+            log("em: ud_part=", 0);
+            return;
+        }
+    };
+    log("em: ud_lba=", p.first_lba);
+    let mut dev2 = EmmcBlockDevice { total: secs };
+    let mut sb = [0u8; 512];
+    if genome::block::BlockDevice::read_sectors(&mut dev2, p.first_lba + 2, 1, &mut sb).is_err() {
+        log("em: ud_rd=", 0);
+        return;
+    }
+    // sector 2 of the partition = bytes 1024..1536; f2fs/erofs magic at
+    // 0x400 (offset 0), ext4 magic 0xEF53 at 0x438 (offset 0x38).
+    let f2fs = u32::from_le_bytes([sb[0], sb[1], sb[2], sb[3]]);
+    let erofs_le = u32::from_le_bytes([sb[0], sb[1], sb[2], sb[3]]);
+    let ext4 = u16::from_le_bytes([sb[0x38], sb[0x39]]);
+    log("em: ud_f2fs=", f2fs as u64);
+    log("em: ud_erofs_le=", erofs_le as u64);
+    log("em: ud_ext4=", ext4 as u64);
+}
+
+/// On-demand userdata mount (the `oem udmount` command). Deliberately NOT
+/// in the boot path: the v102 attempt crash-looped the box (mounting the
+/// real 20 GB F2FS "userdata" panicked even on the 8 MiB heap, and a
+/// boot-time mount re-triggered on every reboot). On demand a crash
+/// self-limits - the next boot starts clean and does not remount.
+#[cfg(fullerene_aarch64_ane)]
+pub fn emmc_userdata_mount(log: fn(&str, u64)) {
+    let mut xs = [0u32; 128];
+    let (ok, _s, _e) = sdhci_data_read(8, 0, &mut xs, log);
+    if !ok {
+        log("em: udm_ext=", 0);
+        return;
+    }
+    let secs = (xs[53] & 0xFFFF_FFFF) as u64;
+    let mut dev = EmmcBlockDevice { total: secs };
+    let table = match genome::gpt::scan(&mut dev) {
+        Ok(t) => t,
+        Err(_) => {
+            log("em: udm_gpt=", 0);
+            return;
+        }
+    };
+    let p = match table.partitions.iter().find(|q| q.name() == "userdata") {
+        Some(p) => *p,
+        None => {
+            log("em: udm_part=", 0);
+            return;
+        }
+    };
+    log("em: udm_lba=", p.first_lba);
+    let view = PartView {
+        base: p.first_lba,
+        total: p.last_lba - p.first_lba + 1,
+    };
+    match genome::android_fs::mount(alloc::boxed::Box::new(view)) {
+        Ok((mut fs, kind)) => {
+            let k = match kind {
+                genome::android_fs::AndroidFilesystemKind::Ext4 => 1u64,
+                genome::android_fs::AndroidFilesystemKind::Erofs => 2u64,
+                genome::android_fs::AndroidFilesystemKind::F2fs => 3u64,
+            };
+            log("em: udm_kind=", k);
+            use genome::vfs::FileSystem;
+            match fs.readdir("/") {
+                Ok(entries) => {
+                    log("em: udm_n=", entries.len() as u64);
+                    let mut h = 0u64;
+                    for e in entries.iter().take(6) {
+                        let mut q = 0u64;
+                        for b in e.name.bytes().take(6) {
+                            q = (q << 8) | b as u64;
+                        }
+                        h = h.wrapping_mul(31).wrapping_add(q);
+                    }
+                    log("em: udm_h=", h);
+                }
+                Err(_) => log("em: udm_n=", u64::MAX),
+            }
+        }
+        Err(_) => log("em: udm_kind=", 0),
+    }
+}
+
+/// Compact sector scanner: for each sector in [lba, lba+count), skip
+/// entirely if all-zero; otherwise log the LBA, a 128-bit non-zero-word
+/// bitmap (two u64s) and every non-zero word as (index << 32) | value.
+/// Far fewer log lines than `dump_sectors`, so the ring stream catches
+/// everything (the reader drops lines on dense dumps).
+pub fn scan_sectors(lba: u32, count: u32, log: fn(&str, u64)) {
+    let mut words = [0u32; 128];
+    for s in 0..count {
+        let l = lba.wrapping_add(s);
+        let (ok, _st, _e) = sdhci_data_read(17, l, &mut words, log);
+        if !ok {
+            log("em: scan_bad=", l as u64);
+            return;
+        }
+        let mut bm0 = 0u64;
+        let mut bm1 = 0u64;
+        for i in 0..64 {
+            if words[i] != 0 {
+                bm0 |= 1u64 << i;
+            }
+        }
+        for i in 64..128 {
+            if words[i] != 0 {
+                bm1 |= 1u64 << (i - 64);
+            }
+        }
+        if bm0 == 0 && bm1 == 0 {
+            continue;
+        }
+        log("em: nz_lba=", l as u64);
+        log("em: nz_bm0=", bm0);
+        log("em: nz_bm1=", bm1);
+        for i in 0..128 {
+            if words[i] != 0 {
+                log("em: nz_w=", ((i as u64) << 32) | words[i] as u64);
+            }
+        }
+    }
+    log("em: scan_done=", count as u64);
+}
+
+/// `dump_sectors`: read `count` sectors and log them as hex lines
+/// (16 words of 8 hex digits per line, 8 lines per sector). The host-side
+/// decoder (`dump_decode.py`) reconstructs the bytes. For BFM forensics:
+/// misc @ 0x7C000 (507904), bootfail_info @ 0x1E8000 (1998848), oeminfo @
+/// 0x8000 (32768).
+#[cfg(fullerene_aarch64_ane)]
+pub fn dump_sectors(lba: u32, count: u32, log: fn(&str, u64)) {
+    let mut words = [0u32; 128];
+    for s in 0..count {
+        let l = lba.wrapping_add(s);
+        let (ok, _st, _e) = sdhci_data_read(17, l, &mut words, log);
+        log("em: dump_lba=", l as u64);
+        log("em: dump_ok=", ok as u64);
+        if !ok {
+            return;
+        }
+        for row in 0..64 {
+            // 64 lines per sector: each line = 2 words (8 bytes) packed
+            // big-endian into one u64, so the printed hex digits are the
+            // sector's byte sequence in order.
+            let pair = row * 2;
+            let w0 = words[pair] as u64;
+            let w1 = words[pair + 1] as u64;
+            let v = (w0 << 32) | w1;
+            log("em: dd=", v);
+        }
+    }
+}
+
 /// One SDHCI command. `resp` = the response-type field (0 = none, 1 =
 /// 136-bit R2, 2 = 48-bit, 3 = 48-bit with busy); `extra` = any of
 /// CMD_CRC / CMD_INDEX / CMD_DATA. Polls NORMAL_INT_STATUS for
@@ -1059,6 +1744,11 @@ fn sdhci_cmd(idx: u16, arg: u32, resp: u16, extra: u16) -> (bool, u32, u32, u32)
     let mut done = false;
     let mut iters = 0u32;
     for i in 0..0x80_0000u32 {
+        // v174: this loop is the boot's silent grind - keep the loader
+        // watchdog fed while waiting on the card.
+        if i & 0xFFF == 0 {
+            super::ane::watchdog_tend();
+        }
         let s = rd32(SDHCI_BASE, 0x30);
         iters = i;
         if s & (0x1 | 0x8000) != 0 {

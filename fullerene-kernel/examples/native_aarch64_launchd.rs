@@ -115,13 +115,41 @@ fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
     }
 }
 
+/// Paint a raw progress block on the right side of the ANE canvas.
+///
+/// The canvas is identity-mapped here, so a plain store works from EL0 with
+/// no syscall; the kernel's IRQ-era panel flushes carry it to the scan-out
+/// window. Left side = kernel text rows, right side = these markers.
+fn user_mark(index: u32) {
+    const CANVAS: *mut u32 = 0x3100_0000 as *mut u32;
+    const WIDTH: usize = 1080;
+    // 100x110 white blocks, four per band on the right side.
+    let x = 620 + (index % 4) * 110;
+    let y = 400 + (index / 4) * 140;
+    for row in 0..110u32 {
+        for col in 0..100u32 {
+            unsafe {
+                core::ptr::write_volatile(
+                    CANVAS.add(((y + row) as usize) * WIDTH + (x + col) as usize),
+                    0xffff_ffff,
+                );
+            }
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
+    user_mark(0);
     let _abi = unsafe { syscall(ABI_QUERY, 0, 0, 0, 0, 0, 0) };
+    user_mark(1);
     let _pid = unsafe { syscall(GET_PID, 0, 0, 0, 0, 0, 0) };
+    user_mark(2);
     let name = unsafe { core::ptr::addr_of_mut!(PROCESS_NAME.0) as u64 };
     let _name_len = unsafe { syscall(GET_PROCESS_NAME, name, 16, 0, 0, 0, 0) };
+    user_mark(3);
     let file = unsafe { syscall(OPEN, MOTD_PATH.as_ptr() as u64, 0, 0, 0, 0, 0) };
+    user_mark(4);
     if (file as i64) >= 0 {
         let mut file_buffer = [0u8; 64];
         let bytes = unsafe {

@@ -14,7 +14,10 @@ use super::fdt;
 // the bounded virtual filesystems resident at the same time. 256 KiB was
 // enough for the original launchd probe but made a valid initramfs fail as
 // soon as the property-service protocol handler grew past that boundary.
-const HEAP_SIZE: usize = 512 * 1024;
+// 8 MiB since the storage-stack bring-up mounts real gigabytes-scale
+// filesystems (f2fs/ext4) during boot: a 512 KiB heap OOM-reset the box
+// when the v100 probe mounted the 20 GB userdata partition.
+const HEAP_SIZE: usize = 32 * 1024 * 1024;
 pub const PAGE_SIZE: u64 = 4096;
 const MAX_FRAME_RANGES: usize = 8;
 const FIXED_RESERVED_RANGES: usize = 4;
@@ -32,6 +35,13 @@ struct BumpAllocator {
 }
 
 unsafe impl Sync for BumpAllocator {}
+
+/// Heap usage for the durable log (the v148 stall sat inside resolve_path's
+/// Vec/String allocations; this tells exhaustion from corruption at a
+/// glance). The bump cursor is monotonic, so this is bytes-ever-allocated.
+pub fn heap_used() -> usize {
+    ALLOCATOR.next.load(Ordering::Relaxed)
+}
 
 #[global_allocator]
 static ALLOCATOR: BumpAllocator = BumpAllocator {

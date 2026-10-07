@@ -3248,6 +3248,17 @@ pub(crate) fn handle_user_fault(frame: &mut Aarch64TrapFrame) -> bool {
             return true;
         }
     }
+    #[cfg(fullerene_aarch64_ane)]
+    {
+        // No readable console when the USB wedge bites: paint the fault
+        // triple where a photo can reach it.
+        super::platform::ane_fb::LAST_FLT.store(esr, core::sync::atomic::Ordering::Relaxed);
+        super::platform::ane_fb::LAST_FAR.store(far, core::sync::atomic::Ordering::Relaxed);
+        super::platform::ane_fb::paint_hex_at(23, 300, b"FLT", esr);
+        super::platform::ane_fb::flush_panel();
+        super::platform::ane_fb::paint_hex_at(24, 300, b"FAR", far);
+        super::platform::ane_fb::flush_panel();
+    }
     uart::put_hex("user-smoke: fault task=", current as u64);
     uart::put_hex("user-smoke: fault esr=", esr);
     uart::put_hex("user-smoke: fault far=", far);
@@ -3274,5 +3285,13 @@ fn is_user_write_permission_fault(esr: u64) -> bool {
 #[unsafe(no_mangle)]
 pub(crate) extern "C" fn return_from_user() -> ! {
     uart::puts("user-smoke: returned to EL1h\n");
+    #[cfg(fullerene_aarch64_ane)]
+    loop {
+        // Feed the loader's watchdog from this dead-end loop too: a bench
+        // reset here used to erase all evidence of why we landed here.
+        super::platform::ane::watchdog_kick();
+        cpu::wait_for_event();
+    }
+    #[cfg(not(fullerene_aarch64_ane))]
     cpu::wait_forever()
 }

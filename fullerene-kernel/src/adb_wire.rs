@@ -138,8 +138,17 @@ pub fn encode(command: u32, arg0: u32, arg1: u32, payload: &[u8], out: &mut [u8]
 /// a host that only enumerates and connects gets a one-line summary of the last recorded boot
 /// without asking for anything - which is the whole point of having a channel at all.
 pub fn cnxn_reply(version: u32, max_payload: u32, banner: &[u8], out: &mut [u8]) -> Option<usize> {
-    // The banner must be NUL-terminated on the wire, as the host's parser expects it.
-    let mut terminated = [0u8; 512];
+    // The banner must be NUL-terminated on the wire, as the host's parser
+    // expects it.
+    //
+    // v189: this buffer was [0u8; 512] from the original banner-only era.
+    // When the v155 piggyback design grew the banner to hold up to 2048
+    // bytes of ring tail (head 21 + tail = up to 2069), every CNXN reply
+    // started returning None here - silently killing the reply build (the
+    // ledger stopped at "RD" with no "RP"), which is why no CNXN reply ever
+    // reached the host for the entire campaign. 4096 covers the full
+    // banner + NUL and matches MAX_PAYLOAD.
+    let mut terminated = [0u8; 4096];
     if banner.len() + 1 > terminated.len() {
         return None;
     }

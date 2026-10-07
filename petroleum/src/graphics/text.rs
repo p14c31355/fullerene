@@ -131,7 +131,8 @@ const DEFAULT_VGA_BUFFER_ADDR: usize = 0xb8000;
 /// VGA text mode buffer wrapper that implements TextBufferOperations
 pub struct VgaBuffer {
     buffer_addr: usize,
-    enabled: bool,
+    /// Whether the text console writes through to the hardware.
+    pub(crate) enabled: bool,
     color_code: ColorCode,
     cursor_row: usize,
     cursor_col: usize,
@@ -210,7 +211,7 @@ impl VgaBuffer {
 
     pub fn update_cursor(&mut self) {
         let pos = self.cursor_row * VGA_WIDTH + self.cursor_col;
-        crate::update_vga_cursor!(pos);
+        crate::arch::set_hardware_cursor(pos);
     }
 
     pub fn get_buffer(&mut self) -> Option<&mut [[ScreenChar; VGA_WIDTH]; VGA_HEIGHT]> {
@@ -307,74 +308,9 @@ impl TextBufferOperations for VgaBuffer {
     }
 }
 
-impl crate::initializer::Initializable for VgaBuffer {
-    fn init(&mut self) -> crate::common::logging::SystemResult<()> {
-        log::info!("VGA device initialized");
-        Ok(())
-    }
-
-    fn name(&self) -> &'static str {
-        "VgaBuffer"
-    }
-
-    fn priority(&self) -> i32 {
-        10 // High priority for display device
-    }
-}
-
-impl crate::initializer::ErrorLogging for VgaBuffer {
-    fn log_error(&self, error: &crate::common::logging::SystemError, context: &'static str) {
-        log::error!("{}: {:?}", context, error);
-    }
-
-    fn log_warning(&self, message: &'static str) {
-        log::warn!("{}", message);
-    }
-
-    fn log_info(&self, message: &'static str) {
-        log::info!("{}", message);
-    }
-
-    fn log_debug(&self, message: &'static str) {
-        log::debug!("{}", message);
-    }
-
-    fn log_trace(&self, message: &'static str) {
-        log::trace!("{}", message);
-    }
-}
-
-impl crate::initializer::HardwareDevice for VgaBuffer {
-    fn device_name(&self) -> &'static str {
-        "VGA Text Mode Display"
-    }
-
-    fn device_type(&self) -> &'static str {
-        "Display"
-    }
-
-    fn enable(&mut self) -> crate::common::logging::SystemResult<()> {
-        self.enabled = true;
-        log::info!("VGA device enabled");
-        Ok(())
-    }
-
-    fn disable(&mut self) -> crate::common::logging::SystemResult<()> {
-        self.enabled = false;
-        log::info!("VGA device disabled");
-        Ok(())
-    }
-
-    fn reset(&mut self) -> crate::common::logging::SystemResult<()> {
-        self.reset();
-        log::info!("VGA device reset");
-        Ok(())
-    }
-
-    fn is_enabled(&self) -> bool {
-        self.enabled
-    }
-}
+// The hardware-initializer trait impls for VgaBuffer live in the x86 tree
+// (`graphics/x86_64/vga_initializer.rs`), because those traits describe the
+// PC boot bring-up and are x86-only.
 
 // Re-export for backward compatibility and consolidation
 pub use self::VgaBuffer as KernelVgaBuffer;

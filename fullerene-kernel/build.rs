@@ -256,6 +256,10 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gctl_sofitpsync_clear)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gctl_pwrdnscale_2)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_ep0_initial_512)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_ane_adb_protocol)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_ane_marks_uart_only)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_ane_no_timer)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_ane_adb_protocol)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_dcfg_superspeed)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_dcfg_fullspeed)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_dcfg_lowspeed)");
@@ -443,6 +447,30 @@ fn main() {
         }
         if platform == "ane" {
             println!("cargo:rustc-cfg=fullerene_aarch64_ane");
+        }
+        if env::var_os("FULLERENE_ANE_ADB_PROTOCOL").is_some() {
+            // Flip the ANE responder interface from fastboot (0x03) to the ADB
+            // class (0x01) so a host `adb` claims it. Experimental: whether
+            // the fastboot client still matches 0x01 is the open question.
+            println!("cargo:rustc-cfg=fullerene_ane_adb_protocol");
+        }
+        if env::var_os("FULLERENE_ANE_MARKS_UART_ONLY").is_some() {
+            // Bisection build: launchd marks go to the ring only, skipping
+            // the fb paint/flush the v145 boot stuck inside (ELR 0x1BE6C54).
+            println!("cargo:rustc-cfg=fullerene_ane_marks_uart_only");
+        }
+        if env::var_os("FULLERENE_ANE_NO_PUTC_WD_TEND").is_some() {
+            // v211 experiment: drop the per-console-byte SP805 read
+            // (watchdog_tend) from uart::putc. The launchd-entry stall's ELR
+            // sits inside putc and the ring tee is followed by this MMIO
+            // read on the ANE path - the one access that can stall a bus
+            // (unbounded by design). The timer IRQ (beats % 8), the USB
+            // path and the storage loops keep feeding the SP805.
+            println!("cargo:rustc-cfg=fullerene_ane_no_putc_wd_tend");
+        }
+        if env::var_os("FULLERENE_ANE_NO_TIMER").is_some() {
+            // Bisection build: the GIC delivers no timer PPI (the v153 test).
+            println!("cargo:rustc-cfg=fullerene_ane_no_timer");
         }
         if env::var_os("FULLERENE_AARCH64_USB_PULLUP_PROBE").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_pullup_probe");
