@@ -73,9 +73,9 @@ pub const AX101_DEVICE_ID: u16 = 0x54f0;
 pub const AX101_SUBSYSTEM_DEVICE_ID: u16 = 0x0244;
 
 const FW_AX101_SO_89: &[u8] =
-    include_bytes!("../../../bonder/iwlwifi/intel/iwlwifi/iwlwifi-so-a0-hr-b0-89.ucode");
+    include_bytes!("../../../../../bonder/iwlwifi/intel/iwlwifi/iwlwifi-so-a0-hr-b0-89.ucode");
 const FW_QUZ_77: &[u8] =
-    include_bytes!("../../../bonder/iwlwifi/intel/iwlwifi/iwlwifi-QuZ-a0-hr-b0-77.ucode");
+    include_bytes!("../../../../../bonder/iwlwifi/intel/iwlwifi/iwlwifi-QuZ-a0-hr-b0-77.ucode");
 
 /// Hardware family selected before any BAR/MMIO access.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

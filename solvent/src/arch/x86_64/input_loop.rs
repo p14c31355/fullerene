@@ -458,7 +458,7 @@ pub fn poll_mouse_state() {
 }
 
 /// Measure the delay from the last queued pointer event to cursor painting.
-pub(crate) fn record_cursor_paint() {
+pub fn record_cursor_paint() {
     let event_tsc = LAST_POINTER_EVENT_TSC.swap(0, Ordering::AcqRel);
     if event_tsc == 0 {
         return;
@@ -862,7 +862,7 @@ fn push_keyboard_event(scancode: u8, pressed: bool) {
     }
 }
 
-pub(crate) fn scancode_to_resonance_keycode(scancode: u8) -> resonance::KeyCode {
+pub fn scancode_to_resonance_keycode(scancode: u8) -> resonance::KeyCode {
     resonance::scancode::from_scancode(scancode)
 }
 
@@ -908,7 +908,7 @@ fn handle_password_dialog_key(runtime: &mut RuntimeState, scancode: u8, pressed:
     runtime.frame_due = true;
 }
 
-pub(crate) fn scancode_to_ascii(scancode: u8) -> u8 {
+pub fn scancode_to_ascii(scancode: u8) -> u8 {
     match scancode {
         0x10 => b'q',
         0x11 => b'w',

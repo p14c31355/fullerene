@@ -58,6 +58,14 @@ pub(crate) fn yield_scheduler() {
 
 pub mod arch;
 
+// Platform tree: the x86 runtime pieces (input stack, Wi-Fi UI) and the ANE
+// tick source answer from `arch/`; globbed so historic paths such as
+// `solvent::input_loop::...` keep working.
+#[cfg(target_arch = "x86_64")]
+pub use arch::x86_64::*;
+#[cfg(target_arch = "aarch64")]
+pub use arch::aarch64::*;
+
 #[cfg(not(target_arch = "xtensa"))]
 mod callbacks;
 #[cfg(not(target_arch = "xtensa"))]
@@ -73,19 +81,17 @@ mod file;
 #[cfg(not(target_arch = "xtensa"))]
 mod handlers;
 #[cfg(not(target_arch = "xtensa"))]
-mod input_loop;
-#[cfg(not(target_arch = "xtensa"))]
 mod installer;
 #[cfg(not(target_arch = "xtensa"))]
 mod menu_actions;
 #[cfg(not(target_arch = "xtensa"))]
-mod network_manager;
+mod network_state;
+#[cfg(not(target_arch = "xtensa"))]
+mod services;
 #[cfg(not(target_arch = "xtensa"))]
 mod render;
 #[cfg(not(target_arch = "xtensa"))]
 mod runtime_context;
-#[cfg(not(target_arch = "xtensa"))]
-mod services;
 #[cfg(not(target_arch = "xtensa"))]
 mod settings_bridge;
 #[cfg(not(target_arch = "xtensa"))]
@@ -111,7 +117,7 @@ pub use event_loop::{
 };
 #[cfg(not(target_arch = "xtensa"))]
 pub use file::RuntimeFile;
-#[cfg(not(target_arch = "xtensa"))]
+#[cfg(target_arch = "x86_64")]
 pub use input_loop::{
     MOUSE_STATE, MouseState, clear_video_stop_request, pointer_latency_metrics, poll_keyboard,
     poll_mouse_state, take_video_stop_request,
@@ -131,12 +137,14 @@ pub use runtime_context::{
     RUNTIME_CONTEXT, RuntimeContext, RuntimeState, apply_settings, get_tsc_per_ms, init,
     is_initialized, request_klog_live_refresh, set_tsc_per_ms, settings_snapshot,
 };
-#[cfg(all(not(target_arch = "xtensa"), not(nitrogen_no_iwlwifi)))]
+#[cfg(not(target_arch = "xtensa"))]
+pub use network_state::{NETWORK_SNAPSHOT, NetworkSnapshot};
+#[cfg(all(target_arch = "x86_64", not(nitrogen_no_iwlwifi)))]
 pub use services::register_wifi_service;
 #[cfg(not(target_arch = "xtensa"))]
-pub use services::{
-    NETWORK_SNAPSHOT, NetworkSnapshot, Service, WIFI_ACTION_QUEUE, WifiAction, register_service,
-};
+pub use services::{Service, register_service};
+#[cfg(target_arch = "x86_64")]
+pub use services::{WIFI_ACTION_QUEUE, WifiAction};
 #[cfg(not(target_arch = "xtensa"))]
 pub use settings_bridge::settings_handle_key;
 #[cfg(not(target_arch = "xtensa"))]
@@ -157,9 +165,6 @@ pub use window_api::{
     scaled_framebuffer_dims, suspend_rendering, with_window_surface, write_terminal,
 };
 
-#[cfg(not(target_arch = "xtensa"))]
-pub(crate) use input_loop::{scancode_to_ascii, scancode_to_resonance_keycode};
-#[cfg(not(target_arch = "xtensa"))]
 pub(crate) use runtime_context::{
     BACK_BUFFER, CURSOR_TIMER_ID, DEFAULT_COLS, DEFAULT_ROWS, FB_DIMS, FRAME_INTERVAL_MS,
     FRAME_TIMER_ID, GLYPH_H, GLYPH_W, PREV_MOUSE_BUTTONS, TERM_WIN_H, TERM_WIN_W, TSC_PER_MS,

@@ -1,7 +1,7 @@
 //! Menu actions and info-window dispatch.
 //! Extracted from the monolith lib.rs to respect AGENTS.md §10.
 
-use crate::{FB_DIMS, RUNTIME_CONTEXT, RuntimeState, network_manager, truncate_to_chars};
+use crate::{FB_DIMS, RUNTIME_CONTEXT, RuntimeState, truncate_to_chars};
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write;
@@ -290,7 +290,7 @@ pub(crate) fn dispatch_menu_action(rt: &mut RuntimeState, action: &DesktopAction
         }
         _ => {
             // Try network actions
-            network_manager::handle_network_action(rt, action);
+            crate::handle_network_action(rt, action);
         }
     }
 }

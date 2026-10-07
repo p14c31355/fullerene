@@ -54,5 +54,8 @@ nozzle = { path = "../nozzle" }
 nitrogen = { path = "../nitrogen" }
 genome = { path = "../genome" }
 resonance = { path = "../resonance" }
+petroleum = { path = "../petroleum" }
+chronoline = { path = "../chronoline" }
+carrier = { path = "../carrier" }
 spin = { workspace = true, features = ["once", "mutex", "spin_mutex"] }
 log = { workspace = true }

@@ -28,6 +28,10 @@ name = "nitrogen"
 path = "src/lib.rs"
 crate-type = ["lib"]
 
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+spin = { workspace = true, features = ["spin_mutex"] }
+log = { workspace = true }
+
 [target.'cfg(target_arch = "xtensa")'.dependencies]
 spin = { workspace = true, features = ["spin_mutex"] }
 log = { workspace = true }
