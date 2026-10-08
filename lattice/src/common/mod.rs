@@ -763,8 +763,14 @@ mod tests {
 
     #[test]
     fn orientation_swaps_logical_dimensions_only_for_portrait() {
-        assert_eq!(ScreenOrientation::Landscape.logical_size(640, 480), (640, 480));
-        assert_eq!(ScreenOrientation::Portrait.logical_size(640, 480), (480, 640));
+        assert_eq!(
+            ScreenOrientation::Landscape.logical_size(640, 480),
+            (640, 480)
+        );
+        assert_eq!(
+            ScreenOrientation::Portrait.logical_size(640, 480),
+            (480, 640)
+        );
         assert_eq!(
             ScreenOrientation::ReverseLandscape.logical_size(640, 480),
             (640, 480)

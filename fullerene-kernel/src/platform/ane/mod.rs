@@ -36,6 +36,96 @@ pub const I2C2_CLOCK_MULT: u32 = 1;
 pub const I2C2_APB_CLOCK_PHANDLE: u32 = 0x28;
 pub const I2C2_APB_CLOCK_HZ: u32 = 20_000_000;
 
+/// The stock `ts_kit` bus number is 0.  In the active ANE DTB that maps to
+/// `/amba/i2c@FFD71000`, not to I2C2.  The controller is currently disabled;
+/// these constants are inventory only and deliberately have no accessors.
+pub const TOUCH_I2C0_BASE: usize = 0xffd7_1000;
+pub const TOUCH_I2C0_BUS_ID: u32 = 0;
+pub const TOUCH_I2C0_STATUS_ENABLED: bool = false;
+pub const TOUCH_I2C0_IRQ: u32 = 118;
+pub const TOUCH_I2C0_ADDRESS: u8 = 0x38;
+pub const TOUCH_RESET_GPIO: u32 = 145;
+pub const TOUCH_IRQ_GPIO: u32 = 224;
+pub const TOUCH_RESET_GPIO_PROVIDER: usize = 0xe8a1_d000;
+pub const TOUCH_IRQ_GPIO_PROVIDER: usize = 0xfff1_d000;
+pub const TOUCH_RESET_ACTIVE_LOW: bool = true;
+pub const TOUCH_RESET_ASSERT_TO_RELEASE_MS: u32 = 2;
+pub const TOUCH_RESET_SETTLE_MS: u32 = 8;
+pub const TOUCH_IRQ_SYNC_LOW_MS: u32 = 50;
+pub const TOUCH_IRQ_FALLING_EDGE: bool = true;
+pub const TOUCH_VDD_REGULATOR_PHANDLE: u32 = 0x5f;
+pub const TOUCH_VDD_REGULATOR_CTRL: u8 = 0x25;
+pub const TOUCH_VDD_UV: u32 = 3_000_000;
+pub const TOUCH_IO_REGULATOR_PHANDLE: u32 = 0x60;
+pub const TOUCH_IO_REGULATOR_CTRL: u8 = 0x19;
+pub const TOUCH_IO_UV: u32 = 1_800_000;
+pub const TOUCH_REGULATORS: [super::common::regulator::RegulatorDescriptor; 2] = [
+    super::common::regulator::RegulatorDescriptor::hisi_ldo(
+        TOUCH_VDD_REGULATOR_PHANDLE,
+        TOUCH_VDD_REGULATOR_CTRL,
+        0x4e,
+        0x07,
+        TOUCH_VDD_UV,
+        20_000,
+        120,
+    ),
+    super::common::regulator::RegulatorDescriptor::hisi_ldo(
+        TOUCH_IO_REGULATOR_PHANDLE,
+        TOUCH_IO_REGULATOR_CTRL,
+        0x42,
+        0x07,
+        TOUCH_IO_UV,
+        20_000,
+        120,
+    ),
+];
+pub const TOUCH_I2C0_RESET_BIT: u32 = 3;
+pub const TOUCH_I2C0_DELAY_OFF_US: u32 = 300;
+pub const TOUCH_I2C0_RESET_BASE: usize = 0xFFD7E000;
+pub const TOUCH_I2C0_RESET_ENABLE_OFFSET: usize = 0x20;
+pub const TOUCH_I2C0_RESET_DISABLE_OFFSET: usize = 0x24;
+pub const TOUCH_I2C0_RESET_STATUS_OFFSET: usize = 0x28;
+pub const TOUCH_I2C0_INPUT_CLOCK_HZ: u32 = 19_200_000;
+/// Standard DesignWare observation point for the disabled touch controller.
+/// Calling this requires an independently verified clock/MMIO ownership state.
+pub unsafe fn touch_i2c0_controller_snapshot() -> super::common::designware_i2c::ControllerSnapshot
+{
+    super::common::designware_i2c::snapshot(TOUCH_I2C0_BASE)
+}
+pub const TOUCH_I2C0_CLOCK_PHANDLE: u32 = 0x48;
+pub const TOUCH_I2C0_CLOCK_PARENT_PHANDLE: u32 = 0x12f;
+pub const TOUCH_I2C0_APB_CLOCK_PHANDLE: u32 = 0x28;
+pub const TOUCH_I2C0_APB_CLOCK_HZ: u32 = 20_000_000;
+pub const TOUCH_I2C0_MUX_BASE: usize = 0xfff1_1000;
+pub const TOUCH_I2C0_CFG_BASE: usize = 0xfff1_1800;
+pub const TOUCH_I2C0_SCL_MUX_OFFSET: usize = 0x14;
+pub const TOUCH_I2C0_SDA_MUX_OFFSET: usize = 0x18;
+pub const TOUCH_I2C0_SCL_CFG_OFFSET: usize = 0x1c;
+pub const TOUCH_I2C0_SDA_CFG_OFFSET: usize = 0x20;
+pub const TOUCH_I2C0_PIN_MUX_FUNCTION: u32 = 1;
+pub const TOUCH_I2C0_PIN_CFG_FUNCTION: u32 = 0;
+pub const TOUCH_I2C0_SCL_MUX_PHANDLE: u32 = 0x49;
+pub const TOUCH_I2C0_SDA_MUX_PHANDLE: u32 = 0x4a;
+pub const TOUCH_I2C0_SCL_CFG_PHANDLE: u32 = 0x4b;
+pub const TOUCH_I2C0_SDA_CFG_PHANDLE: u32 = 0x4c;
+pub const TOUCH_I2C0_PINCTRL_FUNC_MUX_VALUE: u32 = 1;
+pub const TOUCH_I2C0_PINCTRL_FUNC_CFG_VALUE: u32 = 0;
+
+/// Read-only clock description for the disabled stock touch bus.
+pub const TOUCH_I2C0_CLOCKS: [super::common::clock::ClockDescriptor; 2] = [
+    super::common::clock::ClockDescriptor::fixed_factor(
+        TOUCH_I2C0_CLOCK_PHANDLE,
+        TOUCH_I2C0_CLOCK_PARENT_PHANDLE,
+        TOUCH_I2C0_INPUT_CLOCK_HZ,
+        1,
+        1,
+    ),
+    super::common::clock::ClockDescriptor::fixed(
+        TOUCH_I2C0_APB_CLOCK_PHANDLE,
+        TOUCH_I2C0_APB_CLOCK_HZ,
+    ),
+];
+
 /// Active DTB power sources for the ANE battery path.  The coulomb counter
 /// is enabled at the PMIC, while the charger alternatives are selected by
 /// board firmware; no disabled charger node is activated by this metadata.
@@ -88,14 +178,8 @@ pub unsafe fn i2c2_select_pins(active: bool) {
     } else {
         I2C2_IDLE_MUX_VALUE
     };
-    core::ptr::write_volatile(
-        (I2C2_MUX_BASE + I2C2_SCL_MUX_OFFSET) as *mut u32,
-        mux,
-    );
-    core::ptr::write_volatile(
-        (I2C2_MUX_BASE + I2C2_SDA_MUX_OFFSET) as *mut u32,
-        mux,
-    );
+    core::ptr::write_volatile((I2C2_MUX_BASE + I2C2_SCL_MUX_OFFSET) as *mut u32, mux);
+    core::ptr::write_volatile((I2C2_MUX_BASE + I2C2_SDA_MUX_OFFSET) as *mut u32, mux);
     core::ptr::write_volatile(
         (I2C2_CFG_BASE + I2C2_SCL_CFG_OFFSET) as *mut u32,
         I2C2_CFG_VALUE,

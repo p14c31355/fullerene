@@ -4108,9 +4108,7 @@ fn build_aarch64_kernel(
         // launchd feature automatic for the platform so the documented
         // `build --platform ane` command cannot silently produce a
         // diagnostics-only kernel that never starts userspace.
-        (false, false, false) if platform == Platform::AneLx2j => {
-            "aarch64,aarch64-user-launchd"
-        }
+        (false, false, false) if platform == Platform::AneLx2j => "aarch64,aarch64-user-launchd",
         (false, false, true) => "aarch64,aarch64-user-launchd",
         (false, false, false) => "aarch64",
     };

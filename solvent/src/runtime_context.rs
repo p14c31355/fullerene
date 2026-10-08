@@ -151,8 +151,7 @@ impl Default for RuntimeContext {
 pub static RUNTIME_CONTEXT: RuntimeContext = RuntimeContext::new();
 
 /// Logical input orientation.  Zero is the legacy landscape behaviour.
-static SCREEN_ORIENTATION: core::sync::atomic::AtomicU8 =
-    core::sync::atomic::AtomicU8::new(0);
+static SCREEN_ORIENTATION: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
 pub fn set_screen_orientation(orientation: lattice::common::ScreenOrientation) {
     let value = match orientation {

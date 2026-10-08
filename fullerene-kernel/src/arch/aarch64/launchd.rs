@@ -52,11 +52,7 @@ pub fn last_mark() -> &'static [u8] {
     unsafe {
         let n = core::ptr::addr_of!(LAST_MARK_LEN).read();
         let m = &*core::ptr::addr_of!(LAST_MARK);
-        if n <= m.len() {
-            &m[..n]
-        } else {
-            &m[..0]
-        }
+        if n <= m.len() { &m[..n] } else { &m[..0] }
     }
 }
 

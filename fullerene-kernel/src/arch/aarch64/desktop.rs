@@ -21,7 +21,7 @@ use core::slice;
 use core::sync::atomic::Ordering;
 
 use petroleum::graphics::FramebufferGuard;
-use petroleum::page_table::constants::{init_frame_allocator, AneFrameAllocator};
+use petroleum::page_table::constants::{AneFrameAllocator, init_frame_allocator};
 
 use super::platform::ane_fb;
 use super::uart;
@@ -41,6 +41,7 @@ pub fn bring_up() {
     // seen. TM1 = the cold+warm 24 KiB static fill with the timer running
     // at 100 ms period; if the crawl is IRQ starvation this now completes
     // and prints. IRQQ comes after, so its effect is measurable too.
+    #[cfg(fullerene_ane_desktop_memory_probe)]
     {
         static mut PROBE_BUF: [u32; 6144] = [0; 6144];
         let t0 = super::timer::uptime_us();
@@ -71,6 +72,7 @@ pub fn bring_up() {
 
     // TM2: the same fill again under IRQ_QUIET - the delta vs TM1 tells
     // whether the instrument paints were the whole cost.
+    #[cfg(fullerene_ane_desktop_memory_probe)]
     {
         static mut PROBE_BUF2: [u32; 6144] = [0; 6144];
         let t0 = super::timer::uptime_us();
@@ -89,6 +91,7 @@ pub fn bring_up() {
     // enabling it (see mmu.rs), so the first-touch cacheable store should
     // no longer crawl. This probe is the same 24 KiB fill that parked in
     // v230/v231; its completion marker in the ring is the acceptance test.
+    #[cfg(fullerene_ane_desktop_memory_probe)]
     {
         use alloc::vec::Vec as AVec;
         uart::puts("PR: fill start\n");

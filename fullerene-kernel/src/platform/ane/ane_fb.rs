@@ -63,14 +63,12 @@ fn desktop_owned() -> bool {
 /// budget copying canvas bands (up to a full 9.6 MiB flush_panel) while
 /// the desktop's own multi-MiB fill/render needs the CPU. The durable
 /// ring, the restamps and `flush_panel` itself stay available.
-pub static IRQ_QUIET: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
+pub static IRQ_QUIET: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// True while the desktop wants the IRQ paints quiet.
 fn irq_quiet() -> bool {
     IRQ_QUIET.load(core::sync::atomic::Ordering::Relaxed)
 }
-
 
 const TEXT_X: u32 = 8;
 const TEXT_Y: u32 = 110;
@@ -270,7 +268,13 @@ fn draw_boot_screen(
     panel(canvas, 72, 220, 936, 176, PANEL);
     ui_text(canvas, 104, 248, b"BOOT CONSOLE", MUTED);
     ui_text(canvas, 104, 286, b"USB BRING-UP", FG);
-    ui_text(canvas, 104, 326, b"DISPLAY PATH ONLINE / DIAGNOSTICS RETAINED", CYAN);
+    ui_text(
+        canvas,
+        104,
+        326,
+        b"DISPLAY PATH ONLINE / DIAGNOSTICS RETAINED",
+        CYAN,
+    );
     let status: &[u8] = if ok > 0 { b"ONLINE" } else { b"WAITING" };
     let status_color = if ok > 0 { GREEN } else { AMBER };
     ui_text(canvas, 824, 286, status, status_color);
@@ -286,7 +290,13 @@ fn draw_boot_screen(
 
     ui_text(canvas, 72, 458, b"BOOT PIPELINE", MUTED);
     stage(canvas, 72, 492, b"CLOCK", true);
-    stage(canvas, 252, 492, b"USB PHY", usb.phy.iter().any(|&v| v != 0));
+    stage(
+        canvas,
+        252,
+        492,
+        b"USB PHY",
+        usb.phy.iter().any(|&v| v != 0),
+    );
     stage(canvas, 432, 492, b"GADGET", usb.core[3] != 0);
     stage(canvas, 612, 492, b"FRAMEBUFFER", ok > 0);
     stage(canvas, 792, 492, b"LAUNCHD", false);
@@ -319,7 +329,13 @@ fn draw_boot_screen(
     ui_hex(canvas, 560, 1348, b"LOCK", wd.lock, FG);
     ui_text(canvas, 104, 1424, b"RING: DURABLE / UART: MIRRORED", CYAN);
     ui_text(canvas, 104, 1472, b"LAST STAGE: FRAMEBUFFER BLIT", GREEN);
-    ui_text(canvas, 104, 1520, b"A PHOTO OF THIS PANEL IS A BOOT RECORD", MUTED);
+    ui_text(
+        canvas,
+        104,
+        1520,
+        b"A PHOTO OF THIS PANEL IS A BOOT RECORD",
+        MUTED,
+    );
 
     rect(canvas, 72, 2270, 936, 2, CYAN);
     ui_text(canvas, 72, 2290, b"FULLERENE / ANE", FG);

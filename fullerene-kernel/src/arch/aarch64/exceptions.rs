@@ -80,10 +80,8 @@ pub(crate) static LAST_PRINTED_PC: core::sync::atomic::AtomicU64 =
 
 /// v242: accumulated IRQ-handler time (us) and IRQ count, printed as the
 /// IQ: line; acc/n approximates the per-IRQ cost.
-pub(crate) static IRQ_US_ACC: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(0);
-pub(crate) static IRQ_US_N: core::sync::atomic::AtomicU32 =
-    core::sync::atomic::AtomicU32::new(0);
+pub(crate) static IRQ_US_ACC: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub(crate) static IRQ_US_N: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// Set the current IRQ stage: mirror its letter into the durable ring (bounded
 /// so a spurious-id storm cannot wash the log) and remember it.
@@ -547,8 +545,7 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
         // hitting. Gate the every-IRQ repaint behind IRQ_QUIET (the desktop
         // raises it) and only flush every 16th IRQ otherwise - the ACK row
         // is still visible, the budget returns to the boot thread.
-        let quiet = super::platform::ane_fb::IRQ_QUIET
-            .load(core::sync::atomic::Ordering::Relaxed);
+        let quiet = super::platform::ane_fb::IRQ_QUIET.load(core::sync::atomic::Ordering::Relaxed);
         if !quiet && irq_index % 16 == 0 {
             super::platform::ane_fb::paint_hex_at(25, 300, b"ACK", irq_index as u64);
             super::platform::ane_fb::flush_row(25);
@@ -760,8 +757,7 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                             RC_STATE.store(0, Ordering::Relaxed);
                             S0.store(beats, Ordering::Relaxed); // restart the wait
                         }
-                    } else if beats.wrapping_sub(S0.load(Ordering::Relaxed))
-                        > RECONNECT_WAIT_BEATS
+                    } else if beats.wrapping_sub(S0.load(Ordering::Relaxed)) > RECONNECT_WAIT_BEATS
                     {
                         let r = RETRIES.load(Ordering::Relaxed);
                         if r >= RECONNECT_MAX {
@@ -807,105 +803,106 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                     }
                     crate::blackbox::text_byte(b'\n');
                 }
-                let pc_now =
-                    LAST_IRQ_PC.load(core::sync::atomic::Ordering::Relaxed);
-                let moved = pc_now
-                    != LAST_PRINTED_PC.load(core::sync::atomic::Ordering::Relaxed);
+                let pc_now = LAST_IRQ_PC.load(core::sync::atomic::Ordering::Relaxed);
+                let moved = pc_now != LAST_PRINTED_PC.load(core::sync::atomic::Ordering::Relaxed);
                 if moved || (beats / 1024) % 16 == 0 {
                     LAST_PRINTED_PC.store(pc_now, core::sync::atomic::Ordering::Relaxed);
-                // v240: restamp cadence relaxed 256 -> 1024 beats so the
-                // 2048-byte CNXN collection window covers ~4x more time and
-                // the desktop markers (TM:/PP:/PR:/RENDER:) are not pushed
-                // out by restamp spam before the collection lands.
-                #[cfg(feature = "aarch64-user-launchd")]
-                {
-                    let m = super::launchd::last_mark();
-                    if !m.is_empty() {
-                        crate::blackbox::text_puts("mark: ");
-                        for &b in m {
-                            crate::blackbox::text_byte(b);
+                    // v240: restamp cadence relaxed 256 -> 1024 beats so the
+                    // 2048-byte CNXN collection window covers ~4x more time and
+                    // the desktop markers (TM:/PP:/PR:/RENDER:) are not pushed
+                    // out by restamp spam before the collection lands.
+                    #[cfg(feature = "aarch64-user-launchd")]
+                    {
+                        let m = super::launchd::last_mark();
+                        if !m.is_empty() {
+                            crate::blackbox::text_puts("mark: ");
+                            for &b in m {
+                                crate::blackbox::text_byte(b);
+                            }
+                            crate::blackbox::text_byte(b'\n');
+                        }
+                    }
+                    // v214/v215: dump the VFS step-mark trail from its private
+                    // location (0x348de800: count@+0, bytes@+4) into the ring.
+                    // The CNXN piggyback then carries it within the single
+                    // conversation; a separate fetch would be conversation #2
+                    // and race the magic reset (measured: the 40 s fetch died
+                    // with no OKAY on boot c6).
+                    let cnt = unsafe { core::ptr::read_volatile(0x348d_e800u64 as *const u32) };
+                    if cnt > 0 && cnt <= 16 {
+                        const HEX: &[u8; 16] = b"0123456789abcdef";
+                        crate::blackbox::text_puts("SMK:");
+                        for i in 0..cnt {
+                            let b = unsafe {
+                                core::ptr::read_volatile((0x348d_e804u64 + i as u64) as *const u8)
+                            };
+                            crate::blackbox::text_byte(HEX[(b >> 4) as usize]);
+                            crate::blackbox::text_byte(HEX[(b & 0xf) as usize]);
                         }
                         crate::blackbox::text_byte(b'\n');
                     }
-                }
-                // v214/v215: dump the VFS step-mark trail from its private
-                // location (0x348de800: count@+0, bytes@+4) into the ring.
-                // The CNXN piggyback then carries it within the single
-                // conversation; a separate fetch would be conversation #2
-                // and race the magic reset (measured: the 40 s fetch died
-                // with no OKAY on boot c6).
-                let cnt = unsafe { core::ptr::read_volatile(0x348d_e800u64 as *const u32) };
-                if cnt > 0 && cnt <= 16 {
-                    const HEX: &[u8; 16] = b"0123456789abcdef";
-                    crate::blackbox::text_puts("SMK:");
-                    for i in 0..cnt {
-                        let b = unsafe {
-                            core::ptr::read_volatile((0x348d_e804u64 + i as u64) as *const u8)
-                        };
-                        crate::blackbox::text_byte(HEX[(b >> 4) as usize]);
-                        crate::blackbox::text_byte(HEX[(b & 0xf) as usize]);
-                    }
-                    crate::blackbox::text_byte(b'\n');
-                }
-                // v224: the boot thread's suspended PC (see LAST_IRQ_PC).
-                {
-                    const HEX: &[u8; 16] = b"0123456789abcdef";
-                    let pc = LAST_IRQ_PC.load(core::sync::atomic::Ordering::Relaxed);
-                    crate::blackbox::text_puts("PC:");
-                    for sh in (0..16u32).rev() {
-                        let nib = ((pc >> (sh * 4)) & 0xf) as usize;
-                        crate::blackbox::text_byte(HEX[nib]);
-                    }
-                    crate::blackbox::text_byte(b'\n');
-                    // v230: the 8-deep PC trail (low 32 bits each, hex).
-                    crate::blackbox::text_puts("PT:");
-                    for slot in 0..8usize {
-                        let v = PC_TRAIL[slot].load(core::sync::atomic::Ordering::Relaxed) as u32;
-                        for sh in (0..8u32).rev() {
-                            let nib = ((v >> (sh * 4)) & 0xf) as usize;
+                    // v224: the boot thread's suspended PC (see LAST_IRQ_PC).
+                    {
+                        const HEX: &[u8; 16] = b"0123456789abcdef";
+                        let pc = LAST_IRQ_PC.load(core::sync::atomic::Ordering::Relaxed);
+                        crate::blackbox::text_puts("PC:");
+                        for sh in (0..16u32).rev() {
+                            let nib = ((pc >> (sh * 4)) & 0xf) as usize;
                             crate::blackbox::text_byte(HEX[nib]);
                         }
-                        if slot != 7 {
-                            crate::blackbox::text_byte(b',');
+                        crate::blackbox::text_byte(b'\n');
+                        // v230: the 8-deep PC trail (low 32 bits each, hex).
+                        crate::blackbox::text_puts("PT:");
+                        for slot in 0..8usize {
+                            let v =
+                                PC_TRAIL[slot].load(core::sync::atomic::Ordering::Relaxed) as u32;
+                            for sh in (0..8u32).rev() {
+                                let nib = ((v >> (sh * 4)) & 0xf) as usize;
+                                crate::blackbox::text_byte(HEX[nib]);
+                            }
+                            if slot != 7 {
+                                crate::blackbox::text_byte(b',');
+                            }
+                        }
+                        crate::blackbox::text_byte(b'\n');
+                        // v228: the last fault's status/address, if any (0 when
+                        // the interrupted context never faulted).
+                        let esr = LAST_IRQ_ESR.load(core::sync::atomic::Ordering::Relaxed);
+                        let far = LAST_IRQ_FAR.load(core::sync::atomic::Ordering::Relaxed);
+                        let spsr = LAST_IRQ_SPSR.load(core::sync::atomic::Ordering::Relaxed);
+                        if esr != 0 || far != 0 {
+                            for (label, v) in [(b"ESR:", esr), (b"FAR:", far), (b"SPS:", spsr)] {
+                                unsafe {
+                                    crate::blackbox::text_puts(core::str::from_utf8_unchecked(
+                                        label,
+                                    ));
+                                }
+                                for sh in (0..16u32).rev() {
+                                    let nib = ((v >> (sh * 4)) & 0xf) as usize;
+                                    crate::blackbox::text_byte(HEX[nib]);
+                                }
+                                crate::blackbox::text_byte(b'\n');
+                            }
                         }
                     }
-                    crate::blackbox::text_byte(b'\n');
-                    // v228: the last fault's status/address, if any (0 when
-                    // the interrupted context never faulted).
-                    let esr = LAST_IRQ_ESR.load(core::sync::atomic::Ordering::Relaxed);
-                    let far = LAST_IRQ_FAR.load(core::sync::atomic::Ordering::Relaxed);
-                    let spsr = LAST_IRQ_SPSR.load(core::sync::atomic::Ordering::Relaxed);
-                    if esr != 0 || far != 0 {
-                        for (label, v) in [(b"ESR:", esr), (b"FAR:", far), (b"SPS:", spsr)] {
-                            unsafe {
+                    // v226: the VFS static's recorded identity at init ("VA") and
+                    // at the read site ("VB"); printed once each marker is set.
+                    for (label, slot) in [(b"VA:", 0x348d_e840usize), (b"VB:", 0x348d_e850usize)] {
+                        unsafe {
+                            if core::ptr::read_volatile((slot + 8) as *const u8) != 0 {
+                                const HEX: &[u8; 16] = b"0123456789abcdef";
+                                let v = core::ptr::read_volatile(slot as *const u64);
                                 crate::blackbox::text_puts(core::str::from_utf8_unchecked(label));
+                                for sh in (0..16u32).rev() {
+                                    let nib = ((v >> (sh * 4)) & 0xf) as usize;
+                                    crate::blackbox::text_byte(HEX[nib]);
+                                }
+                                crate::blackbox::text_byte(b'\n');
                             }
-                            for sh in (0..16u32).rev() {
-                                let nib = ((v >> (sh * 4)) & 0xf) as usize;
-                                crate::blackbox::text_byte(HEX[nib]);
-                            }
-                            crate::blackbox::text_byte(b'\n');
                         }
                     }
                 }
-                // v226: the VFS static's recorded identity at init ("VA") and
-                // at the read site ("VB"); printed once each marker is set.
-                for (label, slot) in [(b"VA:", 0x348d_e840usize), (b"VB:", 0x348d_e850usize)] {
-                    unsafe {
-                        if core::ptr::read_volatile((slot + 8) as *const u8) != 0 {
-                            const HEX: &[u8; 16] = b"0123456789abcdef";
-                            let v = core::ptr::read_volatile(slot as *const u64);
-                            crate::blackbox::text_puts(core::str::from_utf8_unchecked(label));
-                            for sh in (0..16u32).rev() {
-                                let nib = ((v >> (sh * 4)) & 0xf) as usize;
-                                crate::blackbox::text_byte(HEX[nib]);
-                            }
-                            crate::blackbox::text_byte(b'\n');
-                        }
-                    }
-                }
-                            }
-}
+            }
             crate::blackbox::watchdog_check(super::timer::uptime_us());
             // Delayed deliberate reset (the ADB cycle magic): fires the panic
             // ~2 s after the request so the reply reaches the host first.
@@ -996,8 +993,8 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
             // ~100% duty). Paint only every 16th IRQ while the instruments
             // are live and never while the desktop owns the canvas - the
             // locator's job is done once the desktop is up.
-            let quiet = super::platform::ane_fb::IRQ_QUIET
-                .load(core::sync::atomic::Ordering::Relaxed);
+            let quiet =
+                super::platform::ane_fb::IRQ_QUIET.load(core::sync::atomic::Ordering::Relaxed);
             if !quiet && beats % 16 == 0 {
                 super::platform::ane_fb::paint_hex_at(36, 300, b"ELR", frame.elr_el1);
                 super::platform::ane_fb::flush_row(36);

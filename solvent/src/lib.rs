@@ -61,10 +61,10 @@ pub mod arch;
 // Platform tree: the x86 runtime pieces (input stack, Wi-Fi UI) and the ANE
 // tick source answer from `arch/`; globbed so historic paths such as
 // `solvent::input_loop::...` keep working.
-#[cfg(target_arch = "x86_64")]
-pub use arch::x86_64::*;
 #[cfg(target_arch = "aarch64")]
 pub use arch::aarch64::*;
+#[cfg(target_arch = "x86_64")]
+pub use arch::x86_64::*;
 
 #[cfg(not(target_arch = "xtensa"))]
 mod callbacks;
@@ -87,11 +87,11 @@ mod menu_actions;
 #[cfg(not(target_arch = "xtensa"))]
 mod network_state;
 #[cfg(not(target_arch = "xtensa"))]
-mod services;
-#[cfg(not(target_arch = "xtensa"))]
 mod render;
 #[cfg(not(target_arch = "xtensa"))]
 mod runtime_context;
+#[cfg(not(target_arch = "xtensa"))]
+mod services;
 #[cfg(not(target_arch = "xtensa"))]
 mod settings_bridge;
 #[cfg(not(target_arch = "xtensa"))]
@@ -130,6 +130,8 @@ pub use lattice::wallpaper::{
     WallpaperMode, WallpaperPreset, find_preset, get_wallpaper, set_wallpaper, wallpaper_presets,
 };
 #[cfg(not(target_arch = "xtensa"))]
+pub use network_state::{NETWORK_SNAPSHOT, NetworkSnapshot};
+#[cfg(not(target_arch = "xtensa"))]
 pub use render::{render, render_cursor_fast, set_render_progress_fn};
 #[cfg(not(target_arch = "xtensa"))]
 pub use runtime_context::{
@@ -138,8 +140,6 @@ pub use runtime_context::{
     is_initialized, request_klog_live_refresh, set_screen_orientation, set_tsc_per_ms,
     settings_snapshot,
 };
-#[cfg(not(target_arch = "xtensa"))]
-pub use network_state::{NETWORK_SNAPSHOT, NetworkSnapshot};
 #[cfg(all(target_arch = "x86_64", not(nitrogen_no_iwlwifi)))]
 pub use services::register_wifi_service;
 #[cfg(not(target_arch = "xtensa"))]

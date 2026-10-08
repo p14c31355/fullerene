@@ -499,6 +499,11 @@ fn wr(off: usize, value: u32) {
     super::common::mmio::wr32(USB_CORE_BASE, off, value);
 }
 
+/// Read-only DCTL evidence for the attach/desktop race investigation.
+pub fn dctl_snapshot() -> u32 {
+    rd(DCTL)
+}
+
 /// Read 32-bit words out of an endpoint FIFO window.
 fn fifo_pop_word() -> u32 {
     rd(EPFIFO0)
@@ -1116,8 +1121,8 @@ fn ep1_send_ptr(src: usize, n: usize) -> usize {
         let mut word = 0u32;
         for j in 0..4 {
             if i + j < n {
-                word |= (unsafe { ptr::read_volatile((src + i + j) as *const u8) } as u32)
-                    << (8 * j);
+                word |=
+                    (unsafe { ptr::read_volatile((src + i + j) as *const u8) } as u32) << (8 * j);
             }
         }
         unsafe {
@@ -1296,9 +1301,7 @@ fn adb_dispatch(pkt: &crate::adb_wire::Packet<'_>, log: fn(&str, u64)) {
                     super::ane::watchdog_kick();
                     let depth_words = ((rd(DPTXFSIZ1) >> 16) & 0xffff) as usize;
                     let mut spins = 0u32;
-                    while (((rd(DTXFSTS1) & 0xffff) as usize) < depth_words)
-                        && spins < 0x20_0000
-                    {
+                    while (((rd(DTXFSTS1) & 0xffff) as usize) < depth_words) && spins < 0x20_0000 {
                         spins += 1;
                     }
                     off += chunk;
@@ -1382,9 +1385,11 @@ fn adb_dispatch(pkt: &crate::adb_wire::Packet<'_>, log: fn(&str, u64)) {
                 _ => b"fullerene-ane adb up\r\n",
             };
             let payload = unsafe { &mut *core::ptr::addr_of_mut!(ADB_PAYLOAD) };
-            if let Some(m) =
-                crate::adb_wire::shell_v2_chunk(crate::adb_wire::SHELL_STDOUT, text, &mut payload[..])
-            {
+            if let Some(m) = crate::adb_wire::shell_v2_chunk(
+                crate::adb_wire::SHELL_STDOUT,
+                text,
+                &mut payload[..],
+            ) {
                 if let Some(n) = crate::adb_wire::encode(
                     crate::adb_wire::WRTE,
                     remote,
@@ -1493,13 +1498,7 @@ fn fb_poll(log: fn(&str, u64)) {
                 ev[0] = b'N';
                 ev[1] = b'G';
                 ev[2] = b' ';
-                let hexd = |v: u8| -> u8 {
-                    if v < 10 {
-                        b'0' + v
-                    } else {
-                        b'A' + v - 10
-                    }
-                };
+                let hexd = |v: u8| -> u8 { if v < 10 { b'0' + v } else { b'A' + v - 10 } };
                 ev[3] = hexd(((len >> 4) & 0xf) as u8);
                 ev[4] = hexd((len & 0xf) as u8);
                 ev[5] = b' ';

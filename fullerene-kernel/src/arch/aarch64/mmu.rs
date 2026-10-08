@@ -924,9 +924,8 @@ unsafe fn invalidate_data_cache() {
                 while way >= 0 {
                     let mut set = sets_max as i64;
                     while set >= 0 {
-                        let operand = ((way as u64) << way_shift)
-                            | level
-                            | ((set as u64) << set_shift);
+                        let operand =
+                            ((way as u64) << way_shift) | level | ((set as u64) << set_shift);
                         asm!("dc cisw, {}", in(reg) operand, options(nostack));
                         set -= 1;
                     }

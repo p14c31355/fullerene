@@ -23,7 +23,10 @@ pub fn set_heap_range(start: usize, size: usize) {
 
 /// Get the current heap range (start, end).
 pub fn get_heap_range() -> (usize, usize) {
-    (HEAP_START.load(Ordering::SeqCst), HEAP_END.load(Ordering::SeqCst))
+    (
+        HEAP_START.load(Ordering::SeqCst),
+        HEAP_END.load(Ordering::SeqCst),
+    )
 }
 
 /// Set the physical memory offset for virtual-to-physical translation.

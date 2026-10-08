@@ -15,7 +15,9 @@ pub mod raw;
 pub mod types;
 pub mod virtual_memory;
 
-pub use crate::page_table::constants::{BootInfoFrameAllocator, HIGHER_HALF_OFFSET as KERNEL_OFFSET};
+pub use crate::page_table::constants::{
+    BootInfoFrameAllocator, HIGHER_HALF_OFFSET as KERNEL_OFFSET,
+};
 pub use allocator::bitmap::BitmapFrameAllocator;
 pub use allocator::traits::FrameAllocatorExt;
 #[cfg(not(feature = "std"))]

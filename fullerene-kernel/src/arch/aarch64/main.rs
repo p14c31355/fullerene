@@ -1089,14 +1089,19 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         // fix the first-read timeouts, and the longer IRQ-less pre-attach
         // window only widened the exposure).
         platform::ane::usb_attach();
+        // Do not read DWC2 registers before ENUMDONE: the v184/v185
+        // instrument showed that even diagnostic reads can disturb the
+        // first enumeration. Keep the pre-desktop snapshot below gated.
         // Keep the attach visible to the timer-side recovery state machine.
         // This is deliberately separate from SETUP_SEEN: a host can be
         // physically connected while the very first descriptor request is
         // lost, and that case must still reach the no-button loader reset.
         platform::ane_usb_dev::mark_attached();
         // v199: stamp the attach tick for the enumeration sentinel.
-        platform::ane_usb_dev::ATTACH_BEAT
-            .store(exceptions::tick_count(), core::sync::atomic::Ordering::Relaxed);
+        platform::ane_usb_dev::ATTACH_BEAT.store(
+            exceptions::tick_count(),
+            core::sync::atomic::Ordering::Relaxed,
+        );
         ane_log("usb: attach=", 1);
         // Do not hold the boot thread in a pre-GIC polling loop here.  The
         // timer/GIC path is the proven responder pump; one immediate pass
@@ -1198,14 +1203,46 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         // user task starts. The launchd's VFS work can park for good; the
         // desktop paint makes the screen carry the result either way.
         #[cfg(fullerene_aarch64_ane)]
+        {
+            // Give the first host control exchange priority over the desktop
+            // renderer.  The renderer owns the boot thread for long enough
+            // to turn the host's descriptor timeout into -71/-110.  Keep the
+            // wait bounded so a phone boot without a USB host still reaches
+            // the desktop.
+            let mut spins = 0usize;
+            while !platform::ane_usb_dev::usb_enumerated() && spins < 0x190_00000 {
+                if spins & 0x3fff == 0 {
+                    platform::ane_usb_dev::service(ane_log);
+                }
+                core::hint::spin_loop();
+                spins += 1;
+            }
+            platform::ane_usb_dev::service(ane_log);
+            ane_log(
+                "usb: predesktop-enum=",
+                platform::ane_usb_dev::usb_enumerated() as u64,
+            );
+            if platform::ane_usb_dev::usb_enumerated() {
+                ane_log(
+                    "usb: dctl-predesktop=",
+                    platform::ane_usb_dev::dctl_snapshot() as u64,
+                );
+            }
+        }
+        #[cfg(fullerene_aarch64_ane)]
         desktop::bring_up();
         #[cfg(fullerene_aarch64_ane)]
         {
-            // The desktop can outlive the host's first enumeration window.
-            // Force a fresh pull-up edge after rendering, then service the
-            // first setup pass before entering the non-returning launchd.
-            platform::ane::usb_reenumerate();
+            // Keep the initial post-eMMC attach intact.  A second pull-up
+            // edge after desktop rendering is not part of the proven v211
+            // path and can race the host's first control transfer.
             platform::ane_usb_dev::service(ane_log);
+            if platform::ane_usb_dev::usb_enumerated() {
+                ane_log(
+                    "usb: dctl-after-desktop=",
+                    platform::ane_usb_dev::dctl_snapshot() as u64,
+                );
+            }
         }
         uart::putc(b'.');
         uart::putc(b'.');

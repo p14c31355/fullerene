@@ -80,3 +80,24 @@ fn ane_active_i2c_controller_is_i2c2() {
     assert_eq!(region.base, 0xFFD7_3000);
     assert_eq!(region.size, 0x1000);
 }
+
+#[test]
+fn ane_touch_i2c0_pinctrl_contract_is_distinct_and_source_backed() {
+    let text =
+        std::fs::read_to_string("/home/placeless/dev/p20-root/firmware/ane_dtb/fdt_properties.txt")
+            .expect("ANE DT properties present");
+    assert!(text.contains("/amba/i2c@FFD71000\tpinctrl-0\t000000490000004a0000004b0000004c"));
+    assert!(text.contains("/amba/i2c@FFD71000\tpinctrl-1\t0000004d0000004e0000004f00000050"));
+    assert!(
+        text.contains("/pinmux@fff11000/gpio183_pmx_func\tpinctrl-single,pins\t0000001400000001")
+    );
+    assert!(
+        text.contains("/pinmux@fff11000/gpio184_pmx_func\tpinctrl-single,pins\t0000001800000001")
+    );
+    assert!(
+        text.contains("/pinmux@fff11800/gpio183_cfg_func\tpinctrl-single,pins\t0000001c00000000")
+    );
+    assert!(
+        text.contains("/pinmux@fff11800/gpio184_cfg_func\tpinctrl-single,pins\t0000002000000000")
+    );
+}

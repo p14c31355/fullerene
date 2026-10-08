@@ -8,10 +8,30 @@ use crate::event::{TouchContact, TouchPhase};
 
 /// Goodix GT1x contact record size used by the public GT1x driver.
 pub const GT1X_CONTACT_SIZE: usize = 8;
+/// GT1x coordinate/status register from the public Goodix/Linux driver.
+pub const GT1X_COORDINATE_REGISTER: u16 = 0x814e;
+/// GT1x software watchdog register observed in the stock ANE log.
+pub const GT1X_WATCHDOG_REGISTER: u16 = 0x8041;
+/// Stock GT1x reset-status payload written to `0x8041`.
+pub const GT1X_RESET_STATUS_PAYLOAD: [u8; 3] = [0x00, 0x56, 0xaa];
+/// Stock GT1x reset command written to `0x8040` after the status payload.
+pub const GT1X_RESET_COMMAND: u8 = 0xaa;
+/// Value written to the coordinate register after consuming a report.
+pub const GT1X_STATUS_CLEAR: u8 = 0;
 /// Status byte bit indicating that the coordinate buffer is valid.
 pub const GT1X_STATUS_READY: u8 = 0x80;
 /// Maximum contacts accepted by the generic parser.
 pub const GT1X_MAX_CONTACTS: usize = 10;
+
+/// Frame a GT1x register address as the downstream driver sends it.
+pub const fn gt1x_register_frame(register: u16) -> [u8; 2] {
+    register.to_be_bytes()
+}
+
+/// Frame the post-report status clear transaction.
+pub const fn gt1x_status_clear_frame() -> [u8; 3] {
+    [0x81, 0x4e, GT1X_STATUS_CLEAR]
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Gt1xReportError {
@@ -19,12 +39,14 @@ pub enum Gt1xReportError {
     NotReady,
     TooManyContacts,
     InvalidContactId,
+    Checksum,
 }
 
 /// Parse a Goodix GT1x 8-byte contact report.
 ///
 /// The report starts with a status byte.  Its low nibble is the contact count;
-/// each contact is encoded as `id, x_le16, y_le16, width_le16, reserved`.
+/// each contact is encoded as `id, x_le16, y_le16, width_le16, reserved`,
+/// followed by a key byte and an 8-bit additive checksum.
 /// `out` is caller-owned so the parser remains allocation-free and usable from
 /// early platform code.
 pub fn parse_gt1x_report(
@@ -39,9 +61,15 @@ pub fn parse_gt1x_report(
     if count > GT1X_MAX_CONTACTS || count > out.len() {
         return Err(Gt1xReportError::TooManyContacts);
     }
-    let needed = 1 + count * GT1X_CONTACT_SIZE;
+    let needed = 1 + count * GT1X_CONTACT_SIZE + 2;
     if report.len() < needed {
         return Err(Gt1xReportError::TooShort);
+    }
+    let checksum = report[..needed]
+        .iter()
+        .fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+    if checksum != 0 {
+        return Err(Gt1xReportError::Checksum);
     }
 
     for (index, slot) in out.iter_mut().take(count).enumerate() {
@@ -71,8 +99,8 @@ mod tests {
     #[test]
     fn parses_two_contacts_little_endian() {
         let report = [
-            0x82, 0x01, 0x38, 0x04, 0x62, 0x09, 0x2c, 0x01, 0x00, 0x02, 0x10,
-            0x00, 0x20, 0x00, 0x08, 0x00, 0x00,
+            0x82, 0x01, 0x38, 0x04, 0x62, 0x09, 0x2c, 0x01, 0x00, 0x02, 0x10, 0x00, 0x20, 0x00,
+            0x08, 0x00, 0x00, 0x00, 0x6f,
         ];
         let mut contacts = [TouchContact {
             id: 0,
@@ -84,9 +112,15 @@ mod tests {
         let count = parse_gt1x_report(&report, &mut contacts).unwrap();
         assert_eq!(count, 2);
         assert_eq!(contacts[0].id, 1);
-        assert_eq!((contacts[0].x, contacts[0].y, contacts[0].pressure), (1080, 2402, 300));
+        assert_eq!(
+            (contacts[0].x, contacts[0].y, contacts[0].pressure),
+            (1080, 2402, 300)
+        );
         assert_eq!(contacts[1].id, 2);
-        assert_eq!((contacts[1].x, contacts[1].y, contacts[1].pressure), (16, 32, 8));
+        assert_eq!(
+            (contacts[1].x, contacts[1].y, contacts[1].pressure),
+            (16, 32, 8)
+        );
     }
 
     #[test]
@@ -98,7 +132,21 @@ mod tests {
             pressure: 0,
             phase: TouchPhase::Cancel,
         }; 1];
-        assert_eq!(parse_gt1x_report(&[0x01], &mut contacts), Err(Gt1xReportError::NotReady));
-        assert_eq!(parse_gt1x_report(&[0x81], &mut contacts), Err(Gt1xReportError::TooShort));
+        assert_eq!(
+            parse_gt1x_report(&[0x01], &mut contacts),
+            Err(Gt1xReportError::NotReady)
+        );
+        assert_eq!(
+            parse_gt1x_report(&[0x81], &mut contacts),
+            Err(Gt1xReportError::TooShort)
+        );
+    }
+
+    #[test]
+    fn frames_registers_big_endian_and_clears_status() {
+        assert_eq!(gt1x_register_frame(GT1X_COORDINATE_REGISTER), [0x81, 0x4e]);
+        assert_eq!(gt1x_status_clear_frame(), [0x81, 0x4e, 0]);
+        assert_eq!(GT1X_RESET_STATUS_PAYLOAD, [0x00, 0x56, 0xaa]);
+        assert_eq!(GT1X_RESET_COMMAND, 0xaa);
     }
 }

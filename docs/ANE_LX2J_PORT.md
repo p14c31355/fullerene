@@ -138,6 +138,100 @@ Fullerene now has an allocation-free parser for this format in
 handling.  This separates safe packet decoding from the still-unverified
 transport, reset, power, and controller-identification work.
 
+The common touch contract now also exposes allocation-free GT1x framing
+helpers: register addresses are emitted big-endian and the post-report clear
+is exactly `[0x81, 0x4e, 0x00]`.  This remains a pure byte-contract layer; it
+does not perform an I²C transaction or claim the ANE GPIOs.
+
+The recovered downstream `gt1x_generic.c` also removes the last uncertainty
+from the reset-status write: it sends `[0x00, 0x56, 0xaa]` to `0x8041`, then
+`[0xaa]` to `0x8040`.  Its non-incell reset sequence drives reset low for
+2 ms, high for 2 ms, waits 8 ms, drives the IRQ line low for 50 ms, and then
+returns the IRQ GPIO to input mode.  The configured interrupt table selects
+falling edge (`GTP_INT_TRIGGER = 1`).  These are now recorded as source-backed
+contracts; the ANE backend still does not execute them.
+
+The active DTB resolves the touch supplies to PMIC LDO17 (`phandle 0x5f`,
+control register `0x25`) at `3.0 V` and LDO4 (`phandle 0x60`, control
+register `0x19`) at `1.8 V`.  The stock driver declares both supplies as
+regulator-backed.  These values are inventory contracts only: Fullerene has
+not enabled either rail or written the PMIC.
+
+Both rails are now represented by the reusable common regulator descriptor.
+The vendor PMIC DTS gives LDO17 `hisi-vset = <0x4e 0x07>` and LDO4
+`hisi-vset = <0x42 0x07>`, with a 20 ms off-on delay and 120 us enable time.
+The descriptor records those values, the 1-bit enable mask, and the target
+target voltage. It is metadata only and does not imply PMIC ownership.
+The common descriptor also preserves the vendor `eco_mode_mask = 0x10`.
+The vendor enable path performs a read-modify-write of the control register
+and applies the off-on delay before enabling; Fullerene has not connected this
+operation to hardware yet.
+
+The common DesignWare observation layer now exposes read-only snapshots of
+`IC_CON`, `IC_TAR`, `IC_ENABLE`, `IC_STATUS`, FIFO levels, and component
+identity registers. The ANE touch backend provides an unsafe wrapper for
+I2C0, but it is not called during boot: the active DTB marks I2C0 disabled,
+so clock/MMIO ownership must be established before any snapshot read.
+
+An additional local downstream source was found at
+`/home/placeless/dev/sprd-sharkl3-src/drivers/input/touchscreen/gt1x_ts`.
+Its `gt1x.c` and `gt1x_generic.c` independently confirm the protocol: read
+`0x814E`, require bit `0x80`, use the low nibble as the finger count, read
+8-byte contacts, append key and checksum bytes, verify the additive checksum,
+then write a zero byte to `0x814E`.  Its transport uses a 16-bit big-endian
+register prefix and an I²C repeated-start read.  This is source evidence for
+the generic parser/transport contract, not proof that the ANE I²C0 controller
+can safely be enabled.
+
+The vendor I²C DTS also provides the controller-level contract: I²C0 uses
+reset window `0xFFD7E000`, enable/disable/status offsets `0x20/0x24/0x28`,
+reset bit `3`, and `delay-off = 300`; its clock names are `clk_i2c` and
+`apb_pclk`.  These values are now retained as ANE inventory constants only.
+The generic DTS marks I²C0 disabled (and also marks I²C2 disabled), while the
+active ANE DTB overlay independently enables I²C2.  Therefore this DTS is
+not evidence that Fullerene may enable I²C0 during boot.
+
+The corresponding downstream pin descriptions are also explicit: GPIO183
+and GPIO184 use mux offsets `0x14` and `0x18`, both with function value `1`.
+Their electrical configuration offsets are `0x1c` and `0x20`; the function
+configuration value is `0`, with pull/drive/slew fields separately described
+by the pinctrl provider.  These values are recorded as read-only metadata;
+Fullerene does not yet write the pinctrl registers.
+
+The active DTB binds I²C0 `pinctrl-0` to phandles `0x49/0x4a/0x4b/0x4c`
+(GPIO183/184 mux and configuration) and `pinctrl-1` to the corresponding idle
+phandles `0x4d/0x4e/0x4f/0x50`.  A host regression test checks these phandle
+bindings and the six source-backed pin values against the extracted active-DTB
+property file.  This protects the I²C0 contract from accidental I²C2 or idle
+state substitutions, but does not enable the disabled controller.
+
+The active DTB phandles resolve to GPIO providers
+`/amba/gpio@e8a1d000` (reset) and `/amba/gpio@fff1d000` (IRQ).  Together
+with the repeated stock-kmsg reports, this records reset GPIO `145` and IRQ
+GPIO `224` as the device contract.  The DT GPIO flags do not, by themselves,
+prove reset active level or IRQ edge/polarity, so neither is connected to a
+runtime backend yet.
+
+The source-tree search was repeated across the complete local `p20-root`:
+the only I²C0 runtime references found are the DT clock/reset properties and
+generic Linux `i2c_transfer()` call sites.  No HiSilicon DesignWare adapter
+implementation, `clk_gate_i2c0` provider write path, or stock touch-side
+clock/reset ownership function is present in the recovered source tree.
+The stock logs prove that the GT1x power/reset phase runs, but do not expose
+which firmware/kernel owner performed the I²C0 setup.  Therefore the missing
+runtime ownership sequence remains an evidence gap, not permission to infer
+one from the static DT.
+
+The bus mapping has now been cross-checked against the active DTB.  The
+`ts_kit bus_id = 0` value corresponds to `/amba/i2c@FFD71000`, whose DTB
+properties are `bus-id = 0` and `status = "disabled"`.  The controller already
+registered by Fullerene is `/amba/i2c@FFD73000`, `bus-id = 2`; it must not be
+treated as the touchscreen bus merely because it is the only active DesignWare
+I²C controller currently exposed by the ANE port.  Stock sensor logs also use
+framework bus number 0, consistent with this distinction.  Until ownership of
+`FFD71000` and its clock/reset/pinctrl contract is recovered, the touch
+backend remains disabled and no I²C2 touch probe is permitted.
+
 ## The observation channel: reserved RAM, because nothing else is readable
 
 This board has no serial the host can reach and, for an unattended run, no
@@ -304,6 +398,21 @@ The pre-attach cleanup helper is intentionally not connected to the boot path:
 earlier hardware experiments showed that touching `GRSTCTL` before the first
 host bus reset can wedge the controller.  Recovery flushes remain restricted
 to `handle_reset()`.
+
+### Reproduced first clean USB enumeration
+
+The first documented clean Fullerene USB session was reproduced from the
+preserved artifact `p20-root/artifacts/fullerene-ane-v211-stock.img` on
+2026-10-08.  The host journal first showed the known `-110/-71` retry storm,
+then a fresh attach with `Product: ANE fastboot`.  The host descriptor file
+contained exactly 50 bytes (18-byte device descriptor plus 32-byte
+configuration descriptor), not the 27-byte duplicated-header form.  A single
+CNXN-first session then returned `cnxn reply: True frames: 1 raw: 2060` and
+stored a 2002-byte piggyback ring tail.  This is the USB acceptance baseline:
+loader return alone is not considered success.  The v211 build recipe also
+included `FULLERENE_ANE_MARKS_UART_ONLY=1` and
+`FULLERENE_ANE_NO_PUTC_WD_TEND=1`; later USB changes must be compared against
+this baseline rather than against a loader-only `Fastboot2.0` return.
 
 ## Verified battery and charger inventory
 

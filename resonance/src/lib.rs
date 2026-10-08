@@ -9,8 +9,8 @@ pub mod event;
 mod handler;
 mod queue;
 pub mod scancode;
-pub mod touch;
 mod source;
+pub mod touch;
 pub mod tracing;
 
 pub use dispatcher::*;
