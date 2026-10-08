@@ -725,8 +725,12 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
             // ENODEV).
             #[cfg(fullerene_aarch64_ane)]
             {
-                const RECONNECT_WAIT_BEATS: u32 = 1024;
-                const RECONNECT_MAX: u32 = 6;
+                // Keep failed USB boots recoverable without waiting for the
+                // hour-scale global tick cap.  A healthy boot exits this
+                // state permanently at SET_CONFIGURATION(1), so the shorter
+                // window only applies to a boot that never enumerated.
+                const RECONNECT_WAIT_BEATS: u32 = 256;
+                const RECONNECT_MAX: u32 = 3;
                 static RETRIES: AtomicU32 = AtomicU32::new(0);
                 static RC_T0: AtomicU32 = AtomicU32::new(0);
                 static RC_STATE: AtomicU32 = AtomicU32::new(0); // 0 idle, 1 off
@@ -801,13 +805,16 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                 // 2048-byte CNXN collection window covers ~4x more time and
                 // the desktop markers (TM:/PP:/PR:/RENDER:) are not pushed
                 // out by restamp spam before the collection lands.
-                let m = super::launchd::last_mark();
-                if !m.is_empty() {
-                    crate::blackbox::text_puts("mark: ");
-                    for &b in m {
-                        crate::blackbox::text_byte(b);
+                #[cfg(feature = "aarch64-user-launchd")]
+                {
+                    let m = super::launchd::last_mark();
+                    if !m.is_empty() {
+                        crate::blackbox::text_puts("mark: ");
+                        for &b in m {
+                            crate::blackbox::text_byte(b);
+                        }
+                        crate::blackbox::text_byte(b'\n');
                     }
-                    crate::blackbox::text_byte(b'\n');
                 }
                 // v214/v215: dump the VFS step-mark trail from its private
                 // location (0x348de800: count@+0, bytes@+4) into the ring.

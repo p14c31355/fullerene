@@ -4103,6 +4103,14 @@ fn build_aarch64_kernel(
         (_, true, _) => "aarch64,aarch64-user-smoke,aarch64-user-fault-smoke",
         (true, false, _) => "aarch64,aarch64-user-smoke",
         (false, false, _) if android_init => "aarch64,aarch64-android-init",
+        // ANE's normal image is the phone runtime image: it owns the canvas
+        // with the mobile-capable desktop and then enters launchd.  Keep the
+        // launchd feature automatic for the platform so the documented
+        // `build --platform ane` command cannot silently produce a
+        // diagnostics-only kernel that never starts userspace.
+        (false, false, false) if platform == Platform::AneLx2j => {
+            "aarch64,aarch64-user-launchd"
+        }
         (false, false, true) => "aarch64,aarch64-user-launchd",
         (false, false, false) => "aarch64",
     };

@@ -44,6 +44,65 @@ round-trip except `kernel_size`, as expected.
 | first marker | `blackbox::mark_entry()` -> code `E`, written before the first device register |
 | reserved-memory node | looked up as `pstore-mem` (Bramble's trees use `ramoops_region`) |
 
+## Verified touchscreen evidence
+
+The LineageOS Hi6250 vendor kernel contains an ANE touchscreen description at
+`arch/arm64/boot/dts/auto-generate/config/hi6250/huawei_touchscreen.dtsi`.
+This is source evidence, not a register guess.  Its relevant values are:
+
+| property | value |
+|---|---|
+| parent compatible | `huawei,touchscreen` |
+| transport | I2C, bus `1` |
+| controller | Synaptics, address `0x70` |
+| touch range | `x_max=2200`, `y_max=3800` |
+| reset GPIO | `gpio10 4` |
+| interrupt GPIO | `gpio1 0`, falling edge (`irq_config=3`) |
+| analog supply | `ldo17` |
+
+The same vendor tree contains `synaptics-dsx.dtsi`, but that node is marked
+`status = "disabled"` and uses a different address (`0x20`).  It must not be
+selected for ANE without confirming the active boot DT.  Fullerene's ANE DT
+inventory now reports the active `huawei,touchscreen` node as an input
+capability.  This does not claim that the I2C transport or Synaptics report
+parser is implemented yet; those remain the next driver work.
+
+Source: `https://github.com/LineageOS/android_kernel_huawei_hi6250/tree/lineage-17.1/arch/arm64/boot/dts/auto-generate/config/hi6250`
+
+The same source exposes an important unresolved dependency: its public
+`hisi_6250_i2c.dtsi` defines DesignWare controllers 0, 2, 3, and 4, but not
+controller 1.  The touchscreen node nevertheless requests `bus_id = 1`.
+Therefore the touchscreen bus may be supplied by an omitted product overlay,
+secure firmware, or another Hi6250 I²C description.  Fullerene must not drive
+`0xFFD72000` (or any other guessed base) until the active ANE DT or measured
+boot evidence identifies controller 1.  The next bring-up diagnostic is an
+active-DT dump/parse that resolves this bus-owner mismatch.
+
+## ANE active-DTB correction
+
+The extracted ANE DTB at `/home/placeless/dev/p20-root/firmware/ane_dtb/fdt.dtb`
+has now been checked directly through its property dump.  It contains an
+enabled DesignWare controller at `/amba/i2c@FFD73000`:
+
+| property | value |
+|---|---|
+| compatible | `hisilicon,designware-i2c` |
+| MMIO | `0xFFD73000`, size `0x1000` |
+| IRQ | 120, level 4 |
+| bus-id | 2 |
+| status | `ok` |
+| clock-rate | `0x0124f800` (19.2 MHz) |
+
+The same active DTB marks all three touchscreen candidates under this
+controller disabled: Cypress `cyttsp4` at `0x1A`, Sharp `shtsc` at `0x18`, and
+Synaptics DSX at `0x20`.  The extracted tree contains no active
+`huawei,touchscreen` node.  Consequently, the vendor `bus_id = 1` /
+Synaptics `0x70` description above is not evidence of the currently supplied
+ANE boot DT and must not be used as a live-driver configuration.  It remains
+useful as a source-tree variant only.  The next safe experiment is a
+read-only I²C2 probe/diagnostic, after the DesignWare clock/reset sequence is
+ported; no touch controller will be enabled based on the disabled nodes.
+
 ## The observation channel: reserved RAM, because nothing else is readable
 
 This board has no serial the host can reach and, for an unattended run, no
@@ -175,6 +234,25 @@ The device was left wedged mid-Android-boot by the last root-shell session
 state: hold power ~10 s, boot Android, then enable USB debugging again
 (mode "ファイル転送" plus the on-device allow dialog). After that the scripts
 above run unattended with no fastboot button combos needed.
+
+## Verified battery and charger inventory
+
+The active ANE DTB exposes a usable power-supply path even though Fullerene
+does not yet have a generic battery service.  The verified nodes are:
+
+| node | active evidence |
+|---|---|
+| `/battery` | `compatible = "huawei,hisi_bci_battery"`, non-removable, design FCC `0xBB8` = 3000 mAh |
+| `/pmic@FFF34000/hi6555v100_coul@1` | `compatible = "hisilicon,hi6555v100_coul"`, status `ok`, IRQ 9 |
+| `/amba/i2c@FDF0D000/hi6523_charger@6B` | `compatible = "huawei,hi6523_charger"`, address `0x6B`, status `ok` |
+| `/amba/i2c@FDF0D000/scharger_v200@6B` | status `disabled`; not selected |
+| `/amba/i2c@FDF0D000/bq2560x_charger@6B` | status `disabled`; not selected |
+
+The reusable `platform::common::power::BatteryState` is now the transport-
+neutral state model.  ANE only publishes the verified PMIC/charger identity;
+it does not activate disabled charger alternatives or write PMIC registers.
+The remaining implementation dependency is the vendor coulomb-counter
+register map and the I2C transport needed to read `hi6523_charger`.
 
 ## Next
 

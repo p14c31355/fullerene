@@ -23,6 +23,155 @@ pub const UART_BASE: usize = 0xfdf0_2000;
 /// sibling; the USB probe's clock step programs the same block at +0x40.
 pub const CRG_BASE: usize = 0xfff3_5000;
 
+/// The active ANE DTB exposes this as `/amba/i2c@FFD73000`, a Synopsys
+/// DesignWare master with `bus-id = 2`, IRQ 120, and a 19.2 MHz input clock.
+/// These constants describe the verified resource only; no I2C register is
+/// touched until the clock/reset/pinctrl ownership sequence is implemented.
+pub const I2C2_BASE: usize = 0xffd7_3000;
+pub const I2C2_IRQ: u32 = 120;
+pub const I2C2_INPUT_CLOCK_HZ: u32 = 19_200_000;
+pub const I2C2_CLOCK_PARENT_PHANDLE: u32 = 0x12f;
+pub const I2C2_CLOCK_DIV: u32 = 1;
+pub const I2C2_CLOCK_MULT: u32 = 1;
+pub const I2C2_APB_CLOCK_PHANDLE: u32 = 0x28;
+pub const I2C2_APB_CLOCK_HZ: u32 = 20_000_000;
+
+/// Active DTB power sources for the ANE battery path.  The coulomb counter
+/// is enabled at the PMIC, while the charger alternatives are selected by
+/// board firmware; no disabled charger node is activated by this metadata.
+pub const BATTERY_COMPATIBLE: &[u8] = b"hisilicon,hi6555v100_coul";
+pub const BATTERY_IRQ: u32 = 9;
+pub const BATTERY_DESIGN_CAPACITY_MAH: u32 = 3000;
+pub const CHARGER_I2C_BUS_BASE: usize = 0xfdf0_d000;
+pub const CHARGER_I2C_ADDRESS: u8 = 0x6b;
+pub const CHARGER_COMPATIBLE: &[u8] = b"huawei,hi6523_charger";
+
+/// Read-only clock contract for the vendor DesignWare adapter.  The
+/// descriptor documents the two DT clocks without claiming ownership or
+/// performing a provider write.
+pub const I2C2_CLOCKS: [super::common::clock::ClockDescriptor; 2] = [
+    super::common::clock::ClockDescriptor::fixed_factor(
+        0x53,
+        I2C2_CLOCK_PARENT_PHANDLE,
+        I2C2_INPUT_CLOCK_HZ,
+        I2C2_CLOCK_DIV,
+        I2C2_CLOCK_MULT,
+    ),
+    super::common::clock::ClockDescriptor::fixed(I2C2_APB_CLOCK_PHANDLE, I2C2_APB_CLOCK_HZ),
+];
+pub const I2C2_RESET_BASE: usize = 0xffd7_e000;
+pub const I2C2_RESET_ENABLE: usize = 0x20;
+pub const I2C2_RESET_DISABLE: usize = 0x24;
+pub const I2C2_RESET_STATUS: usize = 0x28;
+pub const I2C2_RESET_BIT: u32 = 5;
+
+/// I2C2's active DT pinctrl states resolve to GPIO187/188.  The mux function
+/// selects function 1 at offsets 0x24/0x28; the electrical configuration lives
+/// in the companion window at 0x2c/0x30.  Idle only changes the mux back to
+/// GPIO (0), while the electrical configuration remains the DT value 0.
+pub const I2C2_MUX_BASE: usize = 0xfff1_1000;
+pub const I2C2_CFG_BASE: usize = 0xfff1_1800;
+pub const I2C2_SCL_MUX_OFFSET: usize = 0x24;
+pub const I2C2_SDA_MUX_OFFSET: usize = 0x28;
+pub const I2C2_SCL_CFG_OFFSET: usize = 0x2c;
+pub const I2C2_SDA_CFG_OFFSET: usize = 0x30;
+pub const I2C2_ACTIVE_MUX_VALUE: u32 = 1;
+pub const I2C2_IDLE_MUX_VALUE: u32 = 0;
+pub const I2C2_CFG_VALUE: u32 = 0;
+
+/// Select the verified I2C2 pinctrl state. This is intentionally not called
+/// from early bring-up yet: the caller must first establish clock ownership
+/// and choose whether the bus is being handed to a live controller.
+pub unsafe fn i2c2_select_pins(active: bool) {
+    let mux = if active {
+        I2C2_ACTIVE_MUX_VALUE
+    } else {
+        I2C2_IDLE_MUX_VALUE
+    };
+    core::ptr::write_volatile(
+        (I2C2_MUX_BASE + I2C2_SCL_MUX_OFFSET) as *mut u32,
+        mux,
+    );
+    core::ptr::write_volatile(
+        (I2C2_MUX_BASE + I2C2_SDA_MUX_OFFSET) as *mut u32,
+        mux,
+    );
+    core::ptr::write_volatile(
+        (I2C2_CFG_BASE + I2C2_SCL_CFG_OFFSET) as *mut u32,
+        I2C2_CFG_VALUE,
+    );
+    core::ptr::write_volatile(
+        (I2C2_CFG_BASE + I2C2_SDA_CFG_OFFSET) as *mut u32,
+        I2C2_CFG_VALUE,
+    );
+}
+
+/// Reset I2C2 using the exact reset-controller tuple from the active DTB.
+/// Returns true only when reset asserted and then deasserted according to the
+/// two immediate status samples. A false result is inconclusive or failed;
+/// callers must not continue into controller MMIO in that case.
+pub unsafe fn i2c2_reset_controller() -> bool {
+    let bit = 1u32 << I2C2_RESET_BIT;
+    let reset = I2C2_RESET_BASE as *mut u32;
+    core::ptr::write_volatile(reset.add(I2C2_RESET_ENABLE / 4), bit);
+    let asserted = core::ptr::read_volatile(reset.add(I2C2_RESET_STATUS / 4)) & bit;
+    core::ptr::write_volatile(reset.add(I2C2_RESET_DISABLE / 4), bit);
+    let remaining = core::ptr::read_volatile(reset.add(I2C2_RESET_STATUS / 4)) & bit;
+    asserted != 0 && remaining == 0
+}
+
+/// DesignWare register offsets used by the vendor HiSilicon adapter. Keep
+/// these in the reusable backend rather than scattering literals through an
+/// ANE touchscreen driver.
+pub mod designware_i2c {
+    pub const CON: usize = 0x000;
+    pub const TAR: usize = 0x004;
+    pub const DATA_CMD: usize = 0x010;
+    pub const ENABLE: usize = 0x06c;
+    pub const STATUS: usize = 0x070;
+    pub const TXFLR: usize = 0x074;
+    pub const RXFLR: usize = 0x078;
+    pub const TX_ABRT_SOURCE: usize = 0x080;
+    pub const COMP_PARAM_1: usize = 0x0f4;
+}
+
+/// Read-only state sampled from the DesignWare block.  This is deliberately a
+/// snapshot rather than an initialization routine: clock, reset, and pinctrl
+/// ownership still belong to firmware until a caller establishes otherwise.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct I2c2ControllerSnapshot {
+    pub status: u32,
+    pub enable: u32,
+    pub tx_fifo_level: u32,
+    pub rx_fifo_level: u32,
+    pub tx_abort_source: u32,
+    pub component_parameters: u32,
+}
+
+impl I2c2ControllerSnapshot {
+    /// A nonzero component-parameter register is the minimum evidence that
+    /// the read reached a DesignWare instance rather than an unmapped value.
+    pub const fn identifies_designware(self) -> bool {
+        self.component_parameters != 0 && self.tx_fifo_level <= 0x100 && self.rx_fifo_level <= 0x100
+    }
+}
+
+/// Sample only documented DesignWare registers.  The caller must invoke this
+/// only after proving that the DT clock/reset ownership is available; a
+/// disabled peripheral can still produce a platform-specific bus stall.
+pub unsafe fn i2c2_controller_snapshot() -> I2c2ControllerSnapshot {
+    let base = I2C2_BASE as *const u32;
+    let read = |offset: usize| core::ptr::read_volatile(base.add(offset / 4));
+    I2c2ControllerSnapshot {
+        status: read(designware_i2c::STATUS),
+        enable: read(designware_i2c::ENABLE),
+        tx_fifo_level: read(designware_i2c::TXFLR),
+        rx_fifo_level: read(designware_i2c::RXFLR),
+        tx_abort_source: read(designware_i2c::TX_ABRT_SOURCE),
+        component_parameters: read(designware_i2c::COMP_PARAM_1),
+    }
+}
+
 /// Open the early console's clock gate before the first PL011 register touch.
 ///
 /// The property lives on the clock node, not the uart node: the device's own

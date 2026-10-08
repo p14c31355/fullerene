@@ -71,3 +71,12 @@ fn ane_device_tree_reserved_walk_terminates_and_finds_regions() {
         );
     }
 }
+
+#[test]
+fn ane_active_i2c_controller_is_i2c2() {
+    let data = std::fs::read(ANE_DTB).expect("ANE dtb present");
+    let region = fdt::find_compatible(data.as_ptr() as u64, b"hisilicon,designware-i2c")
+        .expect("ANE active DT must expose a DesignWare I2C controller");
+    assert_eq!(region.base, 0xFFD7_3000);
+    assert_eq!(region.size, 0x1000);
+}
