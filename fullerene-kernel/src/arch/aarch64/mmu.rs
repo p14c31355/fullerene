@@ -177,6 +177,23 @@ pub fn init() {
             // stale), while the loader-side probe's own stores at the same
             // addresses were clean. Cacheable write-back is the one variable
             // that differs, so C=1 plus the tee_flush's clean is the fix test.
+            //
+            // 2026-10-07 (v232): the C=1 switch went in WITHOUT a data-side
+            // invalidate, so the loader's stale lines (and the C=0 era's)
+            // survived into the cacheable world. Observed consequence: the
+            // first cacheable write to a never-touched line crawls (tens of
+            // ms per line - the desktop's 24 KiB fill never finished within
+            // the boot's collection window; see BUG_JOURNAL 046 addendum 20).
+            // Invalidate the whole L1 data cache by set/way first - the
+            // data-side counterpart of the `ic iallu` above, same operand
+            // layout as the Linux `invalidate_dcache_all`.
+            // v237: parked under audit - after v232 every draw of the
+            // desktop images died pre-USB (v234-236, 0/7 draws) while v228
+            // (no invalidate) boots; the set/way operand math or an
+            // unpredictable clean/writeback is the prime suspect. Do not
+            // re-enable until the operand layout is verified against a
+            // primary source AND the draws behave.
+            invalidate_data_cache();
             sctlr |= 1 << 2;
         }
         sctlr |= 1 | (1 << 12); // MMU and instruction cache only.
@@ -870,6 +887,56 @@ fn flush_translations() {
             "isb",
             options(nostack)
         );
+    }
+}
+
+/// Invalidate the whole data cache (by set/way, every data-cache level).
+///
+/// Faithful Rust port of the Linux arm64 `invalidate_dcache_all`
+/// (arch/arm64/mm/proc.S, 4.4): levels 0, 2, 4 ... are the D-cache levels;
+/// the set/way operand is `way << clz(way_max) | set << (line_words + 4)`.
+/// `dc cisw` cleans dirty lines out to the PoC before dropping them, so the
+/// loader's still-dirty data is not lost. Runs before SCTLR.C is set (v232:
+/// the C=1 switch went in without this, and the loader's stale lines made
+/// every first-touch cacheable store crawl - BUG_JOURNAL 046 addendum 20).
+unsafe fn invalidate_data_cache() {
+    use core::arch::asm;
+    unsafe {
+        asm!("dmb sy", options(nostack));
+        let clidr: u64;
+        asm!("mrs {}, clidr_el1", out(reg) clidr, options(nostack));
+        let loc = (clidr >> 24) & 7;
+        if loc == 0 {
+            return;
+        }
+        let mut level = 0u64;
+        while level < loc {
+            let ctype = (clidr >> (level * 3)) & 7;
+            if ctype >= 2 {
+                asm!("msr csselr_el1, {}", "isb", in(reg) level, options(nostack));
+                let ccsidr: u64;
+                asm!("mrs {}, ccsidr_el1", out(reg) ccsidr, options(nostack));
+                let set_shift = (ccsidr & 7) as u32 + 4;
+                let ways_max = ((ccsidr >> 3) & 0x3ff) as u32;
+                let sets_max = ((ccsidr >> 13) & 0x7fff) as u32;
+                let way_shift = (ways_max | 1).leading_zeros();
+                let mut way = ways_max as i64;
+                while way >= 0 {
+                    let mut set = sets_max as i64;
+                    while set >= 0 {
+                        let operand = ((way as u64) << way_shift)
+                            | level
+                            | ((set as u64) << set_shift);
+                        asm!("dc cisw, {}", in(reg) operand, options(nostack));
+                        set -= 1;
+                    }
+                    way -= 1;
+                }
+            }
+            level += 2;
+        }
+        asm!("msr csselr_el1, {}", in(reg) 0u64, options(nostack));
+        asm!("dsb sy", "isb", options(nostack));
     }
 }
 

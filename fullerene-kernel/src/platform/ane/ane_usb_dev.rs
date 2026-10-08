@@ -889,6 +889,21 @@ pub fn usb_enumerated() -> bool {
 /// sentinel panics a boot whose enumeration never gets configured.
 pub static ATTACH_BEAT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
+/// True once the kernel has raised the pull-up after responder/storage
+/// bring-up. This is intentionally independent of SETUP_SEEN: a physically
+/// connected host may lose the first descriptor transaction before any SETUP
+/// reaches the responder, but that boot still needs the autonomous retry and
+/// loader-reset path.
+pub static ATTACHED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+pub fn mark_attached() {
+    ATTACHED.store(true, core::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn usb_attached() -> bool {
+    ATTACHED.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 /// v203: total SETUP packets received this boot. The self-heal uses this as
 /// "the host has talked to us" evidence - no attach-beat series dependency.
 pub static SETUP_SEEN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
@@ -2327,6 +2342,14 @@ fn service_ep0(log: fn(&str, u64)) {
 
 /// Bring the device side up: interrupt masks, EP0 setup arming.
 pub fn init(log: fn(&str, u64)) {
+    // The loader hands off a warm USB/DRAM image. Do not let the previous
+    // session's SET_CONFIGURATION state suppress the first boot's recovery
+    // gate when the handoff region was not zeroed by the loader.
+    unsafe {
+        core::ptr::addr_of_mut!(CONFIGURED).write(false);
+        core::ptr::addr_of_mut!(CONFIG_VALUE).write(0);
+        core::ptr::addr_of_mut!(CONFIG_WAS_1).write(false);
+    }
     // Capture the loader's EP registers before any of our writes: its own
     // fastboot served the same bulk pair, so the snapshot (shown by the
     // panel strip) reveals the FIFO layout it used.

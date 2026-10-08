@@ -119,7 +119,11 @@ mod inner {
             let byte_len = len.checked_mul(core::mem::size_of::<T>())?;
             let mut vec: Vec<T> = Vec::with_capacity(len);
             unsafe {
-                core::ptr::write_bytes(vec.as_mut_ptr(), 0, byte_len);
+                // `count` of `write_bytes` is in elements of the pointer's
+                // type; cast to u8 so it counts the byte length. (The old
+                // form wrote `byte_len` ELEMENTS = 4x the allocation for
+                // u32 and segfaulted on the first multi-MiB back buffer.)
+                core::ptr::write_bytes(vec.as_mut_ptr() as *mut u8, 0, byte_len);
                 vec.set_len(len);
             }
             Some(Self { vec })

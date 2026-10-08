@@ -690,4 +690,28 @@ mod tests {
         assert!(!update_cursor_pixels(&mut guard, &[0; 15], (1, 1), &cursor,));
         assert_eq!(guard.pixels(), &original);
     }
+
+    /// Render one whole desktop frame at the ANE panel size (1080x2340).
+    ///
+    /// The offline half of the on-device `desktop::bring_up()`: runtime
+    /// init, default settings, then a full compositor pass into a
+    /// phone-sized buffer. Catches panics and arithmetic that only show up
+    /// at this aspect ratio before a boot slot is spent on them.
+    #[test]
+    fn renders_a_full_desktop_at_ane_dimensions() {
+        const W: u32 = 1080;
+        const H: u32 = 2340;
+        crate::set_tsc_per_ms(1000);
+        crate::init();
+        crate::apply_settings(1.0, 100, true);
+        let mut pixels = alloc::vec![0u32; (W as usize) * (H as usize)];
+        {
+            let mut guard =
+                petroleum::graphics::FramebufferGuard::try_new(&mut pixels, W, H, W).unwrap();
+            render(&mut guard);
+        }
+        // The wallpaper (or at least the taskbar/top panel bands) must have
+        // painted; an all-zero buffer means the compositor skipped the frame.
+        assert!(pixels.iter().any(|&pixel| pixel != 0));
+    }
 }

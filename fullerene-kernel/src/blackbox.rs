@@ -1133,6 +1133,13 @@ pub fn set_irq_context(v: bool) {
     PROGRESS_WATCHDOG.set_irq_context(v);
 }
 
+/// True while the exception layer is inside the IRQ handler.
+pub fn in_irq_context() -> bool {
+    PROGRESS_WATCHDOG
+        .in_irq
+        .load(core::sync::atomic::Ordering::Relaxed)
+}
+
 /// Timer-side watchdog check.
 pub fn watchdog_check(now_us: u64) {
     PROGRESS_WATCHDOG.check(now_us);

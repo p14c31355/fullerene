@@ -348,8 +348,10 @@ global_asm!(
          movk x11, #{entry_2}, lsl #32\n\
          movk x11, #{entry_3}, lsl #48\n\
          sub x10, x0, x11\n\
-         adr x8, __rela_dyn_start\n\
-         adr x9, __rela_dyn_end\n\
+         adrp x8, __rela_dyn_start\n\
+         add x8, x8, :lo12:__rela_dyn_start\n\
+         adrp x9, __rela_dyn_end\n\
+         add x9, x9, :lo12:__rela_dyn_end\n\
      1:\n\
          cmp x8, x9\n\
          b.hs 2f\n\

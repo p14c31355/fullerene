@@ -65,6 +65,26 @@ pub(crate) static LAST_IRQ_FAR: core::sync::atomic::AtomicU64 =
 pub(crate) static LAST_IRQ_SPSR: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 
+/// v230: a rotating trail of the last 8 interrupted PCs. One restamp shows
+/// whether the sampled PC is a single parked instruction (all slots equal)
+/// or the thread is moving through several (slots differ).
+pub(crate) static PC_TRAIL: [core::sync::atomic::AtomicU64; 8] =
+    [const { core::sync::atomic::AtomicU64::new(0) }; 8];
+pub(crate) static PC_TRAIL_NEXT: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
+/// v241: the PC the last restamp printed; identical parked blocks are
+/// suppressed so the 2 KB CNXN window can carry the real markers.
+pub(crate) static LAST_PRINTED_PC: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// v242: accumulated IRQ-handler time (us) and IRQ count, printed as the
+/// IQ: line; acc/n approximates the per-IRQ cost.
+pub(crate) static IRQ_US_ACC: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+pub(crate) static IRQ_US_N: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
 /// Set the current IRQ stage: mirror its letter into the durable ring (bounded
 /// so a spurious-id storm cannot wash the log) and remember it.
 #[cfg(fullerene_aarch64_ane)]
@@ -494,6 +514,15 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
     LAST_IRQ_ESR.store(frame.esr_el1, core::sync::atomic::Ordering::Relaxed);
     LAST_IRQ_FAR.store(frame.far_el1, core::sync::atomic::Ordering::Relaxed);
     LAST_IRQ_SPSR.store(frame.spsr_el1, core::sync::atomic::Ordering::Relaxed);
+    // v242: start of the IRQ-time accounting (printed as IQ: in the ring).
+    let irq_t0 = super::timer::uptime_us();
+    // v230: append to the PC trail (plain load/store - the v227 LL/SC
+    // lesson; single core, diagnostics only).
+    {
+        let n = PC_TRAIL_NEXT.load(core::sync::atomic::Ordering::Relaxed);
+        PC_TRAIL[(n as usize) & 7].store(frame.elr_el1, core::sync::atomic::Ordering::Relaxed);
+        PC_TRAIL_NEXT.store(n.wrapping_add(1), core::sync::atomic::Ordering::Relaxed);
+    }
     crate::blackbox::set_irq_context(true);
     let interrupt_id: u64;
     #[cfg(fullerene_aarch64_ane)]
@@ -510,11 +539,20 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
         static IRQ_TRACE: AtomicU32 = AtomicU32::new(0);
         let irq_index = IRQ_TRACE.fetch_add(1, Ordering::Relaxed);
         stage(IrqStage::Entered);
-        // Arrival trace painted BEFORE the GIC ack read (every IRQ; the row
-        // flush is a few KiB so this stays cheap), so a hang on that read
-        // still leaves the last arrival count on the panel.
-        super::platform::ane_fb::paint_hex_at(25, 300, b"ACK", irq_index as u64);
-        super::platform::ane_fb::flush_row(25);
+        // Arrival trace painted BEFORE the GIC ack read so a hang on that
+        // read still leaves the last arrival count on the panel.
+        // v243: the paint is no longer free on the ANE - the v242 IQ meter
+        // measured the whole handler at ~75 ms (~100% duty at 13.3/s), which
+        // starves the boot thread into the "crawl" the desktop probes kept
+        // hitting. Gate the every-IRQ repaint behind IRQ_QUIET (the desktop
+        // raises it) and only flush every 16th IRQ otherwise - the ACK row
+        // is still visible, the budget returns to the boot thread.
+        let quiet = super::platform::ane_fb::IRQ_QUIET
+            .load(core::sync::atomic::Ordering::Relaxed);
+        if !quiet && irq_index % 16 == 0 {
+            super::platform::ane_fb::paint_hex_at(25, 300, b"ACK", irq_index as u64);
+            super::platform::ane_fb::flush_row(25);
+        }
         stage(IrqStage::AckPainted);
         if irq_index < 3 {
             uart::puts("irq: entered, acking\n");
@@ -584,7 +622,13 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
     }
     if interrupt_id as u32 == super::timer::TIMER_PPI {
         stage(IrqStage::TimerEntered);
-        super::timer::arm_ms(1);
+        // v246: re-arm FIRST and 10 ms out. The v242/v244/v245 IQ meter
+        // showed the handler eating exactly one 64.2 ms period per IRQ
+        // (arm_ms(1) + a handler that outlives the deadline = the next
+        // interrupt fires immediately on ERET = back-to-back IRQs = the
+        // boot thread starved). arming before the body plus a real gap
+        // returns the budget to the boot thread regardless of body cost.
+        super::timer::arm_ms(100); // v246b: 10ms still lost to the 45.6ms body; try 100ms
         stage(IrqStage::TimerArmed);
         #[cfg(fullerene_aarch64_ane)]
         let tickn = {
@@ -637,6 +681,10 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
             static HEARTBEATS: AtomicU32 = AtomicU32::new(0);
             let beats = HEARTBEATS.fetch_add(1, Ordering::Relaxed);
             TICK_NOW.store(beats.wrapping_add(1), Ordering::Relaxed);
+            // ANE desktop clock: solvent reads this as its monotonic time
+            // source (nominal milliseconds; set_tsc_per_ms(1000) keeps the
+            // unit consistent). Cheap enough for every tick.
+            solvent::ANE_TICKS.store(super::timer::uptime_us() / 1000, Ordering::Relaxed);
             // v195: tick-budget watchdog. The uptime clock races (6-18x
             // early), so the us-based ProgressWatchdog's reset stays
             // disabled; a boot that never reaches EL0 (the launcher) or
@@ -655,27 +703,35 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
             // enumerated boots and the Љ/failed walks still end via the
             // cap at the hour scale.
             let _el0 = super::platform::ane_fb::EL0_IRQS.load(Ordering::Relaxed);
-            if beats > 16384 {
+            // v236: under the USB attach churn the beats race hard and the
+            // old 16384 cap landed in ~25-35 s real, cutting boots down
+            // mid-dance (the -71/-75 redraws never got their 3rd draw).
+            // 0x200000 keeps the "forever wedged" protection at hour scale
+            // while letting the attach dance and a crawling boot finish.
+            if beats > 0x20_0000 {
                 crate::blackbox::text_puts("WD: TICK RESET\n");
                 panic!("watchdog: tick budget exhausted");
             }
-            // v203 self-heal, v205 gate. The moment the host has talked to
-            // us (>= 1 SETUP) but this boot NEVER reached the real
-            // SET_CONFIGURATION(1) - failed reads, or a garbled
-            // bConfigurationValue of 2+ - power-cycle the USB link to force
-            // a fresh enumeration: up to 3 draws, then panic -> LK ->
-            // reflash. v205: the gate also requires config-1 to have NEVER
-            // been seen (the host's driver-rebind dance opened a false
-            // config_value==0 window minutes into healthy boots and the
-            // reconnect there broke a collection with ENODEV).
+            // v203 self-heal, v205 gate. Once the kernel has raised the
+            // pull-up but this boot NEVER reached the real
+            // SET_CONFIGURATION(1) - including a first descriptor request
+            // that never produced SETUP_SEEN - keep cycling the USB pull-up
+            // while the host has a chance to enumerate. After a bounded
+            // number of failed draws, panic -> LK -> automatic reflash is
+            // the no-button escape hatch. v205: the gate also requires
+            // config-1 to have NEVER been seen (the host's driver-rebind
+            // dance opened a false config_value==0 window minutes into
+            // healthy boots and the reconnect there broke a collection with
+            // ENODEV).
             #[cfg(fullerene_aarch64_ane)]
             {
+                const RECONNECT_WAIT_BEATS: u32 = 1024;
+                const RECONNECT_MAX: u32 = 6;
                 static RETRIES: AtomicU32 = AtomicU32::new(0);
                 static RC_T0: AtomicU32 = AtomicU32::new(0);
                 static RC_STATE: AtomicU32 = AtomicU32::new(0); // 0 idle, 1 off
-                static S0: AtomicU32 = AtomicU32::new(0); // beats at first setup
-                let setups = super::platform::ane_usb_dev::setups_seen();
-                if setups > 0
+                static S0: AtomicU32 = AtomicU32::new(0); // beats at attach/retry
+                if super::platform::ane_usb_dev::usb_attached()
                     && !super::platform::ane_usb_dev::usb_config_was_1()
                     && super::platform::ane_usb_dev::usb_config_value() != 1
                 {
@@ -688,9 +744,11 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                             RC_STATE.store(0, Ordering::Relaxed);
                             S0.store(beats, Ordering::Relaxed); // restart the wait
                         }
-                    } else if beats.wrapping_sub(S0.load(Ordering::Relaxed)) > 2048 {
+                    } else if beats.wrapping_sub(S0.load(Ordering::Relaxed))
+                        > RECONNECT_WAIT_BEATS
+                    {
                         let r = RETRIES.load(Ordering::Relaxed);
-                        if r >= 3 {
+                        if r >= RECONNECT_MAX {
                             crate::blackbox::text_puts("WD: NO ENUM\n");
                             panic!("watchdog: enumeration never configured");
                         }
@@ -711,7 +769,38 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
             // one-shot marks fall out of the 2 KB piggyback window within
             // seconds of IRQ noise).
             #[cfg(fullerene_aarch64_ane)]
-            if beats != 0 && beats % 256 == 0 {
+            if beats != 0 && beats % 1024 == 0 {
+                // v241: only restamp when the suspended PC moved (or on a
+                // 1-in-16 heartbeat); a parked boot otherwise repeats the
+                // same block and crowds the window the desktop needs.
+                // v242: accumulated IRQ time and count since boot.
+                {
+                    const HEX: &[u8; 16] = b"0123456789abcdef";
+                    use core::sync::atomic::Ordering;
+                    crate::blackbox::text_puts("IQ: us=");
+                    let acc = IRQ_US_ACC.load(Ordering::Relaxed);
+                    for sh in (0..16u32).rev() {
+                        let nib = ((acc >> (sh * 4)) & 0xf) as usize;
+                        crate::blackbox::text_byte(HEX[nib]);
+                    }
+                    crate::blackbox::text_puts(" n=");
+                    let n = IRQ_US_N.load(Ordering::Relaxed);
+                    for sh in (0..8u32).rev() {
+                        let nib = ((n >> (sh * 4)) & 0xf) as usize;
+                        crate::blackbox::text_byte(HEX[nib]);
+                    }
+                    crate::blackbox::text_byte(b'\n');
+                }
+                let pc_now =
+                    LAST_IRQ_PC.load(core::sync::atomic::Ordering::Relaxed);
+                let moved = pc_now
+                    != LAST_PRINTED_PC.load(core::sync::atomic::Ordering::Relaxed);
+                if moved || (beats / 1024) % 16 == 0 {
+                    LAST_PRINTED_PC.store(pc_now, core::sync::atomic::Ordering::Relaxed);
+                // v240: restamp cadence relaxed 256 -> 1024 beats so the
+                // 2048-byte CNXN collection window covers ~4x more time and
+                // the desktop markers (TM:/PP:/PR:/RENDER:) are not pushed
+                // out by restamp spam before the collection lands.
                 let m = super::launchd::last_mark();
                 if !m.is_empty() {
                     crate::blackbox::text_puts("mark: ");
@@ -749,6 +838,19 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                         crate::blackbox::text_byte(HEX[nib]);
                     }
                     crate::blackbox::text_byte(b'\n');
+                    // v230: the 8-deep PC trail (low 32 bits each, hex).
+                    crate::blackbox::text_puts("PT:");
+                    for slot in 0..8usize {
+                        let v = PC_TRAIL[slot].load(core::sync::atomic::Ordering::Relaxed) as u32;
+                        for sh in (0..8u32).rev() {
+                            let nib = ((v >> (sh * 4)) & 0xf) as usize;
+                            crate::blackbox::text_byte(HEX[nib]);
+                        }
+                        if slot != 7 {
+                            crate::blackbox::text_byte(b',');
+                        }
+                    }
+                    crate::blackbox::text_byte(b'\n');
                     // v228: the last fault's status/address, if any (0 when
                     // the interrupted context never faulted).
                     let esr = LAST_IRQ_ESR.load(core::sync::atomic::Ordering::Relaxed);
@@ -783,7 +885,8 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                         }
                     }
                 }
-            }
+                            }
+}
             crate::blackbox::watchdog_check(super::timer::uptime_us());
             // Delayed deliberate reset (the ADB cycle magic): fires the panic
             // ~2 s after the request so the reply reaches the host first.
@@ -873,10 +976,19 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
             // CPU locator: the exact PC/state the timer interrupted. PSR 0 =
             // EL0t (user), 0x5 = EL1h (kernel). Painted every tick so a dead
             // stop still shows where the core sat.
-            super::platform::ane_fb::paint_hex_at(36, 300, b"ELR", frame.elr_el1);
-            super::platform::ane_fb::flush_row(36);
-            super::platform::ane_fb::paint_hex_at(37, 300, b"PSR", frame.spsr_el1);
-            super::platform::ane_fb::flush_row(37);
+            // v244: the per-tick ELR/PSR repaint was the remaining ~64 ms/IRQ
+            // (6 rows x ~11 ms each; the v242 IQ meter caught the handler at
+            // ~100% duty). Paint only every 16th IRQ while the instruments
+            // are live and never while the desktop owns the canvas - the
+            // locator's job is done once the desktop is up.
+            let quiet = super::platform::ane_fb::IRQ_QUIET
+                .load(core::sync::atomic::Ordering::Relaxed);
+            if !quiet && beats % 16 == 0 {
+                super::platform::ane_fb::paint_hex_at(36, 300, b"ELR", frame.elr_el1);
+                super::platform::ane_fb::flush_row(36);
+                super::platform::ane_fb::paint_hex_at(37, 300, b"PSR", frame.spsr_el1);
+                super::platform::ane_fb::flush_row(37);
+            }
             stage(IrqStage::ElrPainted);
             // eMMC persistence lane: one rotating 8 KiB ring slice every 8192
             // beats (~0.7% duty at the measured rate). A frozen or reset world
@@ -992,6 +1104,18 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
             "msr ICC_EOIR1_EL1, {interrupt_id}",
             interrupt_id = in(reg) interrupt_id,
             options(nomem, nostack)
+        );
+    }
+    // v242: how long did this IRQ handler take? Accumulate for the ring;
+    // the IQ: line in the restamp (every 1024 beats) shows the total, and
+    // total/beats is the per-IRQ cost that starves the boot thread.
+    {
+        use core::sync::atomic::Ordering;
+        let dt = super::timer::uptime_us().wrapping_sub(irq_t0);
+        IRQ_US_ACC.store(IRQ_US_ACC.load(Ordering::Relaxed) + dt, Ordering::Relaxed);
+        IRQ_US_N.store(
+            IRQ_US_N.load(Ordering::Relaxed).wrapping_add(1),
+            Ordering::Relaxed,
         );
     }
     crate::blackbox::set_irq_context(false);

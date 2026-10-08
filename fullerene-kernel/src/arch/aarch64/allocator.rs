@@ -373,6 +373,48 @@ impl PhysicalFrameAllocator {
         None
     }
 
+    /// Allocate `pages` consecutive 4 KiB frames and return the physical base.
+    ///
+    /// Carves a run straight from the region cursor (the single-frame
+    /// `next_frame` walk cannot express a run), stepping over anything the
+    /// reserved list covers. The bounded released list is deliberately not
+    /// consulted: a contiguous run must not be stitched together from holes.
+    /// Backs the petroleum frame-allocator adapter (`AneFrameAllocator`) that
+    /// `PageBuf` uses for the desktop's 10 MiB back buffer.
+    pub fn allocate_contiguous_frames(&mut self, pages: usize) -> Option<u64> {
+        if pages == 0 {
+            return None;
+        }
+        let bytes = (pages as u64).checked_mul(PAGE_SIZE)?;
+        while self.region_index < self.region_count {
+            let range = self.regions[self.region_index];
+            let start = align_up(self.cursor.max(range.start))?;
+            let end = start.checked_add(bytes)?;
+            if end > range.end {
+                self.region_index += 1;
+                self.cursor = self
+                    .regions
+                    .get(self.region_index)
+                    .map(|next| next.start)
+                    .unwrap_or(0);
+                continue;
+            }
+            let mut blocked_until = start;
+            for reserved in self.reserved.iter().take(self.reserved_count) {
+                if reserved.start < end && start < reserved.end {
+                    blocked_until = blocked_until.max(reserved.end);
+                }
+            }
+            if blocked_until > start {
+                self.cursor = blocked_until;
+                continue;
+            }
+            self.cursor = end;
+            return Some(start);
+        }
+        None
+    }
+
     /// Return a page to the bounded free list for reuse by later mappings.
     ///
     /// This is intentionally a small LIFO cache rather than a complete page

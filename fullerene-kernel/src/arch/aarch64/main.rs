@@ -4,6 +4,8 @@ use fullerene_abi::boot::{self, BootArchitecture, BootInfo, BootPlatform};
 
 mod allocator;
 mod cpu;
+#[cfg(fullerene_aarch64_ane)]
+mod desktop;
 mod devices;
 #[cfg(fullerene_aarch64_bramble)]
 mod display;
@@ -1054,18 +1056,6 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         uart::put_hex(" phy8=", usb.phy[2] as u64);
         uart::put_hex(" phyc=", usb.phy[3] as u64);
         uart::puts("\n");
-        // Same-boot on-screen report: the writer is also the reporter, so
-        // the USB readbacks above are painted on the panel by this boot.
-        // Every stage is also mirrored to this console (tee -> durable log)
-        // so the v7f reader can show where a silent stop happened.
-        //
-        // Re-enabled for the full-screen canvas (2026-10-04): the log-channel
-        // and panel failures that disabled this at v13 turned out to be the
-        // stale-anchor scan and the uncached-store oddity, both since fixed,
-        // and the same C=1 change unlocked the EP0 enumeration. The canvas now
-        // lives in the DT's `graphic` reserve (0x31000000), which is also what
-        // covers the loader's unlock warning on the panel.
-        platform::ane_fb::report(&usb, ane_log);
         // Previous boot's dying words (the durable block survives reboots):
         // the rows above the tail window show the last panic file/line, the
         // only fault channel that needs no USB to read.
@@ -1099,11 +1089,28 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         // fix the first-read timeouts, and the longer IRQ-less pre-attach
         // window only widened the exposure).
         platform::ane::usb_attach();
+        // Keep the attach visible to the timer-side recovery state machine.
+        // This is deliberately separate from SETUP_SEEN: a host can be
+        // physically connected while the very first descriptor request is
+        // lost, and that case must still reach the no-button loader reset.
+        platform::ane_usb_dev::mark_attached();
         // v199: stamp the attach tick for the enumeration sentinel.
         platform::ane_usb_dev::ATTACH_BEAT
             .store(exceptions::tick_count(), core::sync::atomic::Ordering::Relaxed);
         ane_log("usb: attach=", 1);
+        // Do not hold the boot thread in a pre-GIC polling loop here.  The
+        // timer/GIC path is the proven responder pump; one immediate pass
+        // handles a request already latched, then the normal IRQ service owns
+        // later descriptor traffic.  The full-screen panel remains gated on
+        // ENUMDONE below so it cannot compete with the first read.
         platform::ane_usb_dev::service(ane_log);
+        // If a host reset/ENUMDONE was already latched, the panel is now safe
+        // to paint. Otherwise leave the canvas alone until a later boot stage;
+        // USB has priority over the diagnostic repaint.
+        if platform::ane_usb_dev::usb_enumerated() {
+            platform::ane_fb::report(&usb, ane_log);
+            platform::ane_usb_dev::service(ane_log);
+        }
     }
     // The usb report above is the newest text in the private block and sits
     // behind plain stores; the loader's reset comes long after the last
@@ -1187,6 +1194,19 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
 
     #[cfg(feature = "aarch64-user-launchd")]
     if allocator_ready {
+        // v229: the desktop (solvent + lattice) takes the canvas before the
+        // user task starts. The launchd's VFS work can park for good; the
+        // desktop paint makes the screen carry the result either way.
+        #[cfg(fullerene_aarch64_ane)]
+        desktop::bring_up();
+        #[cfg(fullerene_aarch64_ane)]
+        {
+            // The desktop can outlive the host's first enumeration window.
+            // Force a fresh pull-up edge after rendering, then service the
+            // first setup pass before entering the non-returning launchd.
+            platform::ane::usb_reenumerate();
+            platform::ane_usb_dev::service(ane_log);
+        }
         uart::putc(b'.');
         uart::putc(b'.');
         uart::put_hex32(

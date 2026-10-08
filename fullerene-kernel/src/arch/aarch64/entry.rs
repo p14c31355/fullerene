@@ -389,9 +389,14 @@ extern "C" fn aarch64_apply_relocations(runtime_entry: usize) -> isize {
     let relocation_delta = runtime_entry.wrapping_sub(LINK_ENTRY) as isize;
     let (mut cursor, end): (usize, usize);
     unsafe {
+        // ADRP+ADD, not ADR: the desktop port's code/data pushed .rela.dyn
+        // past ADR's ±1 MiB reach (link error R_AARCH64_ADR_PREL_LO21 out of
+        // range). Both forms are PC-relative and relocate-safe here.
         asm!(
-            "adr {cursor}, __rela_dyn_start",
-            "adr {end}, __rela_dyn_end",
+            "adrp {cursor}, __rela_dyn_start",
+            "add {cursor}, {cursor}, :lo12:__rela_dyn_start",
+            "adrp {end}, __rela_dyn_end",
+            "add {end}, {end}, :lo12:__rela_dyn_end",
             cursor = out(reg) cursor,
             end = out(reg) end,
             options(nomem, nostack, preserves_flags),

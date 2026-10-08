@@ -396,3 +396,20 @@ pub fn usb_attach() {
     }
     usb_spin(0x190_0000); /* ~50 ms connect settle */
 }
+
+/// Re-enumerate the gadget after long pre-userspace work has finished.
+///
+/// The initial attach happens before the desktop renderer.  If the host gives
+/// up while that renderer is monopolizing the boot thread, merely servicing
+/// the existing gadget state is not enough: the pull-up must be dropped and
+/// raised so the host starts a fresh descriptor exchange.
+pub fn usb_reenumerate() {
+    unsafe {
+        usb_or(USB_CORE_BASE + 0x804, 0x2);
+    }
+    usb_spin(0x190_0000); /* ~50 ms disconnect settle */
+    unsafe {
+        usb_mask(USB_CORE_BASE + 0x804, 0x2, 0);
+    }
+    usb_spin(0x190_0000); /* ~50 ms connect settle */
+}

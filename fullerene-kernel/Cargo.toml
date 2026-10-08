@@ -164,6 +164,8 @@ wasi_runtime = { path = "../solvent/wasi" }
 fullerene-abi = { path = "abi" }
 genome = { path = "../genome" }
 lattice = { path = "../lattice" }
+petroleum = { path = "../petroleum" }
+solvent = { path = "../solvent" }
 spin = { workspace = true, features = ["mutex", "spin_mutex"] }
 
 [target.'cfg(target_arch = "xtensa")'.dependencies]

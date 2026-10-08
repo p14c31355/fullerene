@@ -2229,3 +2229,228 @@ Also tonight: v223 added the 'e' probe (after the event, before with_vfs);
 v225 added the 'l'/'L' probes around the blocking spin::Mutex acquire and
 blackbox::step_probe as a shared helper; v226 added 'B' after the VFS
 assignment, VA/VB address probes and the 'N' None-branch probe.
+
+
+### Entry 046 addendum 19 - the desktop port lands in the aarch64 kernel (v229, 22:03)
+
+The desktop stack (petroleum/nitrogen/solvent) already built for
+aarch64; v229 wires it into the ANE boot. New pieces:
+
+- `arch/aarch64/desktop.rs` (`#[cfg(fullerene_aarch64_ane)] mod desktop;`
+  in the aarch64 runtime root): the ANE counterpart of `gui::init` +
+  `gui::render`. It
+  1. installs the frame-allocator adapter (`AneFrameAllocator` over
+     `PhysicalFrameAllocator::allocate_contiguous_frames`, a new method -
+     the single-frame walk of `next_frame` cannot express the desktop's
+     10 MiB back buffer run),
+  2. `solvent::set_tsc_per_ms(1000)` + `set_render_progress_fn` (render
+     progress lines go to the durable ring), `solvent::init()`,
+     `apply_settings(1.0, 100, true)`, `tick_core(now_tsc())`,
+  3. builds a `FramebufferGuard::try_new()` over the canvas
+     (0x31000000, 1080x2340, stride 1080) and calls `solvent::render`,
+  4. `ane_fb::flush_panel()` to blit the canvas to the display windows.
+  It runs inside the launchd block (`if allocator_ready`) BEFORE
+  `launchd::run()`, so the desktop paints even though the launchd's VFS
+  work parks.
+
+- `ane_fb::DESKTOP_OWNED` (v229): the boot instruments
+  (`report`/`paint`/`clear`/`paint_at`/`draw_fb_diag`) return early once
+  the desktop owns the canvas, so their text rows cannot scribble over
+  the desktop pixels. Ring/durable logs and the flush helpers are
+  unaffected (the flushes copy whatever the canvas holds - they now
+  propagate the desktop).
+
+- `exceptions.rs` timer IRQ: `solvent::ANE_TICKS.store(uptime_us/1000)`
+  next to `TICK_NOW.store` - the desktop's monotonic clock (nominal ms).
+
+Two build traps hit while linking v229:
+
+1. **R_AARCH64_ADR_PREL_LO21 out of range for `__rela_dyn_start`.**
+   `entry.rs`'s relocation applier used `adr` (PC-relative, +-1 MiB).
+   In v228 the distance from `.text` (0x582000) to `.rela.dyn`
+   (0x63d960) was ~780 KiB; the desktop's code/data pushed it past
+   1 MiB and the link failed. Fixed with `adrp` + `add :lo12:` in both
+   `entry.rs` (+-4 GiB range; still PC-relative and relocate-safe) and
+   `usb_probe.rs`'s copy of the same sequence.
+
+2. **The image no longer fit the stock entry window.**
+   Linking solvent pulled all five wallpaper presets into `.data`
+   (FULLERENE_PIXELS 6 MiB + SHARP_PIXELS 6 MiB + three ~0.5 MiB
+   presets). Payload 15,309,349 B vs the stock window
+   (34,625,536 - 0x1660000 = 11,229,184 B). Trim: on aarch64
+   `lattice::wallpaper` keeps the default preset (index 3 "fullerene")
+   and swaps "fullerene-sharp" for a 1x1 stub, so preset indices stay
+   identical across platforms and persisted wallpaper modes keep
+   resolving. Payload 9,017,893 B; artifact 11,593,728 B (fits).
+
+Build/env unchanged (pic+pie+notext, rust-lld, manual-ane-launchd target
+dir, MARKS_UART_ONLY + NO_PUTC_WD_TEND). x86 targets untouched: the
+lattice change is cfg(target_arch="aarch64") only and the desktop module
+is gated to the ANE cfg.
+
+
+### Entry 046 addendum 20 - the desktop lands, crawls, and the v234 regression (night 10-07 -> 10-08)
+
+The desktop wiring (v229) reached the device and the whole stack runs on the
+ANE: `arch/aarch64/desktop.rs` takes the canvas at 0x31000000, installs the
+PageBuf frame-allocator adapter, calls solvent::init/apply_settings/tick_core,
+builds a FramebufferGuard over the canvas and renders one frame, then
+`ane_fb::flush_panel()` blits it to the display windows. `ANE_TICKS` is fed
+from the timer IRQ; `ane_fb::DESKTOP_OWNED` stops the boot instruments.
+
+What the rings then showed (v229..v233, adb_14/79/118/142/37):
+
+* `DESKTOP: BRING-UP` and `PR: FILL START` print, then the boot thread parks
+  with the PC pinned inside the first big heap fill (bring_up+~0x21x-0x45x).
+  The PC trail (v230 instrument, 8 deep) repeats one address - the thread
+  advances ~one instruction per IRQ. It is a crawl, not a fault: ESR/FAR/SPSR
+  stay 0, IRQs keep running (restamps continue, collections work).
+* The first substantial write to freshly-allocated heap memory is what crawls.
+  Small allocations work; the 24 KiB fill needs minutes. Suspects investigated:
+  - cache staleness after the loader handover (v232 added a set/way
+    `dc cisw` invalidate modeled on the Linux !invalidate_dcache_all`);
+  - IRQ budget (the timer handler copies canvas bands and can call a full
+    9.6 MiB flush_panel; first-round IRQ_QUIET gates (v233) cover the paint
+    entry points only, not the direct flush_row/flush_panel call sites).
+
+The v234 regression (0/8 draws, pre-USB deaths):
+
+* v234 (getter + flush gates + FA probe) and v235/v236/v237 (= v233 plus the
+  getter and the two `flush_row`/`flush_panel` gates `irq_quiet() &&
+  in_irq_context()`) never reached USB: flash + reboot, then the loader came
+  back in ~30 s, eight draws straight. The two gates are inert by construction
+  (irq_quiet is false until bring_up), so the empirical correlation is
+  unexplained - recorded honestly as such.
+* v233 and the restored v238 (= v233 floor plus the tick-budget raise) boot
+  fine, so the night's working floor is v238.
+* During the hunt the loader also wedged in a fastboot-only loop after a bad
+  v234 boot; flashing the stock kernel (firmware/ane_bootimg/repacked_stock.img)
+  once and letting Android come up (a "good boot") restored kernel boots, and
+  v228 (no desktop) always booted - which is what isolated the regression to
+  the v234+ builds.
+
+Also fixed tonight:
+
+* `dc cisw` invalidate (v232) parked under audit in v237+ - kept out of v238.
+* Tick budget raised 16384 -> 0x200000 beats (v236): under attach churn the
+  beat count races and the old cap landed in ~25-35 s real, cutting boots
+  down mid-dance.
+* PageBuf std/test path wrote 4x its length (`write_bytes` with an element
+  count) - fixed in petroleum; the host desktop-render test (1080x2340)
+  caught it and now passes 29/29 in solvent.
+* The link no longer fits ADR range: entry.rs/usb_probe.rs relocation
+  prologues use adrp+add (R_AARCH64_ADR_PREL_LO21 went out of range when the
+  desktop code/data grew).
+
+Open at the time of writing: why fresh-line heap fills crawl (next lever: the
+IRQ canvases, then the cache state), and whether re-adding the flush gates on
+a fresh layout is safe. The engine runs v238 while this is investigated.
+
+
+### Entry 046 addendum 20 — v255-v259 boot UI/USB-first A/B (2026-10-08 JST)
+
+The phone was kept on the literal loader descriptor before each flash:
+`Fastboot2.0`, VID:PID `18d1:d00d`, serial `SCV7N18927000473`. The stock-embed
+artifacts passed the mechanical ELF/header/package checks and were flashed with
+the standard `ane_cycle.sh` path. No screen-based conclusion was used.
+
+#### v255: full boot panel before the USB responder
+
+After `Writing 'kernel' OKAY`, the loader disconnected at 12:11:44. The host
+then saw repeated descriptor failures (`-71`, `-110`, and `-62`) and never saw
+`Product: ANE fastboot` within the 120-second cycle. The device did not return
+to a usable loader window automatically during the bounded recovery monitor.
+
+Source inspection showed that the new full-screen `ane_fb::report()` ran before
+`ane_usb_dev::init()` and `usb_attach()`. This made the panel paint a credible
+candidate for stealing the first descriptor window, so the next A/B moved the
+report after attach.
+
+#### v256/v257: attach-first and enumeration foreground pump
+
+v256 moved the report after `usb_attach()`. The host still failed at the first
+device descriptor (`-71`/`-110`/`-62`) and the phone returned to `Fastboot2.0`
+at 12:30:05. v257 added a bounded two-second `service()` pump until
+`USB_ENUMERATED`; the same descriptor failure remained (first retry at
+12:31:44). Therefore the panel alone is not the complete cause: the failure
+occurs before `ENUMDONE`, and the v256/v257 changes did not restore the wire.
+
+#### v258/v259: gated panel and pre-GIC ordering rollback
+
+v258 was built with the panel skipped unless `ENUMDONE` was already latched.
+v259 additionally removed the pre-GIC foreground polling loop and retained only
+the proven single service pass. Both artifacts passed the mechanical package
+checks. They were not flashed after the v257 failure; no claim is made about
+their device behavior.
+
+The working next hypothesis is now the v253+ USB/boot ordering or controller
+state, not merely the diagnostic UI. The v253-v254 `desktop`/re-enumeration
+changes must be compared against the v238/v252 floor on the exact EP0 attach,
+reset, and timer-service path. Do not continue UI A/Bs until that comparison
+produces a source-grounded change.
+
+#### Recovery state
+
+The known v252 stock artifact was flashed at 12:38:19 and returned `OKAY`, but
+its subsequent reboot was not observed as `ANE fastboot`; the loader then had
+to be entered manually. The final verified state for this session is the
+loader, product `Fastboot2.0`, serial `SCV7N18927000473`, held without another
+reboot or flash.
+
+#### v260: autonomous USB recovery and no-button cycle
+
+v260 adds an explicit `ATTACHED` latch after the deferred `usb_attach()` and
+lets the timer-side USB recovery state machine run without waiting for
+`SETUP_SEEN`. This covers the first-descriptor failure where the host is
+connected but no setup packet reaches the responder. While
+`SET_CONFIGURATION(1)` has never completed, the timer drops and raises the
+D+ pull-up every 1024 beats, up to six draws. If none reaches configuration 1,
+the existing panic path writes the BOOTLOADER PMIC reason and resets through
+LPM3 NMI/SP805 into `Fastboot2.0`; a healthy configuration stops the active
+re-enumeration and leaves only the normal USB service pump. No framebuffer
+paint is added to this path, so Desktop ownership remains intact.
+
+The v260 AArch64 build used PIC/PIE, user-launchd, UART-only marks, and
+`FULLERENE_ANE_NO_PUTC_WD_TEND=1`. Host tests passed 29 + 7 + 10 + 2. The
+packaged artifact passed the corrected stock-embed validator and has SHA-256
+`857c9df195737d46767ca34c29c7445f37afca736b9892217bb1c339088443f6`:
+`/home/placeless/dev/p20-root/artifacts/fullerene-ane-v260-autoreboot-usb-reenum-stock.img`.
+
+At 12:46:49 the unattended `night_engine_v24.sh` flashed this artifact and
+reported `Sending`, `Writing`, and `Rebooting` all `OKAY`. At 12:47:16 the
+host observed a new high-speed USB attach; the engine remained running and
+entered its product-wait path without asking for a button or COMBO. Further
+device success remains subject to the live unattended cycle.
+
+Linux mainline `drivers/usb/dwc2/gadget.c` (`dwc2_hsotg_pullup()`) handles
+gadget disconnect through `dwc2_hsotg_core_disconnect()` plus gadget
+disconnect, and reconnect through `dwc2_hsotg_core_init_disconnected()` then
+`dwc2_hsotg_core_connect()`. The ANE path deliberately does not copy that
+full sequence: prior ANE experiments showed that GRSTCTL/full USB
+reinitialization can make the device disappear permanently. v260 therefore
+retains the empirically safe DCTL.SftDiscon-only pulse; this is a known
+source-level difference, not an assumed equivalence.
+
+The first live timing confirms the timer-side operation: host device 44 at
+12:47:16, device 48 at 12:49:44, and device 52 at 12:52:12, approximately
+148 seconds apart, matching the 1024-beat reconnect interval. During that initial
+sample the descriptor failures were `-71/-110/-62` and no product string had
+appeared yet; a later retry did reach `Product: ANE fastboot` at 13:06:58, but
+its first three ADB attempts returned `no device` and no loader handoff followed.
+The kernel remains within the bounded six-draw recovery window; the expected
+no-button escape is `WD: NO ENUM` panic followed by the running engine's
+Fastboot2.0 catch.
+
+v261 resets `CONFIGURED`, `CONFIG_VALUE`, and sticky `CONFIG_WAS_1` explicitly
+from `ane_usb_dev::init()` instead of relying on warm-handoff BSS contents.
+The v261 AArch64 build, host tests, stock embedding, and validator all passed;
+artifact SHA-256 is
+`03af6fd6c083aeddf55e91c7adda7c1631c66a4c4172a552f3e8a260538abc3d`.
+
+The unattended engine was then extended so a live `ANE fastboot` product window
+uses `fastboot reboot-bootloader` and immediately flashes the queued artifact
+after `Fastboot2.0` appears. This closes the previously observed gap where an
+ANE fastboot window was visible but ADB failed and the engine only waited for a
+loader. The v261 engine is currently running as process `proc_be7d6f0dad8a`;
+v261 has not yet been flashed because the current v260 boot has not produced a
+loader window after the 13:06:58 clean enumeration.
