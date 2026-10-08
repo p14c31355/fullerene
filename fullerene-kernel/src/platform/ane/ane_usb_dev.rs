@@ -600,6 +600,7 @@ fn ep0_send(data: &[u8]) {
 
 /// Stall EP0 (both directions) until the next SETUP clears it.
 fn stall_ep0() {
+    crate::blackbox::text_puts("UD: EP0 STALL\n");
     let c = rd(DIEPCTL0) | EPCTL_EPENA | EPCTL_EPDIS | EPCTL_STALL;
     wr(DIEPCTL0, c);
     let c = rd(DOEPCTL0) | EPCTL_EPENA | EPCTL_EPDIS | EPCTL_STALL;
@@ -662,9 +663,12 @@ fn handle_setup(log: fn(&str, u64)) {
             unsafe {
                 CONFIGURED = wvalue != 0;
                 CONFIG_VALUE = (wvalue & 0xff) as u8;
-                if wvalue == 1 {
-                    CONFIG_WAS_1 = true;
-                }
+                // Do not mark the boot healthy merely because the SETUP
+                // request reached us.  A host-aborted control transfer can
+                // leave SET_CONFIGURATION(1) processed locally while its
+                // status stage never completes.  The timer-side recovery
+                // must remain armed until the host verifies the state with
+                // GET_CONFIGURATION below.
             }
             if wvalue != 0 {
                 // Activate the bulk pair only now, like a gadget driver's
@@ -681,6 +685,11 @@ fn handle_setup(log: fn(&str, u64)) {
         0x08 => {
             // GET_CONFIGURATION
             let v = if unsafe { CONFIGURED } { 1u8 } else { 0u8 };
+            if v == 1 {
+                unsafe {
+                    CONFIG_WAS_1 = true;
+                }
+            }
             ep0_send(&[v]);
         }
         0x0a => {
@@ -2292,6 +2301,7 @@ fn service_ep0(log: fn(&str, u64)) {
         if unsafe { IN_WAS_DATA } {
             // A data phase finished: the host's status OUT comes next.
             ep0_status_out();
+            crate::blackbox::text_puts("UD: EP0 INDATA\n");
             log("ud: in data done=", 1);
         } else {
             // This IN was itself the zero-length status: transfer done.
@@ -2299,6 +2309,7 @@ fn service_ep0(log: fn(&str, u64)) {
                 TRANSACTION_BUSY = false;
                 SETUP_HANDLED = false;
             }
+            crate::blackbox::text_puts("UD: EP0 INDONE\n");
             log("ud: in zlp done=", 1);
         }
     }
@@ -2320,6 +2331,7 @@ fn service_ep0(log: fn(&str, u64)) {
             TRANSACTION_BUSY = false;
             SETUP_HANDLED = false;
         }
+        crate::blackbox::text_puts("UD: EP0 OUTDONE\n");
         log("ud: out done=", 1);
     }
     if doep & EPINT_SETUP != 0 {

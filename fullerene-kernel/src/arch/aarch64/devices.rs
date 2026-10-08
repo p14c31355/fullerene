@@ -173,11 +173,14 @@ pub(crate) fn init(usb_ready: bool, dtb_address: Option<u64>) {
                 DEVICE_ID_TOUCH,
             );
         }
-        // The ANE vendor tree describes the phone touchscreen as a generic
-        // Huawei I2C device (`huawei,touchscreen`) and places the Synaptics
-        // child at I2C bus 1, address 0x70.  Publish the DT node as an input
-        // capability even before the transport driver exists; inventory must
-        // describe discovered hardware without claiming that it is usable.
+        // The ANE active DT also contains a Huawei ts_kit description for an
+        // FTS-compatible device at I2C address 0x38 (chip id 0x54, 1080x2280).
+        // The local vendor tree has no matching FTS/ts_kit implementation, so
+        // retain this as inventory evidence only; do not probe or reset it.
+        // The older vendor-tree Synaptics bus-1/0x70 description is not active
+        // ANE evidence and must not be used as a live configuration.  Publish
+        // the DT node as an input capability even before transport exists;
+        // inventory must not claim that it is usable.
         // The node has no controller `reg` window, so its resource remains
         // empty rather than inventing an MMIO address from the child address.
         if cfg!(fullerene_aarch64_ane) {

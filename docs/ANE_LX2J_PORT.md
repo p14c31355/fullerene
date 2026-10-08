@@ -93,15 +93,50 @@ enabled DesignWare controller at `/amba/i2c@FFD73000`:
 | status | `ok` |
 | clock-rate | `0x0124f800` (19.2 MHz) |
 
-The same active DTB marks all three touchscreen candidates under this
+The same active DTB marks all three legacy touchscreen candidates under this
 controller disabled: Cypress `cyttsp4` at `0x1A`, Sharp `shtsc` at `0x18`, and
-Synaptics DSX at `0x20`.  The extracted tree contains no active
-`huawei,touchscreen` node.  Consequently, the vendor `bus_id = 1` /
-Synaptics `0x70` description above is not evidence of the currently supplied
-ANE boot DT and must not be used as a live-driver configuration.  It remains
-useful as a source-tree variant only.  The next safe experiment is a
-read-only I²C2 probe/diagnostic, after the DesignWare clock/reset sequence is
-ported; no touch controller will be enabled based on the disabled nodes.
+Synaptics DSX at `0x20`.  It also contains a separate Huawei `ts_kit` vendor
+description for the actual panel path:
+
+| property | active evidence |
+|---|---|
+| node | `/ts_kit/touchscreen@38` |
+| compatible | `fts` |
+| bus | `i2c`, `bus_id = 0` at the vendor-framework level |
+| slave address | `0x38` |
+| chip ID | `0x54` |
+| coordinates | `x_max = 1080`, `y_max = 2280`, multitouch same range |
+| reset / IRQ | `ts_kit` phandles `0x28e` / `0x28f`, `irq_config = 3` |
+| supplies | phandles `0x5f` / `0x60`, regulator-controlled |
+
+This is stronger active-DTB evidence than the unrelated vendor-variant
+Synaptics `bus 1 / 0x70` description, but it is not yet a usable Fullerene
+driver contract: the local kernel source tree does not contain the matching
+`fts`/`ts_kit` implementation or its report protocol.  The next safe step is
+to recover that vendor driver/firmware interface or identify the controller
+from a stock diagnostic; no I²C transaction or reset write is inferred from
+the metadata alone.
+
+Stock ANE boot logs provide a more specific implementation clue.  The stock
+`ts_kit` registers `gt1x_ts_module_init`, reports driver version
+`v1.6<2017/05/20>`, uses reset GPIO `145` and IRQ GPIO `224`, and performs a
+`gt1x_chip_detect` after power-on/reset.  Repeated stock logs also show the
+watchdog initialization writing three bytes to controller register `0x8041`
+(`gt1x_i2c_write ... addr:8041 bytes:3`), followed by retries and eventual
+power-off when communication fails.  This confirms that the runtime stock
+path selects the Goodix GT1x family despite the generic `fts` DT node name.
+It does not by itself prove the register values, touch report layout, or safe
+Fullerene reset/power sequence; those remain unimplemented until the actual
+GT1x source or a controlled stock trace is recovered.
+
+The public Goodix GT1x reference and current Linux driver define the reusable
+8-byte contact layout as `id`, little-endian `x`, little-endian `y`,
+little-endian contact width, and one reserved byte, preceded by a status byte
+whose low nibble is the contact count and whose `0x80` bit marks valid data.
+Fullerene now has an allocation-free parser for this format in
+`resonance::touch`; it is unit-tested but is not connected to ANE I²C or IRQ
+handling.  This separates safe packet decoding from the still-unverified
+transport, reset, power, and controller-identification work.
 
 ## The observation channel: reserved RAM, because nothing else is readable
 
@@ -235,6 +270,41 @@ state: hold power ~10 s, boot Android, then enable USB debugging again
 (mode "ファイル転送" plus the on-device allow dialog). After that the scripts
 above run unattended with no fastboot button combos needed.
 
+## USB EP0 source comparison and current recovery boundary
+
+The ANE USB responder is based on the Synopsys DWC OTG/DWC2 register
+interface.  The local HiSilicon source tree provides the relevant original
+implementation at
+`/home/placeless/dev/hi6250-src/drivers/usb/susb/dwc_otg_pcd_intr.c` and
+`dwc_otg_cil.c`; Linux v4.4 provides the corresponding upstream gadget code in
+`drivers/usb/dwc2/gadget.c`.
+
+The following values are source-confirmed, not inferred from comments:
+
+| operation | HiSilicon source | Fullerene ANE |
+|---|---|---|
+| arm EP0 SETUP receive | `SUPCNT=3`, `PKTCNT=1`, `XFERSIZE=24` | same in `arm_setup_receive()` |
+| EP0 IN programming order | transfer size, `EPENA/CNAK`, then FIFO service | same order in `ep0_send()` |
+| EP0 OUT status on DWC 3.00a+ | `XFERSIZE=maxpacket`, `PKTCNT=1`, `SUPCNT=3` | same 64-byte bounded status receive |
+| post-status control flow | complete status, then prepare the next SETUP receive | explicit `service_ep0()` completion plus bounded re-arm |
+| FIFO flush | wait for AHB idle, flush TX/RX with bounded polling | only in post-bus-reset `handle_reset()` |
+
+The host evidence remains the controlling hardware result.  The recurring bad
+attempts produce `-71`, `-110`, or `-62`; later attempts can return
+`Fastboot2.0`.  The known clean host descriptor is 50 bytes (18-byte device
+descriptor plus 32-byte configuration); the corrupted form is 27 bytes with a
+duplicated 9-byte configuration header.  Therefore the current blocker is not
+the `24`-byte SETUP arm value.  The remaining investigation is the EP0 state
+transition after an aborted transfer: whether `EPENA` is still set when the
+next `DIEPTSIZ0` is written, and whether the completed status/STALL path has
+re-armed SETUP exactly once.  `WD: EP0 EPENA`, `UD: RST`, and `UD: FFLUSH`
+must be correlated with each host descriptor result before another EP0 change.
+
+The pre-attach cleanup helper is intentionally not connected to the boot path:
+earlier hardware experiments showed that touching `GRSTCTL` before the first
+host bus reset can wedge the controller.  Recovery flushes remain restricted
+to `handle_reset()`.
+
 ## Verified battery and charger inventory
 
 The active ANE DTB exposes a usable power-supply path even though Fullerene
@@ -253,6 +323,25 @@ neutral state model.  ANE only publishes the verified PMIC/charger identity;
 it does not activate disabled charger alternatives or write PMIC registers.
 The remaining implementation dependency is the vendor coulomb-counter
 register map and the I2C transport needed to read `hi6523_charger`.
+
+## Generic touch and orientation contracts
+
+The reusable input layers now provide two transport-neutral contracts:
+
+* `lattice::common::ScreenOrientation` maps physical framebuffer coordinates
+  into logical window/input coordinates and reports the logical dimensions.
+* `resonance::InputEvent::Touch(TouchContact)` carries a contact ID, position,
+  pressure, and `Down`/`Move`/`Up`/`Cancel` phase without collapsing a future
+  multi-contact report into a mouse event.
+
+`solvent` applies the selected orientation at its common pointer boundary;
+the default remains no rotation for existing desktop platforms.  ANE's
+measured scanout dimensions are `1080 x 2340`; the active `ts_kit` metadata
+provides a likely touch coordinate range of `1080 x 2280`, but no ANE touch
+backend is enabled yet.  The controller report protocol, reset/IRQ ownership,
+and firmware dependency remain unverified.  These contracts therefore do not
+claim touch operation; they only provide the safe integration point for a
+future source-grounded backend.
 
 ## Next
 

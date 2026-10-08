@@ -86,7 +86,13 @@ fn apply_mouse_move(
     } else {
         y.clamp(0, height.saturating_sub(1) as i32)
     };
-    desktop.mouse_move(x, y);
+    let mapped = lattice::common::ScreenOrientation::map_point(
+        crate::runtime_context::screen_orientation(),
+        lattice::common::Point { x, y },
+        width,
+        height,
+    );
+    desktop.mouse_move(mapped.x, mapped.y);
     cursor_redraw_from.get_or_insert(previous);
 
     // Moving the pointer only changes the cursor pixels.  A full scene

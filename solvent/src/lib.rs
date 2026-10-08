@@ -135,7 +135,8 @@ pub use render::{render, render_cursor_fast, set_render_progress_fn};
 pub use runtime_context::{
     DISPLAY_BRIGHTNESS_X100, HEAP_EXTEND_RESERVE, MOUSE_SENSITIVITY, ProcessTerminal,
     RUNTIME_CONTEXT, RuntimeContext, RuntimeState, apply_settings, get_tsc_per_ms, init,
-    is_initialized, request_klog_live_refresh, set_tsc_per_ms, settings_snapshot,
+    is_initialized, request_klog_live_refresh, set_screen_orientation, set_tsc_per_ms,
+    settings_snapshot,
 };
 #[cfg(not(target_arch = "xtensa"))]
 pub use network_state::{NETWORK_SNAPSHOT, NetworkSnapshot};

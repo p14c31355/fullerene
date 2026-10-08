@@ -630,6 +630,14 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
         // returns the budget to the boot thread regardless of body cost.
         super::timer::arm_ms(100); // v246b: 10ms still lost to the 45.6ms body; try 100ms
         stage(IrqStage::TimerArmed);
+        // USB control traffic has a host-side descriptor timeout.  Service
+        // the ANE responder immediately after re-arming the timer, before
+        // the diagnostic canvas/probe work below can consume the IRQ budget.
+        // The pump has its own reentrancy guard and must remain first: a
+        // delayed first EP0 reply is indistinguishable from a dead device to
+        // xHCI (-71/-110), even when the later timer work is healthy.
+        #[cfg(fullerene_aarch64_ane)]
+        super::ane_service_pump();
         #[cfg(fullerene_aarch64_ane)]
         let tickn = {
             use core::sync::atomic::Ordering;
@@ -735,12 +743,16 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                 static RC_T0: AtomicU32 = AtomicU32::new(0);
                 static RC_STATE: AtomicU32 = AtomicU32::new(0); // 0 idle, 1 off
                 static S0: AtomicU32 = AtomicU32::new(0); // beats at attach/retry
+                static WAIT_LOGGED: core::sync::atomic::AtomicBool =
+                    core::sync::atomic::AtomicBool::new(false);
                 if super::platform::ane_usb_dev::usb_attached()
                     && !super::platform::ane_usb_dev::usb_config_was_1()
-                    && super::platform::ane_usb_dev::usb_config_value() != 1
                 {
                     if S0.load(Ordering::Relaxed) == 0 {
                         S0.store(beats, Ordering::Relaxed);
+                    }
+                    if !WAIT_LOGGED.swap(true, Ordering::Relaxed) {
+                        crate::blackbox::text_puts("WD: USB WAIT\n");
                     }
                     if RC_STATE.load(Ordering::Relaxed) == 1 {
                         if beats.wrapping_sub(RC_T0.load(Ordering::Relaxed)) > 10 {
@@ -918,13 +930,9 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                 super::platform::ane_fb::flush_row(28);
             }
             stage(IrqStage::S3Painted);
-            // Responder pump. v162: every tick. The real tick rate on this
-            // board is far below the nominal 1 kHz (measured: a handful per
-            // second), so the old %16 cadence postponed USB servicing by
-            // whole seconds and the kernel's ~12 s post-enum life expired
-            // before the host's one clean conversation was ever processed.
-            // The pop loop is a handful of register reads; run it per tick.
-            super::ane_service_pump();
+            // USB was serviced at the start of this timer IRQ, before the
+            // diagnostic canvas work. Keep the rest of the IRQ body focused
+            // on timers, watchdog ownership, and bounded diagnostics.
             if beats % 16 == 0 {
                 // Right-column instruments repaint: persists across the
                 // left-column repaints that clear overlapping columns.

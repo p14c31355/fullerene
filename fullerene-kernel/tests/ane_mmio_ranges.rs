@@ -8,6 +8,9 @@
 //! with the UART mapped as Normal memory; every address below is pinned to the
 //! device's own tree (`firmware/ane_dtb/fdt_properties.txt`).
 
+#[path = "../src/platform/common/mod.rs"]
+mod common;
+
 #[path = "../src/platform/ane/mod.rs"]
 mod ane;
 
