@@ -715,3 +715,33 @@ current-image run is established by this source audit.
    `flasks build --platform ane --boot-template <stock kernel dump> --boot-output <img>`
    emits the flashable file directly. Deferred until then on purpose: freezing a
    guessed compression contract in-tree is how a wrong default becomes permanent.
+
+## The MMIO-stall root cause (2026-10-09 evening, v256b-v263 metered)
+
+The stage meter (IQ: `W=` worst-stage field) and the service-phase meter (UD8
+`PC=` field) named the cost centre that the v242/v244 "IRQ ~75 ms" model
+underestimated: **a single DWC2 MMIO access can stall the bus for 0.5-3.6 s**
+while the core serves host traffic (v260/v263: phase A entry `GINTSTS` read
+worst 461 ms, phase C ENUMDONE write+read worst 3.65 s / 754 ms). One ring
+text_byte costs 61 us - the console/ring writes are innocent. The 1.4 s/IRQ
+average is these stalls, not handler logic.
+
+Measured consequences:
+
+- A handler that outlives its arm interval re-fires the timer on ERET. Moving
+  the arm to the tail (v261) starved the responder instead: the pump stopped
+  running between beats and every CNXN died EIO; 10 ms tail-arm (v262) still
+  ended in unrecoverable non-enumeration. Both reverted (v263 = the v260
+  head-arm shape, enumeration + CNXN green on attempt 1).
+- Gating the EP0 SETUP re-arm on a consumed-SETUP delta (v259) broke
+  enumeration 2/2 with garbled 27-byte descriptors: the every-pass re-arm is
+  part of the proven v197 EP0 shape. Reverted.
+
+The structural exit is the message-passing shape: let the DWC2 SPI interrupt
+(galready unmasked: RXFLVL/IEPINT/OEPINT in GINTMSK) do the one ack read in
+IRQ context, push the event into an SPSC queue, and drain - every other MMIO
+access - from the boot thread. That moves the stalls out of the interrupt
+path entirely and removes the starvation mechanism instead of tuning around
+it. Unverified on this handoff: whether the loader's GIC routing delivers the
+DWC2 SPI to the kernel at all (the v1-era record says the controller IRQ was
+never wired).
