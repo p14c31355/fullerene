@@ -2407,6 +2407,16 @@ pub fn init(log: fn(&str, u64)) {
         GINT_USBRST | GINT_ENUMDONE | GINT_IEPINT | GINT_OEPINT | GINT_RXFLVL,
     );
 
+    // v264: the controller's GLOBAL interrupt output (GAHBCFG.GINT, bit 0).
+    // The per-endpoint/GINTMSK masks are inert to the GIC while this bit is
+    // clear - the loader-owned value is not assumed. Only the event-driven
+    // build touches it, so the baseline stays byte-for-byte on the proven
+    // polling shape.
+    if option_env!("FULLERENE_ANE_USB_SPI").is_some() {
+        wr(GAHBCFG, rd(GAHBCFG) | 1);
+        log("ud: gahbcfg=", rd(GAHBCFG) as u64);
+    }
+
     // Clear any latched interrupts from the LK's session.
     wr(GINTSTS, rd(GINTSTS));
     wr(DOEPINT0, 0xffff_ffff);
