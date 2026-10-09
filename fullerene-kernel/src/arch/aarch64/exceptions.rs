@@ -689,6 +689,16 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
         // stable, so resolve through is_some() which folds per build).
         if option_env!("FULLERENE_ANE_ARM_MS_1").is_some() {
             super::timer::arm_ms(1);
+        } else if option_env!("FULLERENE_ANE_ARM_LONG").is_some() {
+            // v274: the body costs about as much as the 100 ms arm (v269/v272
+            // both measured ~0.97 s reported, i.e. roughly one period once the
+            // inflation is divided out), which leaves the boot thread ~0%. The
+            // v246b sweep stopped at 100 ms, so push the interval an order of
+            // magnitude out: at 1 s the responder still answers well inside the
+            // host's 5 s control timeout while the boot thread owns ~90% of the
+            // wall clock. If the SMK trail fills in this build, the starvation
+            // was the duty cycle, not the body's size.
+            super::timer::arm_ms(1000);
         } else {
             super::timer::arm_ms(100); // v246b: 10ms still lost to the 45.6ms body; try 100ms
         }
@@ -1070,7 +1080,8 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                 // busy - that is the starvation. At 1-in-4 with a 100 ms arm
                 // the host still sees a reply well inside its 5 s control
                 // timeout, while the boot thread owns the other three ticks.
-                let pump_now = option_env!("FULLERENE_ANE_LOW_DUTY").is_none() || beats % 4 == 0;
+                let pump_now = (option_env!("FULLERENE_ANE_LOW_DUTY").is_none() || beats % 4 == 0)
+                    && option_env!("FULLERENE_ANE_NO_PUMP").is_none();
                 if pump_now {
                     super::ane_service_pump();
                 }

@@ -1031,8 +1031,11 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         // the launchd reads a file, so a boot that never reaches the launchd
         // inherited the previous boot's marks and the trail lied about
         // progress. Clearing it here makes any nonzero trail live evidence.
-        unsafe {
-            core::ptr::write_volatile(0x348d_e800 as *mut u32, 0);
+        #[cfg(fullerene_aarch64_ane)]
+        if option_env!("FULLERENE_ANE_KEEP_TRAIL").is_none() {
+            unsafe {
+                core::ptr::write_volatile(0x348d_e800 as *mut u32, 0);
+            }
         }
         // Readable copy of the bootup-keypoint write for the durable log
         // (the binary ring record was taken at entry, before this console
