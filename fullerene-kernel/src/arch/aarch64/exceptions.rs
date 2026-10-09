@@ -908,8 +908,7 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                         // en=1 and tgt=1 means the assignment or the interface
                         // enable is wrong; en=0 means the write did not stick.
                         let (a, b, grp, en, tgt) = super::platform::ane::usb_spi_gic_state();
-                        let gs =
-                            (a & 0x3) | ((b & 0x3) << 2) | (grp << 4) | (en << 5) | (tgt << 6);
+                        let gs = (a & 0x3) | ((b & 0x3) << 2) | (grp << 4) | (en << 5) | (tgt << 6);
                         crate::blackbox::text_puts(" GS=");
                         for sh in (0..8u32).rev() {
                             let nib = ((gs >> (sh * 4)) & 0xf) as usize;
@@ -1065,7 +1064,16 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
             // 8e-era pump placement: in the beats block, after diagnostics.
             #[cfg(fullerene_aarch64_ane)]
             if option_env!("FULLERENE_ANE_PUMP_LATE") == Some("1") {
-                super::ane_service_pump();
+                // v272: LOW_DUTY also bounds the pump's cadence. The v260 meter
+                // priced one DWC2 MMIO access at up to 3.6 s, so a pump that
+                // runs on every tick can hold the CPU 100% while the link is
+                // busy - that is the starvation. At 1-in-4 with a 100 ms arm
+                // the host still sees a reply well inside its 5 s control
+                // timeout, while the boot thread owns the other three ticks.
+                let pump_now = option_env!("FULLERENE_ANE_LOW_DUTY").is_none() || beats % 4 == 0;
+                if pump_now {
+                    super::ane_service_pump();
+                }
             }
             if beats % 16 == 0 {
                 // Right-column instruments repaint: persists across the

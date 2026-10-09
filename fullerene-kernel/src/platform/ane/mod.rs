@@ -404,8 +404,7 @@ pub fn usb_spi_gic_state() -> (u32, u32, u32, u32, u32) {
         let gicc_ctlr = core::ptr::read_volatile(gicc as *const u32);
         let igroupr = core::ptr::read_volatile((gicd + 0x080 + (spi / 32) * 4) as *const u32);
         let isenabler = core::ptr::read_volatile((gicd + 0x100 + (spi / 32) * 4) as *const u32);
-        let itargetsr =
-            core::ptr::read_volatile((gicd + 0x800 + (spi / 4) * 4) as *const u32);
+        let itargetsr = core::ptr::read_volatile((gicd + 0x800 + (spi / 4) * 4) as *const u32);
         (
             gicd_ctlr,
             gicc_ctlr,
