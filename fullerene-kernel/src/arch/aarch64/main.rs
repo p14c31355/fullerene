@@ -1015,6 +1015,17 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         // Wipe canvas rows inherited from the previous (warm-reset) boot;
         // stale lines must never masquerade as current evidence in a photo.
         platform::ane_fb::clear();
+        // v273 ABLATION: every per-tick diagnostic paint goes through
+        // ane_fb::flush_row, which already early-returns on IRQ_QUIET. Setting
+        // it here removes ALL of the flush_row work (a full-row memcpy plus a
+        // cache_clean per channel and window - the cache maintenance is the
+        // suspect) without touching the pump, the meter, or the responder, so
+        // one collection prices the paints against the DWC2 access. The
+        // instruments go blind in this build only.
+        #[cfg(fullerene_aarch64_ane)]
+        if option_env!("FULLERENE_ANE_IRQ_NO_PAINT").is_some() {
+            platform::ane_fb::IRQ_QUIET.store(true, core::sync::atomic::Ordering::Relaxed);
+        }
         // v268: reset the SMK/VFS trail for THIS boot. The block lives in the
         // ramoops tail and survives resets; read_vfs_path only clears it when
         // the launchd reads a file, so a boot that never reaches the launchd
