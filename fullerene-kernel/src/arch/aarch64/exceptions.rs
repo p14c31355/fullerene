@@ -625,16 +625,24 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
         // interrupt fires immediately on ERET = back-to-back IRQs = the
         // boot thread starved). arming before the body plus a real gap
         // returns the budget to the boot thread regardless of body cost.
-        super::timer::arm_ms(100); // v246b: 10ms still lost to the 45.6ms body; try 100ms
+        // Regression isolation: the 8e era armed 1 ms here. Restore that
+        // interval under a compile-time gate (const str compare is not
+        // stable, so resolve through is_some() which folds per build).
+        if option_env!("FULLERENE_ANE_ARM_MS_1").is_some() {
+            super::timer::arm_ms(1);
+        } else {
+            super::timer::arm_ms(100); // v246b: 10ms still lost to the 45.6ms body; try 100ms
+        }
         stage(IrqStage::TimerArmed);
-        // USB control traffic has a host-side descriptor timeout.  Service
-        // the ANE responder immediately after re-arming the timer, before
-        // the diagnostic canvas/probe work below can consume the IRQ budget.
-        // The pump has its own reentrancy guard and must remain first: a
-        // delayed first EP0 reply is indistinguishable from a dead device to
-        // xHCI (-71/-110), even when the later timer work is healthy.
-        #[cfg(fullerene_aarch64_ane)]
-        super::ane_service_pump();
+        // Regression isolation: the 8e-era pump ran in the beats block
+        // after the IRQ diagnostics; restore that placement under a
+        // compile-time gate so both shapes are reproducible.
+        if option_env!("FULLERENE_ANE_PUMP_LATE") != Some("1") {
+            // USB control traffic has a host-side descriptor timeout. Service
+            // the ANE responder before diagnostic canvas/probe work.
+            #[cfg(fullerene_aarch64_ane)]
+            super::ane_service_pump();
+        }
         #[cfg(fullerene_aarch64_ane)]
         let tickn = {
             use core::sync::atomic::Ordering;
@@ -734,8 +742,13 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                 // hour-scale global tick cap.  A healthy boot exits this
                 // state permanently at SET_CONFIGURATION(1), so the shorter
                 // window only applies to a boot that never enumerated.
-                const RECONNECT_WAIT_BEATS: u32 = 256;
-                const RECONNECT_MAX: u32 = 3;
+                // The historical 8e-era constants travel with the late-pump
+                // gate (const str comparison is not stable; option_env! is
+                // resolved in main.rs's feature selection, so read the same
+                // compile-time shape through a bool the build always folds).
+                let pump_late = option_env!("FULLERENE_ANE_PUMP_LATE").is_some();
+                let reconnect_wait_beats: u32 = if pump_late { 1024 } else { 256 };
+                let reconnect_max: u32 = if pump_late { 6 } else { 3 };
                 static RETRIES: AtomicU32 = AtomicU32::new(0);
                 static RC_T0: AtomicU32 = AtomicU32::new(0);
                 static RC_STATE: AtomicU32 = AtomicU32::new(0); // 0 idle, 1 off
@@ -757,10 +770,10 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                             RC_STATE.store(0, Ordering::Relaxed);
                             S0.store(beats, Ordering::Relaxed); // restart the wait
                         }
-                    } else if beats.wrapping_sub(S0.load(Ordering::Relaxed)) > RECONNECT_WAIT_BEATS
+                    } else if beats.wrapping_sub(S0.load(Ordering::Relaxed)) > reconnect_wait_beats
                     {
                         let r = RETRIES.load(Ordering::Relaxed);
-                        if r >= RECONNECT_MAX {
+                        if r >= reconnect_max {
                             crate::blackbox::text_puts("WD: NO ENUM\n");
                             panic!("watchdog: enumeration never configured");
                         }
@@ -927,9 +940,11 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                 super::platform::ane_fb::flush_row(28);
             }
             stage(IrqStage::S3Painted);
-            // USB was serviced at the start of this timer IRQ, before the
-            // diagnostic canvas work. Keep the rest of the IRQ body focused
-            // on timers, watchdog ownership, and bounded diagnostics.
+            // 8e-era pump placement: in the beats block, after diagnostics.
+            #[cfg(fullerene_aarch64_ane)]
+            if option_env!("FULLERENE_ANE_PUMP_LATE") == Some("1") {
+                super::ane_service_pump();
+            }
             if beats % 16 == 0 {
                 // Right-column instruments repaint: persists across the
                 // left-column repaints that clear overlapping columns.

@@ -1203,24 +1203,20 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         // user task starts. The launchd's VFS work can park for good; the
         // desktop paint makes the screen carry the result either way.
         #[cfg(fullerene_aarch64_ane)]
-        {
-            // Give the first host control exchange priority over the desktop
-            // renderer.  The renderer owns the boot thread for long enough
-            // to turn the host's descriptor timeout into -71/-110.  Keep the
-            // wait bounded so a phone boot without a USB host still reaches
-            // the desktop.
-            let mut spins = 0usize;
-            while !platform::ane_usb_dev::usb_enumerated() && spins < 0x190_00000 {
-                if spins & 0x3fff == 0 {
-                    platform::ane_usb_dev::service(ane_log);
-                }
+        if option_env!("FULLERENE_ANE_HISTORICAL_USB_SEQUENCE") != Some("1") {
+            // ENUMDONE only signals that the bus reset completed; descriptor
+            // reads and SET_CONFIGURATION(1) still follow it. Do not let the
+            // renderer monopolize the boot thread during those EP0 requests.
+            // The timer IRQ keeps servicing USB and bounds failed attempts via
+            // its reconnect budget, ultimately returning to the loader.
+            while !platform::ane_usb_dev::usb_config_was_1() {
+                platform::ane_usb_dev::service(ane_log);
                 core::hint::spin_loop();
-                spins += 1;
             }
             platform::ane_usb_dev::service(ane_log);
             ane_log(
-                "usb: predesktop-enum=",
-                platform::ane_usb_dev::usb_enumerated() as u64,
+                "usb: predesktop-config=",
+                platform::ane_usb_dev::usb_config_was_1() as u64,
             );
             if platform::ane_usb_dev::usb_enumerated() {
                 ane_log(
@@ -1230,12 +1226,19 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
             }
         }
         #[cfg(fullerene_aarch64_ane)]
-        desktop::bring_up();
+        if option_env!("FULLERENE_ANE_SKIP_DESKTOP") != Some("1") {
+            desktop::bring_up();
+        }
         #[cfg(fullerene_aarch64_ane)]
         {
-            // Keep the initial post-eMMC attach intact.  A second pull-up
-            // edge after desktop rendering is not part of the proven v211
-            // path and can race the host's first control transfer.
+            // Restore the historical no-desktop boot sequence in a
+            // diagnostic build, without changing the default boot path.
+            if (option_env!("FULLERENE_ANE_HISTORICAL_USB_SEQUENCE") == Some("1")
+                && option_env!("FULLERENE_ANE_HISTORICAL_NO_RECONNECT") != Some("1"))
+                || option_env!("FULLERENE_ANE_FORCE_POST_RECONNECT") == Some("1")
+            {
+                platform::ane::usb_reenumerate();
+            }
             platform::ane_usb_dev::service(ane_log);
             if platform::ane_usb_dev::usb_enumerated() {
                 ane_log(

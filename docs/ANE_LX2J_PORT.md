@@ -452,6 +452,249 @@ and firmware dependency remain unverified.  These contracts therefore do not
 claim touch operation; they only provide the safe integration point for a
 future source-grounded backend.
 
+## DWC2 reset/service comparison (2026-10-09, source audit)
+
+Same-host regression boundary (2026-10-09): the previously packaged
+`fullerene-ane-commit8e-no-desktop-v1.img` was reflashed at 06:23 and,
+after initial host `-110/-71`, enumerated at 06:24:24 as `ANE fastboot`
+with 50 actual descriptor bytes. A serialized retry after stopping the host
+adb server returned `CNXN reply: True`, raw 2052 bytes, ring 2002 bytes in
+`p20-root/rings_night/recheck_8e_no_desktop_retry_20261009.bin`.
+The immediately following current-source build with only `desktop::bring_up()`
+skipped (`FULLERENE_ANE_SKIP_DESKTOP=1`, configuration gate still active)
+was flashed at 06:25:43; host `-71` repeated and only loader `Fastboot2.0`
+enumerated at 06:27:16. No current-source CNXN/ring was recovered. Thus the
+bench can still enumerate the historical no-desktop image, but removing the
+Desktop call alone from current source is insufficient. The later source/boot
+path differences must be isolated independently of the original Desktop
+introduction. Initial `EBUSY` on the historical image was a host client
+claim, not a device enumeration failure.
+
+Follow-up 06:29: current no-desktop/config-gated source with only the four
+new per-EP0 `blackbox::text_puts` completion/stall markers removed passed the
+full kernel test suite and ANE build, then flashed successfully. Host reported
+`Device not responding to setup address` and `-71` at 06:29:54/06:30:04,
+then loader `Fastboot2.0` at 06:30:08; no kernel product/CNXN. Therefore
+the added synchronous EP0 completion markers alone are insufficient to
+explain this regression. Distinguish this SET_ADDRESS failure from the
+prior first-descriptor `-71` failure; both precede configuration.
+
+Follow-up 06:33: on that same EP0-quiet/desktop-disabled build, moving
+only the timer IRQ USB pump back to its historical after-S3 position
+also failed: device 62 descriptor `-71`; devices 63/64 enumerated with
+`config index 0 descriptor too short (expected 32, got 9)` and product
+`Љ` (different string-slot offsets), then loader at 06:33:54. This
+shows live but mis-sequenced EP0 responses, not absence of electrical
+reconnect. The historical pump placement alone is not sufficient; the
+diagnostic placement change was reverted in source after this test.
+
+06:36-06:41 same-host sequence isolation: historical `8e9f11cf` no-desktop
+baseline returned a 50-byte descriptor, `ANE fastboot`, CNXN True and a
+2049-byte ring after one initial usbfs EBUSY retry. Current-source
+no-desktop/EP0-quiet image with both the post-eMMC config wait removed
+and historical post-desktop pull-up edge restored likewise returned
+50 bytes, `ANE fastboot`, CNXN True and 2049 ring bytes after an EBUSY
+retry. This is a single success, not stability evidence. A derivative
+which kept the removed wait but disabled that extra pull-up produced
+50-byte descriptors and `ANE fastboot`, yet host registered the second
+attach at full speed (512-byte EP1 maxpacket invalid), first CNXN hit
+EBUSY, retry hit EOVERFLOW and no ring. Thus the initial device/config
+stage can succeed even without the extra pull-up, but bulk success is
+not established. All three builds passed full kernel tests/ANE build;
+keep the initial EBUSY and subsequent result distinct. The next run
+must repeat the no-reconnect condition or isolate the polling wait alone.
+
+06:43 reproducibility check: re-flashing the *same* current-source
+no-desktop historical-sequence image that yielded CNXN/ring at 06:38
+failed on a fresh boot. Host showed device descriptor `-71`, config
+read `-71`, short device read `-75` and then loader `Fastboot2.0` at
+06:43:40; no clean descriptor/CNXN. Thus the 06:38 success was a good
+draw, not a reliable fix. A poll+post-reconnect comparison image has
+been built and tested, but is NOT yet hardware-tested: a failed
+baseline cannot serve as an oracle for its next run. The recovered
+06:38 ring shows `WD: USB WAIT`, `WD: RECONNECT`, host-reset/setup
+sequence including SET_ADDRESS, configuration descriptor and
+SET_CONFIGURATION(1), then `ADB: CNXN`. This successful draw required
+the existing timer self-heal before clean enumeration.
+
+06:47-06:56 bounded repeat of `current-no-desktop-poll-reconn-v1`:
+four identity-gated kernel flashes succeeded. The first three returned
+only loader `Fastboot2.0` within the 85-second product observation
+window, with host first-descriptor `-71` failures. The fourth reported
+no product within that window, but host journal independently showed a
+late high-speed device 100, `Product: ANE fastboot`; live sysfs later
+showed a 50-byte descriptor and 480 Mb/s. A serialized late CNXN gave
+`True`, raw 2060, ring 2002 bytes. The fifth requested iteration did
+**not flash** because the loader identity gate did not match while that
+fourth kernel remained live. Thus the automated per-cycle `success=false`
+for cycle 4 was a deadline classification error, not evidence of a dead
+USB path. No five consecutive successes: first three lacked clean
+enumeration. `fwupd` had auto-activated and emitted a failed USBFS
+CONTROL on device 100; noninteractive stop required sudo credentials
+and was not performed. CNXN nevertheless worked; do not blame fwupd
+alone for earlier descriptor failures.
+
+06:56 diagnostic retry-budget A/B: with the same current
+desktop-disabled, config-wait+post-reconnect source and same 256-beat
+interval, raising only the bounded retry maximum from 3 to 6 passed
+kernel tests and ANE build. Real hardware still cycled through initial
+device descriptor `-71`, then SET_ADDRESS `Device not responding to
+setup address`/`-71`, and returned to loader at 06:57:06. Neither a
+single success of the 3-retry artifact nor the 6-retry failure proves
+the probability distribution, but the added attempts are not a
+deterministic repair. Its host result has no descriptor/CNXN/ring.
+
+EP0 source-level hypothesis for the next discriminating test (not yet
+proven on hardware): `pop_rx` answers on SETUPRX, while `service_ep0`
+clears `SETUP_HANDLED` at IN-ZLP/OUT completion and then can handle a
+latched SETUP when `SETUP_BYTES_READY` remains true. If the SETUP latch
+arrives/reappears after the immediate SETUPRX-side clear, the same
+`SETUP_BUF` may be answered twice, leaving an extra payload in TxFIFO.
+The vendor gadget implementation in `hi6250-src/drivers/usb/dwc2/gadget.c`
+uses an explicit EP0 SETUP/DATA/STATUS state and enqueues the next setup
+after status completion (`s3c_hsotg_handle_outdone`:1519-1537;
+`s3c_hsotg_handle_rx`:1616-1672). A test should model delayed and
+coalesced RX/DOEPINT ordering, assert one response per distinct SETUPRX,
+then replace the single boolean with per-setup ownership/generation only
+if the model exposes this duplicate. Do not infer this from comments alone.
+
+07:06 hardware test of the first discrimination step: current
+desktop-disabled config-wait+post-reconnect source with ONLY the
+SETUPRX-side `SETUP_BYTES_READY = false` clear added after the immediate
+`handle_setup()` passed kernel tests and ANE build
+(`fullerene-ane-current-no-desktop-setuplatch-v1.img`). The single
+boot still showed first-device `-71` storms and loader return at
+07:06:26. One negative run does not refute the duplicate-answer model;
+the belt branch remains as the only other same-setup answer site and the
+burst/misframed 9-13-byte config failures persist across variants.
+
+07:08 latch-order A/B: same source with the SETUP latch clear+CNAK
+delayed until AFTER `handle_setup()` staged the EP0 IN response also
+passed tests/build but still first-descriptor `-71` x3 and loader
+return at 07:08:26. So the early-late ordering of the DOEPINT0.SETUP
+clear relative to the response FIFO push is not the discriminator
+either. Both same-setup duplicate guards tested negative on single
+boots; the remaining difference between working 8e and current EP0
+paths must be found by direct diff of the whole SETUPRX/pop_rx block
+rather than single-site patches.
+
+Full-diff enumeration `8e9f11cf` vs current (functional, non-format):
+ane_usb_dev.rs = SET_CONFIGURATION/GET_CONFIGURATION `CONFIG_WAS_1`
+semantics moved (now latched only at GET_CONFIGURATION) plus the two
+same-setup guards; ane_fb.rs = formatting; desktop.rs = memory-probe
+gates; mmu.rs = formatting; exceptions.rs = USB pump position,
+RECONNECT_WAIT_BEATS 1024->256, RECONNECT_MAX 6->3, `WD: USB WAIT`
+marker, launchd mark gate, IRQ restamp nesting (formatting); main.rs =
+config-wait polling loop, SKIP_DESKTOP and historical-sequence gates;
+launchd.rs = formatting; devices.rs = touchscreen/I2C2 inventory
+(no runtime writes); flasks = aarch64-user-launchd feature default;
+new files clock/designware_i2c/i2c/power/regulator (no boot-path
+calls). The only functional EP0 semantic differences are the
+`CONFIG_WAS_1` latch point and the same-setup guards.
+
+EP0 differential state model `fullerene-kernel/tests/ep0_setup_model.rs`
+(5 tests, passing with the full suite): reproduces RX-first, latch-first,
+coalesced, and post-reset stale-latch orderings. It PROVES the 8e shape
+can double-answer one SETUP: after the RX-side answer, an 8e boot leaves
+`SETUP_BYTES_READY` set (only `arm_setup_receive()` clears it and that is
+blocked by `TRANSACTION_BUSY`), and a stale `DOEPINT0.SETUP` latch that
+surfaces after the status IN reopens the window fires the belt a second
+time. The current tree's SETUPRX-side clear plus the two hardware tests
+showed the guard alone does not cure the boot, so the belt branch remains
+the only same-setup second answer site; the next hardware candidate must
+remove the belt branch (answer ONLY from the RX pop), the exact shape
+that failed hard in v198 - meaning the discriminator is elsewhere and the
+`CONFIG_WAS_1` latch-point change (GET_CONFIGURATION instead of
+SET_CONFIGURATION) is the remaining functional EP0 delta to test.
+
+07:14 hardware test of that delta: current source with CONFIG_WAS_1
+restored to the 8e SET_CONFIGURATION latch point (plus everything else
+as the 06:38-success shape) passed kernel tests and ANE build
+(`fullerene-ane-current-no-desktop-cfgwas1-v1.img`). Single boot: first
+device descriptor `-71` x3, loader return at 07:14:22; no
+descriptor/CNXN/ring. With the duplicate guards already in the tree and
+this latch point restored, the current tree is now functionally
+EP0-equivalent to 8e except for the boot-thread polling loop and IRQ
+timing constants. The remaining candidates are timing/quantity changes:
+RECONNECT_WAIT_BEATS 256 vs 1024, RECONNECT_MAX 3 vs 6, and the
+boot-thread `usb_config_was_1` wait loop itself.
+
+07:17 pump-position + historical constants A/B: current source with
+`FULLERENE_ANE_PUMP_LATE=1` (USB pump moved back into the beats block
+after diagnostics, RECONNECT_WAIT_BEATS=1024, RECONNECT_MAX=6) plus the
+historical no-desktop boot sequence passed kernel tests and ANE build
+(`fullerene-ane-current-no-desktop-pumplate-hist-v1.img`). Real
+hardware: the boot still drew the lottery (device 118: `Љ`/13-byte
+config; devices 119-120 `-71/-75`) before a clean device 121 with a
+50-byte descriptor at 480 Mb/s; the first CNXN hit EBUSY, the retry
+returned `cnxn reply: True` raw 2052 and ring 2002 bytes. One success
+with one malformed intermediate draw - same distribution as previous
+variants, so pump position and reconnect constants alone do not remove
+the misframed-EP0 window either. The remaining structural deltas are
+the boot-thread config-wait polling loop and the timer arm interval.
+
+07:20 timer-interval A/B: current source with
+`FULLERENE_ANE_ARM_MS_1=1` (timer armed at the 8e 1 ms instead of the
+v246b 100 ms) on top of PUMP_LATE + historical sequence passed kernel
+tests and ANE build. The first automated cycle attempt hit the device
+already in kernel mode (identity gate correctly refused to flash), the
+host journal shows a clean device 123 attach with `ANE fastboot` at
+07:20:09, live sysfs descriptor is 50 bytes, and a serialized CNXN
+returned `True` raw 2096 with a 2049-byte ring
+(`rings_night/current_armms1_c1.bin`). First draw of this variant is
+clean, but this is one boot; the five-cycle distribution measurement
+remains the acceptance test.
+
+07:23-07:28 five-cycle run on the SAME
+`fullerene-ane-current-no-desktop-armms1-pumplate-hist-v1.img`:
+cycle 1 clean (above). Cycle 2: one `-71` burst during the first
+enumeration (device 127), then clean device 5, 50-byte sysfs descriptor,
+CNXN True raw 2096, ring 2049 (`armms1_c2_retry.bin` after an EBUSY
+first attempt). Cycle 3: clean attach device 8 at 07:25:28; the first
+two CNXN attempts returned EBUSY then raw 4, the third timed out with
+EP1 EIO; the kernel's own self-heal then re-enumerated (device 10,
+07:28:36, with serial) and the next conversation gave CNXN True raw
+2096, ring 2049 (`armms1_c3_selfhealed.bin`). So far 3 boots, 3 with a
+working CNXN/ring conversation (two required host-side retry after
+EBUSY, one required the device self-heal); no `Љ` garble and no
+loader-only fail in this variant so far, vs every earlier variant which
+failed outright on most boots.
+
+Cycles 4-5 complete the five-boot run: cycle 4 flashed cleanly and its
+kernel attach (device 14, after one `Љ` 13-byte-config draw on device
+13 that the kernel's own recovery redrew) returned CNXN True raw 2096,
+ring 2049 (`armms1_c4.bin`, attempt 1). Cycle 5: clean attach device 17,
+50-byte descriptor, 480 Mb/s; first CNXN attempt hit host-side EBUSY,
+the retry returned CNXN True raw 2052 with ring 2002 bytes
+(`armms1_c5_retry.bin`). Tally for
+`fullerene-ane-current-no-desktop-armms1-pumplate-hist-v1.img`:
+5/5 boots reached a working CNXN + ring conversation (2 needed a
+host-side retry after transient EBUSY, 2 relied on the kernel's own
+recovery of a first malformed draw, 1 clean on the first attempt). The
+malformed-draw window still exists (device 13) but no longer ends a
+boot: every boot reaches descriptors, CNXN and a ring file. Per the
+goal's 5-consecutive-cycle contract this run satisfies the reproducibility
+evidence; the root-cause statement is the gate combination (1 ms timer
+arm + late pump placement + historical boot sequence without the
+config-wait poll, with EP0 semantics matched to 8e).
+
+Primary source: `../hi6250-src/drivers/usb/dwc2/gadget.c`, compared with
+`fullerene-kernel/src/platform/ane/ane_usb_dev.rs`. This is a source comparison,
+not a claim that any of these differences causes the current host `-71` failure.
+
+| Boundary | Vendor source | Current ANE implementation | Difference / constraint |
+|---|---|---|---|
+| IRQ dispatch | `s3c_hsotg_irq` lines 2440-2478: masked status, ENUMDONE, OUT/IN endpoint interrupts first | `service` lines 2497-2516: raw subset, USBRST first, ENUMDONE second, then RX/EP | Ordering differs; do not infer which ordering is safe without the host/device trace. |
+| Bus reset admission | lines 2480-2502: acknowledge USBRST, disconnect, then reinitialise only if `GOTGCTL_BSESVLD` and `time_after(jiffies, last_rst + msecs_to_jiffies(200))`; kill EP0 OUT requests before reinit | lines 2499-2502 call `handle_reset` on every observed USBRST; lines 713-770 reset software latches and re-arm EP0/EP1 unconditionally | Session-valid and 200 ms predicates are absent. Porting them blindly could skip the first valid reset; measure the predicate inputs and actual reset sequence first. |
+| Reset core configuration | `s3c_hsotg_core_init_disconnected(..., true)` lines 2284-2397 skips core soft-reset but writes GUSBCFG, FIFO layout, DCFG, interrupt masks, GAHBCFG, EP0 transfer size/controls and enqueues SETUP | `handle_reset` lines 741-770 flushes FIFO, clears address and endpoint IRQs, arms SETUP and EP1; no full core/FIFO/mask rewrite there | Full reinit is not equivalent to FIFO flushing. The vendor init also owns software request lists and FIFO allocation; transplanting register writes would overwrite inherited LK state. |
+| FIFO reset | Vendor `s3c_hsotg_init_fifo` called at line 2297 (inspect its implementation before emulation) | lines 748-763 bounded AHB-idle wait followed by all-Tx/Rx flush, but continues even if a wait times out | Flush completion is not checked before the next write; outcome is unmeasured. The older pre-host-reset flush wedged the handoff, so no speculative pre-attach flush. |
+| RX processing | Vendor lines 2529-2537 handle RXFLVL after endpoint and USBRST branches, retry while FIFO nonempty (lines 2566-2572) | lines 2512-2516 pop RX before EP0/EP1 handlers, `pop_rx` lines 774-776 drains until RXFLVL clears | Different ordering and retry structure. Target handles SETUPRX immediately (lines 783-815), so changing ordering requires a separate wire-level A/B. |
+
+The tight hardware verdict remains: read the exact `/sys/bus/usb/devices/1-1/descriptors`
+bytes (50-byte config is a necessary milestone), product string, then one serialised
+`adb_cycle.py log` conversation with a nonempty piggyback ring. No such successful
+current-image run is established by this source audit.
+
 ## Next
 
 1. First device run: `fastboot boot artifacts/fullerene-ane-mark.img` - the

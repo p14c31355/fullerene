@@ -121,9 +121,10 @@ mod tests {
             RegisterDevice::new(&mut bus, 0x38, RegisterAddressWidth::TwoBytesBigEndian);
         let mut data = [0; 2];
         device.read(0x814e, &mut data).unwrap();
-        assert_eq!(bus.write_read_register, [0x81, 0x4e]);
         assert_eq!(data, [0x5a, 0x5a]);
         device.write(0x8041, &[1, 2]).unwrap();
+        drop(device);
+        assert_eq!(bus.write_read_register, [0x81, 0x4e]);
         assert_eq!(bus.write_len, 4);
         assert_eq!(bus.write_packet, [0x80, 0x41, 1, 2]);
     }
@@ -138,8 +139,9 @@ mod tests {
         let mut device = RegisterDevice::new(&mut bus, 0x50, RegisterAddressWidth::OneByte);
         let mut data = [0; 1];
         device.read(0x12, &mut data).unwrap();
-        assert_eq!(bus.write_read_register, [0x12, 0]);
         device.write(0x34, &[0xaa]).unwrap();
+        drop(device);
+        assert_eq!(bus.write_read_register, [0x12, 0]);
         assert_eq!(bus.write_len, 2);
         assert_eq!(&bus.write_packet[..2], &[0x34, 0xaa]);
     }
