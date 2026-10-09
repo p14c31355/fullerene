@@ -902,6 +902,19 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                             let nib = ((s >> (sh * 4)) & 0xf) as usize;
                             crate::blackbox::text_byte(HEX[nib]);
                         }
+                        // v270: the routing readback. grp = group assignment,
+                        // en = the enable bit, tgt = target CPU byte, plus the
+                        // low bits of GICD_CTLR/GICC_CTLR. A silent line with
+                        // en=1 and tgt=1 means the assignment or the interface
+                        // enable is wrong; en=0 means the write did not stick.
+                        let (a, b, grp, en, tgt) = super::platform::ane::usb_spi_gic_state();
+                        let gs =
+                            (a & 0x3) | ((b & 0x3) << 2) | (grp << 4) | (en << 5) | (tgt << 6);
+                        crate::blackbox::text_puts(" GS=");
+                        for sh in (0..8u32).rev() {
+                            let nib = ((gs >> (sh * 4)) & 0xf) as usize;
+                            crate::blackbox::text_byte(HEX[nib]);
+                        }
                     }
                     {
                         let mut worst_slot = 0usize;

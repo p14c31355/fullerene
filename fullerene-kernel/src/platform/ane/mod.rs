@@ -317,7 +317,12 @@ pub fn init_interrupt_controller(gicd_base: Option<usize>, gicc_base: Option<usi
         core::ptr::write_volatile(gicd as *mut u32, gicd_ctlr | 0x3);
         // GICC_CTLR (0x000) and GICC_PMR (0x004): enable, allow all priorities.
         let gicc_ctlr = core::ptr::read_volatile(gicc as *const u32);
-        core::ptr::write_volatile(gicc as *mut u32, gicc_ctlr | 0x1);
+        // v270: bit 0 = EnableGrp0, bit 1 = EnableGrp1. The loader may leave
+        // the SPIs in group 1; enabling only group 0 would then leave every
+        // SPI undelivered (v267/v268: the enabled DWC2 SPI never fired). Set
+        // both so the group assignment the loader made cannot silently mute
+        // an enabled line.
+        core::ptr::write_volatile(gicc as *mut u32, gicc_ctlr | 0x3);
         core::ptr::write_volatile((gicc + 4) as *mut u32, 0xff);
 
         // Timer PPI 30: level-configured (GICD_ICFGR1, two bits per PPI,
@@ -368,6 +373,46 @@ pub fn enable_usb_spi() {
             (gicd + 0x100 + (spi / 32) * 4) as *mut u32,
             1u32 << (spi % 32),
         );
+        // v271/v272 MEASURED BLOCKER: the DWC2 SPI is owned by the secure
+        // world. The readback (GS= in the IQ line) shows grp=0 with en=1 and
+        // tgt=1, and this write does NOT stick, which places us in the
+        // non-secure view with security extensions enabled: GICD_CTLR bit 1
+        // (EnableGrp1A) also reads back 0 after |= 0x3, and GICD_IGROUPR is
+        // RAZ/WI for secure-owned interrupts, so EL1 cannot move SPI 159 into
+        // group 1. A group-0 line belongs to the secure group, which the
+        // non-secure CPU interface never signals (the timer PPI is group 1,
+        // which is why it works). Hence S=0 with an enabled, targeted,
+        // permanently silent line: the event-driven path cannot be built on
+        // this SPI without a secure-world change. The write is kept as the
+        // experiment; the readback is the proof.
+        let igroupr = gicd + 0x080 + (spi / 32) * 4;
+        let v = core::ptr::read_volatile(igroupr as *const u32);
+        core::ptr::write_volatile(igroupr as *mut u32, v | (1u32 << (spi % 32)));
+    }
+}
+
+/// v270: the DWC2 SPI's routing state, read back from the distributor and CPU
+/// interface so one collection answers "why doesn't this line fire": the
+/// group assignment, the enable bit, the target CPU and both interface
+/// enables, all after the writes above.
+pub fn usb_spi_gic_state() -> (u32, u32, u32, u32, u32) {
+    let gicd = GICD_BASE;
+    let gicc = GICC_BASE;
+    let spi = USB_DWC2_SPI as usize;
+    unsafe {
+        let gicd_ctlr = core::ptr::read_volatile(gicd as *const u32);
+        let gicc_ctlr = core::ptr::read_volatile(gicc as *const u32);
+        let igroupr = core::ptr::read_volatile((gicd + 0x080 + (spi / 32) * 4) as *const u32);
+        let isenabler = core::ptr::read_volatile((gicd + 0x100 + (spi / 32) * 4) as *const u32);
+        let itargetsr =
+            core::ptr::read_volatile((gicd + 0x800 + (spi / 4) * 4) as *const u32);
+        (
+            gicd_ctlr,
+            gicc_ctlr,
+            (igroupr >> (spi % 32)) & 1,
+            (isenabler >> (spi % 32)) & 1,
+            (itargetsr >> ((spi % 4) * 8)) & 0xff,
+        )
     }
 }
 
