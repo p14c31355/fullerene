@@ -83,6 +83,32 @@ pub(crate) static LAST_PRINTED_PC: core::sync::atomic::AtomicU64 =
 pub(crate) static IRQ_US_ACC: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 pub(crate) static IRQ_US_N: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
+/// v267: DWC2 SPI (159) delivery counter. The one-shot ring marker falls out
+/// of the 2 KB CNXN window within seconds, so the count is restamped in the
+/// IQ: line instead - a nonzero value proves the enabled line is actually
+/// reaching the CPU.
+#[cfg(fullerene_aarch64_ane)]
+pub(crate) static USB_SPI_HITS: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
+#[cfg(fullerene_aarch64_ane)]
+pub(crate) fn usb_spi_hits() -> &'static core::sync::atomic::AtomicU32 {
+    &USB_SPI_HITS
+}
+
+/// v252: per-stage worst cost in counter-us. `stage()` stamps the boundary;
+/// the next `stage()` (or the handler tail) attributes the elapsed time to
+/// the stage that just ran. The IQ: line prints the worst stage letter +
+/// its cost, so one collection names the phase eating the 1.4 s/IRQ instead
+/// of a blind A/B. Indexed by stage byte - 'A'..'Z' fits 26 slots.
+#[cfg(fullerene_aarch64_ane)]
+pub(crate) static IRQ_STAGE_US: [core::sync::atomic::AtomicU32; 26] =
+    [const { core::sync::atomic::AtomicU32::new(0) }; 26];
+#[cfg(fullerene_aarch64_ane)]
+static IRQ_STAGE_T0: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+#[cfg(fullerene_aarch64_ane)]
+static IRQ_STAGE_CUR: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
 /// Set the current IRQ stage: mirror its letter into the durable ring (bounded
 /// so a spurious-id storm cannot wash the log) and remember it.
 #[cfg(fullerene_aarch64_ane)]
@@ -90,6 +116,23 @@ pub(crate) fn stage(s: IrqStage) {
     use core::sync::atomic::{AtomicU32, Ordering};
     static STAGE_BUDGET: AtomicU32 = AtomicU32::new(0);
     IRQ_LAST_STAGE.store(s as u8, Ordering::Relaxed);
+    // v252: attribute the time since the previous stage boundary to that
+    // stage. worst-cost-per-stage turns the 1.4 s/IRQ mystery into a named
+    // phase; the counter keeps running across the whole handler.
+    {
+        let now = super::timer::uptime_us();
+        let t0 = IRQ_STAGE_T0.swap(now, Ordering::Relaxed);
+        let prev = IRQ_STAGE_CUR.load(Ordering::Relaxed);
+        if prev != 0 {
+            let slot = ((prev - b'A') as usize) % 26;
+            let dt = now.saturating_sub(t0).min(u32::MAX as u64) as u32;
+            let cur = IRQ_STAGE_US[slot].load(Ordering::Relaxed);
+            if dt > cur {
+                IRQ_STAGE_US[slot].store(dt, Ordering::Relaxed);
+            }
+        }
+        IRQ_STAGE_CUR.store(s as u8, Ordering::Relaxed);
+    }
     // v194: budget 1024 -> 128. At ~18 letters per IRQ the old budget spent
     // ~2300 bytes writing the first ~56 IRQs' letters - a third of the 2 KiB
     // CNXN ring tail. 128 letters (~7 IRQs) still covers early-boot hang
@@ -621,10 +664,15 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
     if interrupt_id as u32 == super::platform::ane::USB_DWC2_SPI {
         // v264: the event-driven responder. The DWC2 asserts this SPI exactly
         // when GINTSTS has a masked event, so servicing here is real work, not
-        // a poll - and it happens only when the core says so. The MMIO stalls
-        // the v260 meter measured still occur, but they now sit on an
-        // interrupt that only fires under host traffic instead of on every
-        // timer beat, so an idle link costs the boot thread nothing.
+        // a poll. The one-shot marker falls out of the 2 KB window, so the
+        // hit count is restamped in the IQ: line (S=) as well.
+        {
+            use core::sync::atomic::Ordering;
+            let n = usb_spi_hits().fetch_add(1, Ordering::Relaxed);
+            if n < 4 {
+                crate::blackbox::text_puts("IRQ: USBDWC2\n");
+            }
+        }
         stage(IrqStage::ResponderPumped);
         super::ane_service_pump();
     }
@@ -649,11 +697,11 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
         // after the IRQ diagnostics; restore that placement under a
         // compile-time gate so both shapes are reproducible.
         //
-        // v264: when the DWC2 SPI is enabled the timer pump is DROPPED - the
-        // responder becomes purely event-driven (the FULLERENE_ANE_USB_SPI
-        // build). Keeping both would hide whether the SPI actually fires.
+        // v264: the pump is dropped only in the SPI_ONLY (pure event-driven)
+        // build; the default USB_SPI build keeps it as the control so a
+        // still-enumerating run proves the SPI's delivery.
         if option_env!("FULLERENE_ANE_PUMP_LATE") != Some("1")
-            && option_env!("FULLERENE_ANE_USB_SPI").is_none()
+            && option_env!("FULLERENE_ANE_USB_SPI_ONLY").is_none()
         {
             // USB control traffic has a host-side descriptor timeout. Service
             // the ANE responder before diagnostic canvas/probe work.
@@ -831,6 +879,38 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                         let nib = ((n >> (sh * 4)) & 0xf) as usize;
                         crate::blackbox::text_byte(HEX[nib]);
                     }
+                    // v252: the worst stage + its cost. One line names the
+                    // phase that owns the 1.4 s/IRQ (armms1 finding) instead
+                    // of a blind A/B on the pump placement.
+                    //
+                    // v267: also the DWC2 SPI hit count (S=), which survives
+                    // the 2 KB window where the one-shot marker does not.
+                    {
+                        crate::blackbox::text_puts(" S=");
+                        let s = USB_SPI_HITS.load(Ordering::Relaxed);
+                        for sh in (0..8u32).rev() {
+                            let nib = ((s >> (sh * 4)) & 0xf) as usize;
+                            crate::blackbox::text_byte(HEX[nib]);
+                        }
+                    }
+                    {
+                        let mut worst_slot = 0usize;
+                        let mut worst_us = 0u32;
+                        for (i, slot) in IRQ_STAGE_US.iter().enumerate() {
+                            let v = slot.load(Ordering::Relaxed);
+                            if v > worst_us {
+                                worst_us = v;
+                                worst_slot = i;
+                            }
+                        }
+                        crate::blackbox::text_puts(" W=");
+                        crate::blackbox::text_byte(b'A' + worst_slot as u8);
+                        let w = worst_us as u64;
+                        for sh in (0..8u32).rev() {
+                            let nib = ((w >> (sh * 4)) & 0xf) as usize;
+                            crate::blackbox::text_byte(HEX[nib]);
+                        }
+                    }
                     crate::blackbox::text_byte(b'\n');
                 }
                 let pc_now = LAST_IRQ_PC.load(core::sync::atomic::Ordering::Relaxed);
@@ -859,7 +939,9 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                     // and race the magic reset (measured: the 40 s fetch died
                     // with no OKAY on boot c6).
                     let cnt = unsafe { core::ptr::read_volatile(0x348d_e800u64 as *const u32) };
-                    if cnt > 0 && cnt <= 16 {
+                    // v252: the trail grew to 32 slots (fs.rs vfs_step); the
+                    // old <= 16 reader cut the launchd-era markers off.
+                    if cnt > 0 && cnt <= 32 {
                         const HEX: &[u8; 16] = b"0123456789abcdef";
                         crate::blackbox::text_puts("SMK:");
                         for i in 0..cnt {
@@ -958,11 +1040,8 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
             }
             stage(IrqStage::S3Painted);
             // 8e-era pump placement: in the beats block, after diagnostics.
-            // v264: dropped when the DWC2 SPI is enabled (event-driven build).
             #[cfg(fullerene_aarch64_ane)]
-            if option_env!("FULLERENE_ANE_PUMP_LATE") == Some("1")
-                && option_env!("FULLERENE_ANE_USB_SPI").is_none()
-            {
+            if option_env!("FULLERENE_ANE_PUMP_LATE") == Some("1") {
                 super::ane_service_pump();
             }
             if beats % 16 == 0 {
@@ -1135,6 +1214,25 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
             super::platform::ane_fb::flush_row(33);
         }
         stage(IrqStage::Complete);
+        // v252: close the last stage's window (Complete) so the meter covers
+        // the whole handler including the EOI tail.
+        {
+            let now = super::timer::uptime_us();
+            let t0 = IRQ_STAGE_T0.swap(now, Ordering::Relaxed);
+            let prev = IRQ_STAGE_CUR.load(Ordering::Relaxed);
+            if prev != 0 {
+                let slot = ((prev - b'A') as usize) % 26;
+                let dt = now.saturating_sub(t0).min(u32::MAX as u64) as u32;
+                let cur = IRQ_STAGE_US[slot].load(Ordering::Relaxed);
+                if dt > cur {
+                    IRQ_STAGE_US[slot].store(dt, Ordering::Relaxed);
+                }
+            }
+            IRQ_STAGE_CUR.store(0, Ordering::Relaxed);
+        }
+        // v261/v262 tail-arm REVERTED: arming after the EOI starved the
+        // responder (100 ms: every CNXN died EIO; 10 ms: unrecoverable
+        // non-enumeration). The v246 head-arm shape is restored above.
         // v193: gate the trace newline like its neighbors above (779/797).
         // Ungated, this wrote one 0x0A PER TICK (3-10/s) into the durable
         // ring - the "newline flood" that filled the CNXN piggyback

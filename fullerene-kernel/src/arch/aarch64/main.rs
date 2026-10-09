@@ -1015,6 +1015,14 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         // Wipe canvas rows inherited from the previous (warm-reset) boot;
         // stale lines must never masquerade as current evidence in a photo.
         platform::ane_fb::clear();
+        // v268: reset the SMK/VFS trail for THIS boot. The block lives in the
+        // ramoops tail and survives resets; read_vfs_path only clears it when
+        // the launchd reads a file, so a boot that never reaches the launchd
+        // inherited the previous boot's marks and the trail lied about
+        // progress. Clearing it here makes any nonzero trail live evidence.
+        unsafe {
+            core::ptr::write_volatile(0x348d_e800 as *mut u32, 0);
+        }
         // Readable copy of the bootup-keypoint write for the durable log
         // (the binary ring record was taken at entry, before this console
         // exists). Re-writing is idempotent; the readback proves the value.
