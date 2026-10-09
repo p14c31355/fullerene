@@ -617,6 +617,17 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
             super::usb::poll();
         }
     }
+    #[cfg(fullerene_aarch64_ane)]
+    if interrupt_id as u32 == super::platform::ane::USB_DWC2_SPI {
+        // v264: the event-driven responder. The DWC2 asserts this SPI exactly
+        // when GINTSTS has a masked event, so servicing here is real work, not
+        // a poll - and it happens only when the core says so. The MMIO stalls
+        // the v260 meter measured still occur, but they now sit on an
+        // interrupt that only fires under host traffic instead of on every
+        // timer beat, so an idle link costs the boot thread nothing.
+        stage(IrqStage::ResponderPumped);
+        super::ane_service_pump();
+    }
     if interrupt_id as u32 == super::timer::TIMER_PPI {
         stage(IrqStage::TimerEntered);
         // v246: re-arm FIRST and 10 ms out. The v242/v244/v245 IQ meter
@@ -637,7 +648,13 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
         // Regression isolation: the 8e-era pump ran in the beats block
         // after the IRQ diagnostics; restore that placement under a
         // compile-time gate so both shapes are reproducible.
-        if option_env!("FULLERENE_ANE_PUMP_LATE") != Some("1") {
+        //
+        // v264: when the DWC2 SPI is enabled the timer pump is DROPPED - the
+        // responder becomes purely event-driven (the FULLERENE_ANE_USB_SPI
+        // build). Keeping both would hide whether the SPI actually fires.
+        if option_env!("FULLERENE_ANE_PUMP_LATE") != Some("1")
+            && option_env!("FULLERENE_ANE_USB_SPI").is_none()
+        {
             // USB control traffic has a host-side descriptor timeout. Service
             // the ANE responder before diagnostic canvas/probe work.
             #[cfg(fullerene_aarch64_ane)]
@@ -941,8 +958,11 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
             }
             stage(IrqStage::S3Painted);
             // 8e-era pump placement: in the beats block, after diagnostics.
+            // v264: dropped when the DWC2 SPI is enabled (event-driven build).
             #[cfg(fullerene_aarch64_ane)]
-            if option_env!("FULLERENE_ANE_PUMP_LATE") == Some("1") {
+            if option_env!("FULLERENE_ANE_PUMP_LATE") == Some("1")
+                && option_env!("FULLERENE_ANE_USB_SPI").is_none()
+            {
                 super::ane_service_pump();
             }
             if beats % 16 == 0 {

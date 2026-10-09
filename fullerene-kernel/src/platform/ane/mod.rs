@@ -328,6 +328,47 @@ pub fn init_interrupt_controller(gicd_base: Option<usize>, gicc_base: Option<usi
         core::ptr::write_volatile((gicd + 0x400 + 30 * 4) as *mut u32, 0xa0);
         core::ptr::write_volatile((gicd + 0x100) as *mut u32, 1 << 30);
     }
+    // v264 experiment: route the DWC2 SPI as an event source. Off by default;
+    // the baseline boot keeps the loader's routing untouched.
+    if option_env!("FULLERENE_ANE_USB_SPI").is_some() {
+        enable_usb_spi();
+    }
+}
+
+/// Enable the DWC2 SPI (159) at the distributor: level-high (the DTB's type 4),
+/// a passable priority, targeted at CPU 0, then unmasked. Everything here is
+/// read-modify-write over the same registers the timer setup touches, so the
+/// PPI configuration above is preserved.
+pub fn enable_usb_spi() {
+    let gicd = GICD_BASE;
+    let spi = USB_DWC2_SPI as usize;
+    unsafe {
+        // ICFGR: two bits per interrupt, 0b00 = level.
+        let icfgr = gicd + 0xc00 + (spi / 16) * 4;
+        let cfg_shift = (spi % 16) * 2;
+        let v = core::ptr::read_volatile(icfgr as *const u32);
+        core::ptr::write_volatile(icfgr as *mut u32, v & !(0b11u32 << cfg_shift));
+        // IPRIORITYR: one byte per interrupt.
+        let ipri = gicd + 0x400 + (spi / 4) * 4;
+        let byte_shift = (spi % 4) * 8;
+        let v = core::ptr::read_volatile(ipri as *const u32);
+        core::ptr::write_volatile(
+            ipri as *mut u32,
+            (v & !(0xffu32 << byte_shift)) | (0xa0u32 << byte_shift),
+        );
+        // ITARGETSR: one byte per interrupt; CPU 0 = bit 0.
+        let itarget = gicd + 0x800 + (spi / 4) * 4;
+        let v = core::ptr::read_volatile(itarget as *const u32);
+        core::ptr::write_volatile(
+            itarget as *mut u32,
+            (v & !(0xffu32 << byte_shift)) | (0x01u32 << byte_shift),
+        );
+        // ISENABLER4 (SPI 159 -> word 4, bit 31).
+        core::ptr::write_volatile(
+            (gicd + 0x100 + (spi / 32) * 4) as *mut u32,
+            1u32 << (spi % 32),
+        );
+    }
 }
 
 /// `/amba/watchdog0`: `arm,sp805` at 0xe8a06000 (clocks pclk_wd0 + apb_pclk,
@@ -443,6 +484,14 @@ pub fn watchdog_tend() {
 /// DWC2 register window (GUSBCFG 0x00C, GRSTCTL 0x010, GINTSTS 0x014,
 /// DCFG 0x800, DCTL 0x804).
 pub const USB_CORE_BASE: usize = 0xff10_0000;
+/// The DWC2 interrupt line, from the active DTB:
+/// `/hisi_usb@ff100000  interrupts = <0x00 0x9f 0x04>` = SPI 159, level-high.
+/// The core asserts it whenever a masked GINTSTS event is pending. Leaving it
+/// masked is exactly why the responder is timer-polled today - and that poll's
+/// DWC2 MMIO reads are the 0.5-3.6 s stalls the v260 meter measured. Enabling
+/// the line turns the responder event-driven and moves the MMIO work out of
+/// the periodic timer path.
+pub const USB_DWC2_SPI: u32 = 0x9f;
 /// `/usb_otg_ahbif@ff200000`: the vendor AHB wrapper (ctrl0 0x00, ctrl2 0x08,
 /// ctrl3 0x0C - the eye pattern lives there).
 pub const USB_AHBIF_BASE: usize = 0xff20_0000;
