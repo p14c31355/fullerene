@@ -715,18 +715,28 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
         };
         #[cfg(fullerene_aarch64_ane)]
         {
-            super::platform::ane_fb::paint_hex_at(26, 300, b"S1", tickn as u64);
-            super::platform::ane_fb::flush_row(26);
+            // v269: LOW_DUTY thins the per-tick diagnostic paints (v244
+            // measured ~64 ms/IRQ for the row flushes) so the boot thread
+            // owns the interval when the link is idle. The instruments keep
+            // updating, just at 1/16 the rate - enough for a photo or a
+            // collection window.
+            let paint_now = option_env!("FULLERENE_ANE_LOW_DUTY").is_none() || tickn % 16 == 0;
+            if paint_now {
+                super::platform::ane_fb::paint_hex_at(26, 300, b"S1", tickn as u64);
+                super::platform::ane_fb::flush_row(26);
+            }
             // Per-tick canvas probe: the first pixel of the user block (400,620)
             // and its last pixel (509,719). The tick these flip to 0xffffffff
             // is the tick the EL0 store landed on; staying 0xff000000 up to a
             // stop proves the stores never reached the real canvas.
-            let first = super::platform::ane_fb::canvas_probe(400, 620) as u64;
-            super::platform::ane_fb::paint_hex_at(22, 300, b"UMK", first);
-            super::platform::ane_fb::flush_row(22);
-            let last = super::platform::ane_fb::canvas_probe(509, 719) as u64;
-            super::platform::ane_fb::paint_hex_at(35, 300, b"UM2", last);
-            super::platform::ane_fb::flush_row(35);
+            if paint_now {
+                let first = super::platform::ane_fb::canvas_probe(400, 620) as u64;
+                super::platform::ane_fb::paint_hex_at(22, 300, b"UMK", first);
+                super::platform::ane_fb::flush_row(22);
+                let last = super::platform::ane_fb::canvas_probe(509, 719) as u64;
+                super::platform::ane_fb::paint_hex_at(35, 300, b"UM2", last);
+                super::platform::ane_fb::flush_row(35);
+            }
         }
         stage(IrqStage::ProbesPainted);
         let _ = super::task::wake_event_timeouts(super::timer::uptime_us());
