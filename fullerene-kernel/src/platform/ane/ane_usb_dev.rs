@@ -2460,6 +2460,10 @@ fn trace_request(breq: u8, wvalue: u16, wlength: u16) {
 /// bytes are excluded from the progress heartbeat because it speaks only
 /// from IRQ context in the stall case.
 fn ep0_state_line() {
+    // v256b: the UD8 phases named ring-write phases as the saturating ones.
+    // Time the actual write funnel: t before/after one text_byte, worst-case
+    // kept across passes, packed into the line's trailing field.
+    let t0 = crate::timer::uptime_us();
     fn hex8(mut v: u32) {
         let mut buf = [b'0'; 8];
         for i in (0..8).rev() {
@@ -2483,6 +2487,29 @@ fn ep0_state_line() {
     hex8(packed);
     crate::blackbox::text_byte(b',');
     hex8(rd(DOEPTSIZ0));
+    // v252b: worst service-phase costs, two halves. hi = p1<<48|p2<<32|p3<<16|p4
+    // (entry, reset, enumdone, pop_rx); lo = p5<<48|p6<<32|p7<<16
+    // (ep0, ep1, tail). 16 bits each, microseconds.
+    let (hi, lo) = pass_cost();
+    crate::blackbox::text_puts(" PC=");
+    hex8(hi);
+    crate::blackbox::text_byte(b',');
+    hex8(lo);
+    // v256b: worst single text_byte duration seen since boot (16 bits, us).
+    let t1 = crate::timer::uptime_us();
+    crate::blackbox::text_byte(b'X');
+    let t2 = crate::timer::uptime_us();
+    let dt = (t2 - t1).min(0xffff) as u32;
+    {
+        static WORST_TB: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+        let prev = WORST_TB.load(core::sync::atomic::Ordering::Relaxed);
+        if dt > prev {
+            WORST_TB.store(dt, core::sync::atomic::Ordering::Relaxed);
+        }
+        crate::blackbox::text_puts(" TB=");
+        hex8(WORST_TB.load(core::sync::atomic::Ordering::Relaxed));
+        let _ = t0;
+    }
     crate::blackbox::text_puts("\n");
 }
 
@@ -2513,11 +2540,13 @@ pub fn service(log: fn(&str, u64)) {
         }
     }
     let sts = rd(GINTSTS) & (GINT_USBRST | GINT_ENUMDONE | GINT_RXFLVL | GINT_IEPINT | GINT_OEPINT);
+    pass_enter(1);
     if sts != 0 {
         if sts & GINT_USBRST != 0 {
             wr(GINTSTS, GINT_USBRST);
             handle_reset(log);
         }
+        pass_enter(2);
         if sts & GINT_ENUMDONE != 0 {
             wr(GINTSTS, GINT_ENUMDONE);
             log("ud: enumdone=", ((rd(DSTS) >> 1) & 3) as u64);
@@ -2527,12 +2556,19 @@ pub fn service(log: fn(&str, u64)) {
                 core::ptr::addr_of_mut!(USB_ENUMERATED).write(true);
             }
         }
+        pass_enter(3);
         if sts & (GINT_RXFLVL | GINT_OEPINT | GINT_IEPINT) != 0 {
             pop_rx(log);
+            pass_enter(4);
             service_ep0(log);
+            pass_enter(5);
             service_ep1(log);
+            pass_enter(6);
         }
     }
+    // v252b: phase 1 now covers entry..GINTSTS; 2 = USBRST/handle_reset;
+    // 3 = ENUMDONE; 4 = pop_rx; 5 = ep0; 6 = ep1; 7 = rearm..exit.
+    pass_enter(7);
     // v220: advance the bulk xfer stream every pass (the vendor pattern:
     // the remaining bytes of an armed transfer are fed as FIFO space frees).
     #[cfg(fullerene_aarch64_ane)]
@@ -2543,6 +2579,12 @@ pub fn service(log: fn(&str, u64)) {
     fb_log_step();
     // Re-arm the setup receive whenever no control transfer is in flight;
     // its previous arm was consumed by the SETUP that started the transfer.
+    // v259 REVERTED: gating the re-arm on the SETUP_SEEN delta broke
+    // enumeration (2/2 boots garbled "Љ" 27-byte descriptors) - the re-arm
+    // one pump pass late leaves EP0 OUT NAKed across the host's next control
+    // read. The every-pass re-arm is part of the proven v197 shape; keep it
+    // and let the v257b worst-phase meter decide whether it is actually
+    // expensive before touching it again.
     if unsafe { !SETUP_ARMED && !TRANSACTION_BUSY } {
         arm_setup_receive();
     }
@@ -2559,9 +2601,71 @@ pub fn service(log: fn(&str, u64)) {
     {
         use core::sync::atomic::{AtomicU32, Ordering};
         static PASSES: AtomicU32 = AtomicU32::new(0);
-        if PASSES.fetch_add(1, Ordering::Relaxed) % 8192 == 0 {
+        if PASSES.fetch_add(1, Ordering::Relaxed) % 1024 == 0 {
             ep0_state_line();
         }
     }
+    // v252: pass-cost attribution. The stage meter named the pump window
+    // (S3..K, W=K 2.8 s) as the IRQ's cost center; this splits the cost
+    // inside service() into pop/ep0/ep1/pump-tail so the next collection
+    // names the exact callee instead of a blind A/B.
+    {
+        use core::sync::atomic::{AtomicU32, Ordering};
+        let now = crate::timer::uptime_us();
+        let t0 = PASS_T0.swap(now, Ordering::Relaxed);
+        let phase = PASS_PHASE.load(Ordering::Relaxed);
+        if phase != 0 {
+            let slot = (phase - 1) as usize % PASS_US.len();
+            let dt = now.saturating_sub(t0).min(u32::MAX as u64) as u32;
+            let cur = PASS_US[slot].load(Ordering::Relaxed);
+            if dt > cur {
+                PASS_US[slot].store(dt, Ordering::Relaxed);
+            }
+        }
+        PASS_PHASE.store(0, Ordering::Relaxed);
+    }
     IN_SERVICE.store(false, Ordering::Release);
+}
+
+/// v252: worst-cost-per-service-phase. v252b phases: 1 = entry+GINTSTS read,
+/// 2 = USBRST/handle_reset, 3 = ENUMDONE, 4 = pop_rx, 5 = service_ep0,
+/// 6 = service_ep1, 7 = rearm/xfer/log tail. Read back by the UD8 line.
+static PASS_US: [core::sync::atomic::AtomicU32; 8] =
+    [const { core::sync::atomic::AtomicU32::new(0) }; 8];
+static PASS_PHASE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static PASS_T0: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+fn pass_enter(phase: u32) {
+    use core::sync::atomic::Ordering;
+    let now = crate::timer::uptime_us();
+    let t0 = PASS_T0.swap(now, Ordering::Relaxed);
+    let prev = PASS_PHASE.load(Ordering::Relaxed);
+    if prev != 0 {
+        let slot = (prev - 1) as usize % PASS_US.len();
+        let dt = now.saturating_sub(t0).min(u32::MAX as u64) as u32;
+        let cur = PASS_US[slot].load(Ordering::Relaxed);
+        if dt > cur {
+            PASS_US[slot].store(dt, Ordering::Relaxed);
+        }
+    }
+    PASS_PHASE.store(phase, Ordering::Relaxed);
+}
+
+/// v257b: the u16 packing clamped the real magnitudes (p3/p4/p7 all hit
+/// 0xffff). Return instead the WORST phase packed as (letter << 24) |
+/// 24-bit us; the lo half is reserved 0.
+pub fn pass_cost() -> (u32, u32) {
+    use core::sync::atomic::Ordering;
+    let g = |i: usize| PASS_US[i].load(Ordering::Relaxed);
+    let mut worst_i = 0usize;
+    let mut worst_us = 0u32;
+    for i in 0..7 {
+        let v = g(i);
+        if v > worst_us {
+            worst_us = v;
+            worst_i = i;
+        }
+    }
+    let packed: u32 = (((b'A' + worst_i as u8) as u32) << 24) | (worst_us & 0x00ff_ffff);
+    (packed, 0)
 }

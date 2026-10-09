@@ -99,6 +99,15 @@ pub(super) fn run() -> ! {
     // the only channel that survives a stall. Stamp each bootstrap milestone
     // (rows 24+, below the boot report and the diag strip); a frozen frame
     // then shows exactly how far the flow reached.
+    //
+    // v252: the SMK trail (fs.rs vfs_step, 0x348de800) grew to 32 slots, so
+    // the launchd era finally fits after the VFS prologue's '1'..'E'. Letters
+    // 'G'.. are launchd milestones mirrored into the SAME durable trail the
+    // IRQ restamp already carries - one line covers boot + VFS + launchd.
+    // ('F' is reserved for the first read_vfs_path call site stamping after
+    // its return; 'G' here starts the launchd sequence.)
+    #[cfg(fullerene_aarch64_ane)]
+    fs::vfs_step_mark(b'G');
     fb_mark(24, b"L0 run entered");
     #[cfg(feature = "aarch64-android-init")]
     uart::puts(if fs::android_system_mounted() {
@@ -118,6 +127,8 @@ pub(super) fn run() -> ! {
         cpu::wait_forever();
     }
     uart::put_hex("user-launchd: staging-length=", image_length as u64);
+    #[cfg(fullerene_aarch64_ane)]
+    fs::vfs_step_mark(b'H');
     fb_mark(25, b"L1 img read");
     let main_image = unsafe { &*core::ptr::addr_of!(LAUNCHD_STAGING) };
     let main_image = &main_image[..image_length];
@@ -128,6 +139,8 @@ pub(super) fn run() -> ! {
         cpu::wait_forever();
     };
     fb_mark(26, b"L2 elf ok");
+    #[cfg(fullerene_aarch64_ane)]
+    fs::vfs_step_mark(b'I');
 
     // A dynamically linked Android executable is entered through its
     // PT_INTERP image. The main executable has already been copied into user
@@ -188,6 +201,8 @@ pub(super) fn run() -> ! {
         cpu::wait_forever();
     };
     fb_mark(27, b"L3 stack ok");
+    #[cfg(fullerene_aarch64_ane)]
+    fs::vfs_step_mark(b'J');
 
     uart::put_hex("user-launchd: image-pages=", main_image.page_count as u64);
     uart::put_hex("user-launchd: entry=", main_image.entry);
@@ -207,11 +222,15 @@ pub(super) fn run() -> ! {
         cpu::wait_forever();
     }
     fb_mark(28, b"L4 task ok");
+    #[cfg(fullerene_aarch64_ane)]
+    fs::vfs_step_mark(b'K');
     if !mmu::activate_user_space(0) {
         uart::puts("user-launchd: address-space activation failed\n");
         cpu::wait_forever();
     }
     fb_mark(29, b"L5 mmu ok");
+    #[cfg(fullerene_aarch64_ane)]
+    fs::vfs_step_mark(b'L');
     if personality == task::AbiPersonality::LinuxAarch64 {
         let Some(stack) = install_linux_stack(
             &mut frame,
@@ -228,6 +247,8 @@ pub(super) fn run() -> ! {
     }
     uart::put_hex("user-launchd: ttbr0=", mmu::active_ttbr0());
     fb_mark(30, b"L6 enter el0");
+    #[cfg(fullerene_aarch64_ane)]
+    fs::vfs_step_mark(b'M');
     #[cfg(fullerene_aarch64_ane)]
     {
         // The exact PC the eret targets. A wrong entry is invisible in every

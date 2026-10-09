@@ -7636,6 +7636,22 @@ pub(super) fn android_system_mounted() -> bool {
     .unwrap_or(false)
 }
 
+/// v252: public stamp point for the launchd era. `vfs_step` is private to
+/// `read_vfs_path`; launchd.rs's milestones go through this wrapper so the
+/// SMK trail covers boot + VFS + launchd in one durable line.
+#[cfg(fullerene_aarch64_ane)]
+pub(crate) fn vfs_step_mark(byte: u8) {
+    unsafe {
+        const BASE: usize = 0x348d_e800;
+        const CAP: u32 = 32;
+        let cnt = core::ptr::read_volatile(BASE as *const u32);
+        if cnt < CAP {
+            core::ptr::write_volatile((BASE + 4 + cnt as usize) as *mut u8, byte);
+            core::ptr::write_volatile(BASE as *mut u32, cnt + 1);
+        }
+    }
+}
+
 fn read_vfs_path(path: &str, destination: &mut [u8]) -> Result<usize, u64> {
     /// v213/v215: append a VFS step-marker byte. v213 wrote into the shared
     /// step-mark block (0x348df000) - dead on arrival: the boot's own stage
@@ -7650,8 +7666,14 @@ fn read_vfs_path(path: &str, destination: &mut [u8]) -> Result<usize, u64> {
     fn vfs_step(byte: u8) {
         unsafe {
             const BASE: usize = 0x348d_e800;
+            // v252: capacity 16 -> 32. The '1'..'D' prologue exactly filled 16,
+            // so every later marker (launchd-era, 'E'..) was silently dropped
+            // and the trail read as saturated "123456789aBCD"-class residue.
+            // The 4 KiB gap holds 4092 bytes; 32 is far inside it. The IRQ
+            // restamp reader (exceptions.rs) and this bound must agree.
+            const CAP: u32 = 32;
             let cnt = core::ptr::read_volatile(BASE as *const u32);
-            if cnt < 16 {
+            if cnt < CAP {
                 core::ptr::write_volatile((BASE + 4 + cnt as usize) as *mut u8, byte);
                 core::ptr::write_volatile(BASE as *mut u32, cnt + 1);
             }
@@ -7785,6 +7807,12 @@ fn read_vfs_path(path: &str, destination: &mut [u8]) -> Result<usize, u64> {
             Some(Ok(n)) => super::uart::put_hex("vfs: read n=", *n as u64),
             _ => super::uart::puts("vfs: read err\n"),
         }
+        // v252: post-'D' markers. 'D' closed the 16-slot era; these extend
+        // the trail into the launchd era. 'E' = read_vfs_path returning,
+        // 'F' = this VFS open fully done. launchd.rs stamps 'G' (L0) onward
+        // via its own read_kernel_path trails, so the SMK line covers the
+        // whole boot without stepping on the boot stage letters ('1'..'t').
+        vfs_step(b'E');
     }
     match read_result {
         Some(Ok(length)) => Ok(length),
