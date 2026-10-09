@@ -1247,6 +1247,14 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                 );
             }
         }
+        // v277: close the responder's duty window. The handoff is behind us,
+        // so from here the timer IRQ stops touching DWC2 and the boot thread
+        // owns the CPU for the storage probe, the desktop and the launchd -
+        // the phases the pump used to starve.
+        #[cfg(fullerene_aarch64_ane)]
+        if option_env!("FULLERENE_ANE_PUMP_WINDOW").is_some() {
+            platform::ane::usb_pump_window(false);
+        }
         #[cfg(fullerene_aarch64_ane)]
         if option_env!("FULLERENE_ANE_SKIP_DESKTOP") != Some("1") {
             desktop::bring_up();

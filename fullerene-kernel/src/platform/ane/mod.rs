@@ -391,6 +391,27 @@ pub fn enable_usb_spi() {
     }
 }
 
+/// v277: the responder duty window. The fastboot/USB handoff is the only boot
+/// phase that needs the timer IRQ to service DWC2 - the boot blocks in the
+/// predesktop-config wait until the host configures the device, and the pump
+/// is what answers the descriptor reads. Every later phase (storage probe,
+/// desktop, launchd) wants the boot thread's CPU and touches no DWC2, yet the
+/// pump used to run forever, holding the CPU exactly where the boot thread
+/// needed it. v275's pump-less boot proved the point by reaching code every
+/// pumped boot stopped short of. This flag lets the boot close the window
+/// once the handoff is done.
+pub static USB_PUMP_ON: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+
+/// Whether the timer IRQ may service the responder this tick.
+pub fn usb_pump_on() -> bool {
+    USB_PUMP_ON.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// Open (`true`) or close (`false`) the responder duty window.
+pub fn usb_pump_window(enabled: bool) {
+    USB_PUMP_ON.store(enabled, core::sync::atomic::Ordering::Relaxed);
+}
+
 /// v270: the DWC2 SPI's routing state, read back from the distributor and CPU
 /// interface so one collection answers "why doesn't this line fire": the
 /// group assignment, the enable bit, the target CPU and both interface

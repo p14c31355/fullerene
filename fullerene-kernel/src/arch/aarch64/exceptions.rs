@@ -1081,7 +1081,8 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                 // the host still sees a reply well inside its 5 s control
                 // timeout, while the boot thread owns the other three ticks.
                 let pump_now = (option_env!("FULLERENE_ANE_LOW_DUTY").is_none() || beats % 4 == 0)
-                    && option_env!("FULLERENE_ANE_NO_PUMP").is_none();
+                    && option_env!("FULLERENE_ANE_NO_PUMP").is_none()
+                    && super::platform::ane::usb_pump_on();
                 if pump_now {
                     super::ane_service_pump();
                 }
