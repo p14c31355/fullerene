@@ -5,7 +5,7 @@ use carrier::exec::CommandContext;
 
 pub fn cmd_help(ctx: &mut CommandContext) -> bool {
     ctx.terminal.write_str(
-        "clear\thelp\tlatency\tmem\ttasks\treboot\ttouchcal\ttouchscan\tuptime\n",
+        "clear\thelp\tlatency\tmem\ttasks\treboot\ttouchcal\ttouchscan\ttouchcal4\tuptime\n",
     );
     true
 }
@@ -86,6 +86,25 @@ pub fn cmd_touchcal(ctx: &mut CommandContext) -> bool {
     true
 }
 
+/// Run the on-screen four-point touch calibration.
+///
+/// The display draws a target; tap it and the device records the raw reading
+/// for that screen position and offers the next one. Doing it on the device
+/// removes the guesswork: there is no question of which reading belongs to
+/// which corner.
+pub fn cmd_touchcal4(ctx: &mut CommandContext) -> bool {
+    let hook = unsafe { TOUCH_CAL4 };
+    match hook {
+        Some(request) => {
+            request();
+            ctx.terminal
+                .write_str("touch calibration: tap the target on the panel\n");
+        }
+        None => ctx.terminal.write_str("touch calibration is unavailable\n"),
+    }
+    true
+}
+
 pub fn cmd_reboot(ctx: &mut CommandContext) -> bool {
     ctx.terminal.write_str("Rebooting ESP32.\n");
     reboot()
@@ -99,6 +118,7 @@ pub const ESP32_COMMANDS: &[&dyn carrier::exec::Command] = carrier::define_comma
     ("uptime", "show uptime", cmd_uptime),
     ("reboot", "reset the board", cmd_reboot),
     ("touchcal", "burst of touch readings for calibration", cmd_touchcal),
+    ("touchcal4", "four-point on-screen touch calibration", cmd_touchcal4),
     ("touchscan", "convert every touch channel", cmd_touchscan),
 );
 
@@ -113,6 +133,8 @@ pub static mut LATENCY: Option<fn() -> String> = None;
 pub static mut TOUCH_SCAN: Option<fn()> = None;
 /// Kernel hook that asks the display task for a calibration burst.
 pub static mut TOUCH_CAL: Option<fn()> = None;
+/// Kernel hook that starts the on-screen four-point calibration.
+pub static mut TOUCH_CAL4: Option<fn()> = None;
 
 fn meminfo() -> (usize, usize) {
     unsafe { MEMINFO.map(|hook| hook()).unwrap_or((0, 0)) }

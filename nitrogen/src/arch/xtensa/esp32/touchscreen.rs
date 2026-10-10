@@ -59,13 +59,20 @@ pub const AXIS_SPREAD_LIMIT: u16 = 120;
 
 /// Contact threshold on the pressure channel.
 ///
-/// The discriminator is `z1 - z2`, measured rather than assumed. On this unit
-/// an untouched panel reads the two about equal (z1 - z2 within a few counts of
-/// zero), while a finger on the glass pulls them roughly 475 counts apart. The
-/// earlier estimate `z1 + 4095 - z2` was useless for the same measurement: it
-/// sat near 4092 idle and 4570 pressed, so any floor low enough to catch a
-/// touch also fired on an untouched panel, and the shell saw taps nobody made.
-pub const PRESSURE_FLOOR: u16 = 150;
+/// The discriminator is `z1 - z2`, measured rather than assumed. With the
+/// sixteen-clock frame in place an untouched panel sits around 167-175, and a
+/// finger on the glass pulls the two about 335 to 1200 apart, so the floor goes
+/// above the idle band: at 150 the idle reading leaked through as contact and
+/// the calibration burst was flooded with samples nobody had asked for.
+pub const PRESSURE_FLOOR: u16 = 250;
+
+/// The level a contact has to fall back below to end.
+///
+/// A single threshold sits exactly where a lifting finger spends its time, and
+/// the pressure estimate crosses it several times on the way out: the shell saw
+/// eight Down/Up pairs in twenty milliseconds as a finger left the glass. The
+/// gap between the two levels is what stops that.
+pub const PRESSURE_RELEASE: u16 = 180;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TouchSample {
@@ -155,6 +162,8 @@ pub struct Xpt2046Touch {
     last_pressure: u16,
     /// Readings discarded because the duplicated axis conversions disagreed.
     spread_rejects: u32,
+    /// Whether the previous reading counted as contact, for the hysteresis.
+    contact: bool,
     channel: TouchChannel,
 }
 
@@ -189,20 +198,28 @@ impl Xpt2046Touch {
             miso: pins.miso,
             cs: pins.cs,
             irq: pins.irq,
-            // Measured, not guessed. Four corners pressed in turn, with the
-            // dense burst reading each one, gave: top-left (0, 0),
-            // bottom-right (3305, 3411), and the two others on the same rails.
-            // The direct mapping - raw increases right and down, no mirror, no
-            // swap - puts top-left at screen (0, 0) and bottom-right at the
-            // opposite corner, which is the check that matters.
+            // Measured on this unit by the on-screen four-point calibration
+            // (`touchcal4`), which reported:
+            //
+            //   x_min=403 x_max=3429 y_min=602 y_max=3201 swap_xy=1
+            //
+            // swap_xy is the crossing that made bottom-left and top-right
+            // appear exchanged; the resolver detected it from the raw axis that
+            // moved when the finger moved horizontally. Both mirrors stayed
+            // clear.
+            //
+            // The four targets sit 20 pixels inside the panel, so those raw
+            // spans cover 279x199 screen pixels rather than the full 320x239.
+            // The values below extrapolate to the panel edges at the same
+            // counts-per-pixel.
             calibration: Calibration {
-                min_x: 0,
-                max_x: 3_305,
-                min_y: 0,
-                max_y: 3_411,
+                min_x: 186,
+                max_x: 3_646,
+                min_y: 341,
+                max_y: 3_462,
                 mirror_x: false,
                 mirror_y: false,
-                swap_xy: false,
+                swap_xy: true,
             },
             tracker: PointerTracker::new(PointerConfig::resistive_default()),
             samples_taken: 0,
@@ -212,12 +229,26 @@ impl Xpt2046Touch {
             last_quad: (0, 0, 0, 0),
             last_pressure: 0,
             spread_rejects: 0,
+            contact: false,
             channel: TouchChannel::Unknown,
         }
     }
 
     pub fn set_calibration(&mut self, calibration: Calibration) {
         self.calibration = calibration;
+    }
+
+    /// Install a mapping resolved from four measured corners.
+    pub fn apply_calibration(&mut self, resolved: crate::touch_calibration::PanelCalibration) {
+        self.calibration = Calibration {
+            min_x: resolved.x.min,
+            max_x: resolved.x.max,
+            min_y: resolved.y.min,
+            max_y: resolved.y.max,
+            mirror_x: resolved.x.mirror,
+            mirror_y: resolved.y.mirror,
+            swap_xy: resolved.swap_xy,
+        };
     }
 
     pub fn tracker(&mut self) -> &mut PointerTracker {
@@ -450,7 +481,14 @@ impl Xpt2046Touch {
         // the discriminating quantity; see PRESSURE_FLOOR.
         let pressure = z1.saturating_sub(z2);
         self.last_pressure = pressure;
-        if pressure < PRESSURE_FLOOR {
+        // Hysteresis, so a finger leaving the panel does not chatter.
+        let threshold = if self.contact {
+            PRESSURE_RELEASE
+        } else {
+            PRESSURE_FLOOR
+        };
+        if pressure < threshold {
+            self.contact = false;
             self.deselect();
             return Some(TouchSample {
                 x: 0,

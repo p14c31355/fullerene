@@ -38,6 +38,7 @@ pub mod hid;
 pub mod input;
 pub mod metrics;
 pub mod spi_clock;
+pub mod touch_calibration;
 
 // Platform surface: whichever tree the target selected answers these names.
 #[cfg(target_arch = "aarch64")]

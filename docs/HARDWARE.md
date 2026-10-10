@@ -135,13 +135,41 @@ touching reads within a few counts of zero, a finger pulls them about 475
 apart), where the previous `z1 + 4095 - z2` sat near 4092 idle and 4570 pressed
 and so fired on an untouched panel.
 
-With those four fixed, `read()` reports stable mid-scale axes, the tracker emits
-Down/Move/Up with coordinates that follow the finger, and a dense calibration
-burst reads 14,000 samples per second. The calibration constants were then taken
-from four corners pressed in turn: top-left (0, 0) and bottom-right (3305, 3411)
-on the ADC rails, with the direct mapping - no mirror, no swap.
+A fifth fault was in the shell rather than the panel: the boot self-test saw the
+idle axes never change and concluded the channel was silent, then suppressed
+every event. Contact is decided by the pressure discriminator, which is a direct
+measurement; requiring idle axis variation as well was an inference too far, and
+it is gone. The self-test still runs, as a diagnostic line.
 
-`TOUCH_SCAN` and `TOUCH_CAL` are the shell commands (`touchscan`, `touchcal`).
+With those fixed, `read()` reports stable mid-scale axes, the tracker emits
+Down/Move/Up with coordinates that follow the finger, and a dense burst reads
+14,000 samples per second.
+
+The axes turned out to be **crossed** on this unit: moving the finger
+horizontally changes the raw Y reading. That is what made bottom-left and
+top-right appear exchanged, and it is not something a per-corner guess can see
+reliably. The fix is an on-screen four-point calibration (`touchcal4`): the
+display draws a crosshair, the operator taps it, the device records the raw
+reading for that *known* screen position, and the resolver in
+`nitrogen/src/touch_calibration.rs` derives the swap, the mirrors and the ranges
+from the four pairs. On this panel it reported:
+
+```text
+TOUCH CAL4 x_min=403 x_max=3429 y_min=602 y_max=3201 mirror_x=0 mirror_y=0 swap_xy=1
+```
+
+Since the four targets sit twenty pixels inside the panel, those spans cover
+279x199 screen pixels rather than the full 320x239, so the baked-in defaults
+extrapolate to the panel edges at the same counts per pixel (186..3646 and
+341..3462). With that mapping installed, taps land on the taskbar button that was
+actually pressed and the desktop switches application - the end-to-end check.
+
+Contact also gained hysteresis: a finger leaving the glass crosses a single
+threshold several times on the way out, and the shell saw eight Down/Up pairs in
+twenty milliseconds. The press floor is 250 and the release level 180.
+
+Shell commands: `touchscan` (sweep every control byte), `touchcal` (dense burst),
+`touchcal4` (on-screen four-point calibration).
 
 Two pre-existing build breakages were fixed to get here, both unrelated to the
 display work: `solvent` re-exported `runtime_context` on Xtensa without a cfg

@@ -166,6 +166,7 @@ pub fn boot() -> ! {
         nozzle_commands::LATENCY = Some(latency_report);
         nozzle_commands::TOUCH_SCAN = Some(request_touch_scan);
         nozzle_commands::TOUCH_CAL = Some(request_touch_cal);
+        nozzle_commands::TOUCH_CAL4 = Some(request_touch_cal4);
     }
     if scheduler
         .spawn("lattice", lattice_task as *const () as usize, 8 * 1024)
@@ -268,16 +269,16 @@ impl InputPump {
         let number = nitrogen::arch::xtensa::esp32::uart::write_u32;
         match channel {
             TouchChannel::Silent => {
-                uart("TOUCH SELFTEST SILENT raw=");
+                uart("TOUCH SELFTEST raw=");
                 let (raw, pressure) = (touch.last_raw(), touch.last_pressure());
                 number(u32::from(raw.0));
                 uart(",");
                 number(u32::from(raw.1));
                 uart(" p=");
                 number(u32::from(pressure));
-                uart(" events=suppressed\n");
+                uart(" axes=idle-stable (diagnostic only)\n");
             }
-            _ => uart("TOUCH SELFTEST REPORTING\n"),
+            _ => uart("TOUCH SELFTEST axes=idle-varying\n"),
         }
         Self {
             touch,
@@ -583,11 +584,47 @@ extern "C" fn lattice_task() -> ! {
     loop {
         let now_ms = now_us() / 1_000;
 
-        // A silent channel still prints raw readings (that is the evidence),
-        // but it must not drive the shell.
-        if !pump.trusted() {
-            pump.poll(now_ms);
-        } else if let Some(event) = pump.poll(now_ms) {
+        if TOUCH_CAL4_REQUESTED.swap(false, Ordering::Relaxed) {
+            CAL_STEP.store(0, Ordering::Relaxed);
+            CAL_ACTIVE.store(true, Ordering::Relaxed);
+            let _ = surface.take_dirty();
+            draw_calibration_target(&mut surface, 0);
+        }
+
+        if CAL_ACTIVE.load(Ordering::Relaxed) {
+            if let Some(event) = pump.poll(now_ms) {
+                if event.phase == PointerPhase::Down {
+                    let step = CAL_STEP.load(Ordering::Relaxed) as usize;
+                    let raw = pump.touch.last_axes();
+                    if step < CAL_POINTS.lock().len() {
+                        CAL_POINTS.lock()[step] = raw;
+                    }
+                    let next = step + 1;
+                    CAL_STEP.store(next as u32, Ordering::Relaxed);
+                    if next >= CAL_TARGETS.len() {
+                        finish_touch_calibration(&mut pump.touch);
+                        CAL_ACTIVE.store(false, Ordering::Relaxed);
+                        let _ = surface.take_dirty();
+                        desktop.render(&mut surface);
+                    } else {
+                        let _ = surface.take_dirty();
+                        draw_calibration_target(&mut surface, next);
+                    }
+                }
+            }
+            if let Some(dirty) = surface.take_dirty() {
+                let _ = flush_region(surface.pixels(), dirty, &mut pump, false);
+            }
+            crate::arch::xtensa::esp32::scheduler::scheduler_yield();
+            continue;
+        }
+
+        // Events are delivered whenever the pressure channel reports contact.
+        // An earlier version also required the boot self-test to have seen the
+        // idle axes vary, which suppressed every event on a panel whose idle
+        // readings happen to be pinned - the discriminator was already the
+        // better answer, so it is the only gate now.
+        if let Some(event) = pump.poll(now_ms) {
             let event_started = now_us();
             handle_pointer(
                 event,
@@ -677,6 +714,75 @@ fn request_touch_scan() {
     TOUCH_SCAN_REQUESTED.store(true, Ordering::Relaxed);
 }
 
+/// Set by the `touchcal4` shell command; served by the display task.
+static TOUCH_CAL4_REQUESTED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+/// Which of the four targets is being asked for, and whether the flow is live.
+static CAL_STEP: AtomicU32 = AtomicU32::new(0);
+static CAL_ACTIVE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// Raw readings collected at the four targets, in top-left, top-right,
+/// bottom-left, bottom-right order.
+static CAL_POINTS: Mutex<[(u16, u16); 4]> = Mutex::new([(0, 0); 4]);
+
+/// The screen positions the operator is asked to tap.
+///
+/// Inset from the edges so a finger can reach them without touching the bezel.
+const CAL_TARGETS: [(u16, u16); 4] = [(20, 20), (299, 20), (20, 219), (299, 219)];
+
+/// Raise an on-screen calibration request from the shell.
+fn request_touch_cal4() {
+    TOUCH_CAL4_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+/// Paint the calibration target for one step.
+///
+/// The crosshair is the instruction: tap where it is. No text, no host-side
+/// timing agreement, and no ambiguity about which reading is which corner.
+fn draw_calibration_target(surface: &mut Esp32Compositor, step: usize) {
+    surface.clear(0x0841);
+    let (x, y) = CAL_TARGETS[step.min(CAL_TARGETS.len() - 1)];
+    let _ = surface.fill(x.saturating_sub(12), y.saturating_sub(1), 25, 3, 0xffff);
+    let _ = surface.fill(x.saturating_sub(1), y.saturating_sub(12), 3, 25, 0xffff);
+    // A progress bar along the bottom: one filled square per completed target.
+    for index in 0..CAL_TARGETS.len() {
+        let colour = if index <= step { 0x07e0 } else { 0x39e7 };
+        let _ = surface.fill(120 + index as u16 * 24, 228, 16, 8, colour);
+    }
+}
+
+/// Resolve and install the mapping once four points have been collected.
+fn finish_touch_calibration(touch: &mut Xpt2046Touch) {
+    use nitrogen::touch_calibration::{resolve, CornerSamples, Point};
+
+    let points = *CAL_POINTS.lock();
+    let corners = CornerSamples {
+        top_left: Point::new(points[0].0, points[0].1),
+        top_right: Point::new(points[1].0, points[1].1),
+        bottom_left: Point::new(points[2].0, points[2].1),
+        bottom_right: Point::new(points[3].0, points[3].1),
+    };
+    let resolved = resolve(corners);
+    touch.apply_calibration(resolved);
+
+    let uart = nitrogen::arch::xtensa::esp32::uart::write_str;
+    let number = nitrogen::arch::xtensa::esp32::uart::write_u32;
+    uart("TOUCH CAL4 x_min=");
+    number(u32::from(resolved.x.min));
+    uart(" x_max=");
+    number(u32::from(resolved.x.max));
+    uart(" y_min=");
+    number(u32::from(resolved.y.min));
+    uart(" y_max=");
+    number(u32::from(resolved.y.max));
+    uart(" mirror_x=");
+    number(u32::from(resolved.x.mirror));
+    uart(" mirror_y=");
+    number(u32::from(resolved.y.mirror));
+    uart(" swap_xy=");
+    number(u32::from(resolved.swap_xy));
+    uart("\n");
+}
+
 /// Set by the `touchcal` shell command; served by the display task.
 static TOUCH_CAL_REQUESTED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
@@ -696,14 +802,17 @@ fn run_calibration_burst(touch: &mut Xpt2046Touch) {
     uart("TOUCH CAL BEGIN\n");
     let mut lines = String::new();
     let mut now = now_us;
+    // Long enough that the operator can move between corners at their own
+    // pace: a window that expires mid-sequence silently loses the corners it
+    // did not reach.
     let samples = touch.calibration_burst(
-        4_000_000,
+        60_000_000,
         20_000,
         &mut now,
         &mut |x, y, pressure| {
             let _ = core::fmt::Write::write_fmt(
                 &mut lines,
-                format_args!("TOUCH CAL x={} y={} p={}\n", x, y, pressure),
+                format_args!("TOUCH CAL us={} x={} y={} p={}\n", now_us(), x, y, pressure),
             );
             if lines.len() > 512 {
                 uart(&lines);
