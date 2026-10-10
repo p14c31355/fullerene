@@ -821,6 +821,17 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
             // dance opened a false config_value==0 window minutes into
             // healthy boots and the reconnect there broke a collection with
             // ENODEV).
+            //
+            // v285: the enumeration watchdog becomes opt-out per boot. The
+            // v275 NO_PUMP boot proved the boot thread reaches fs::init's
+            // second pass when the pump is out of the way, but the
+            // enumeration watchdog then killed that boot in ~100 s. When the
+            // boot thread itself closes the pump window (PUMP_WINDOW), it is
+            // explicitly saying "the handoff is over - do not wait for
+            // enumeration"; the watchdog's premise no longer holds, so the
+            // boot thread disarms it through the same window flag. The
+            // watchdog stays fully armed whenever the window is open or
+            // PUMP_WINDOW is not built.
             #[cfg(fullerene_aarch64_ane)]
             {
                 // Keep failed USB boots recoverable without waiting for the
@@ -840,9 +851,13 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                 static S0: AtomicU32 = AtomicU32::new(0); // beats at attach/retry
                 static WAIT_LOGGED: core::sync::atomic::AtomicBool =
                     core::sync::atomic::AtomicBool::new(false);
-                if super::platform::ane_usb_dev::usb_attached()
+                let watchdog_applies = super::platform::ane_usb_dev::usb_attached()
                     && !super::platform::ane_usb_dev::usb_config_was_1()
-                {
+                    // v285: honor the boot thread's closed duty window - it
+                    // explicitly said the handoff is over, so do not wait
+                    // for enumeration on its behalf.
+                    && super::platform::ane::usb_pump_on();
+                if watchdog_applies {
                     if S0.load(Ordering::Relaxed) == 0 {
                         S0.store(beats, Ordering::Relaxed);
                     }
