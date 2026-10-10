@@ -178,6 +178,44 @@ impl SpiLcd {
         Ok(())
     }
 
+    /// Fill a region with one colour, straight from the driver.
+    ///
+    /// No compositor and no heap are involved: this is what a panel self-test
+    /// needs, because it must be able to run before either exists.
+    pub fn fill_solid(&mut self, rect: LcdRect, color: u16) -> Result<(), LcdError> {
+        let Some(rect) = clip(rect) else {
+            return Ok(());
+        };
+        self.set_window(rect)?;
+        let length = usize::from(rect.width) * 2;
+        let mut row = [0u8; LCD_ROW_BYTES];
+        for chunk in row[..length].chunks_exact_mut(2) {
+            chunk.copy_from_slice(&color.to_be_bytes());
+        }
+        for _ in 0..rect.height {
+            self.controller.write_data(&row[..length])?;
+        }
+        Ok(())
+    }
+
+    /// Paint a fixed pattern so a human can tell the three failure modes
+    /// apart: no panel attached (nothing changes), panel attached but never
+    /// initialised (uniform white), and a working panel (these bars).
+    pub fn draw_test_pattern(&mut self) -> Result<(), LcdError> {
+        const BARS: [u16; 4] = [0xf800, 0x07e0, 0x001f, 0xffff];
+        let width = DISPLAY_WIDTH / BARS.len() as u16;
+        for (index, color) in BARS.iter().enumerate() {
+            let x = width * index as u16;
+            let bar_width = if index + 1 == BARS.len() {
+                DISPLAY_WIDTH - x
+            } else {
+                width
+            };
+            self.fill_solid(LcdRect::new(x, 0, bar_width, DISPLAY_HEIGHT), *color)?;
+        }
+        Ok(())
+    }
+
     pub fn set_backlight(&self, on: bool) {
         let profile = BoardProfile::xh32s();
         if on {

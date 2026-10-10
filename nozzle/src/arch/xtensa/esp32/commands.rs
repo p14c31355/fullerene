@@ -5,7 +5,7 @@ use carrier::exec::CommandContext;
 
 pub fn cmd_help(ctx: &mut CommandContext) -> bool {
     ctx.terminal.write_str(
-        "clear\thelp\tlatency\tmem\ttasks\treboot\tuptime\n",
+        "clear\thelp\tlatency\tmem\ttasks\treboot\ttouchcal\ttouchscan\tuptime\n",
     );
     true
 }
@@ -50,6 +50,42 @@ pub fn cmd_uptime(ctx: &mut CommandContext) -> bool {
     true
 }
 
+/// Ask the display task to convert every candidate touch channel.
+///
+/// The touch controller belongs to the display task, so this only raises a
+/// request; that task performs the conversions and prints them. Hold a finger
+/// on the panel while running it: a channel that moves is the one that works,
+/// and one that never moves has no signal behind it.
+pub fn cmd_touchscan(ctx: &mut CommandContext) -> bool {
+    let hook = unsafe { TOUCH_SCAN };
+    match hook {
+        Some(request) => {
+            request();
+            ctx.terminal
+                .write_str("touch channel scan requested (results follow)\n");
+        }
+        None => ctx.terminal.write_str("touch scan is unavailable\n"),
+    }
+    true
+}
+
+/// Ask the display task for a dense burst of touch readings.
+///
+/// Hold the finger still on the spot being calibrated while this runs; the
+/// readings arrive as `TOUCH CAL x y p` lines.
+pub fn cmd_touchcal(ctx: &mut CommandContext) -> bool {
+    let hook = unsafe { TOUCH_CAL };
+    match hook {
+        Some(request) => {
+            request();
+            ctx.terminal
+                .write_str("touch calibration burst requested\n");
+        }
+        None => ctx.terminal.write_str("touch calibration is unavailable\n"),
+    }
+    true
+}
+
 pub fn cmd_reboot(ctx: &mut CommandContext) -> bool {
     ctx.terminal.write_str("Rebooting ESP32.\n");
     reboot()
@@ -62,6 +98,8 @@ pub const ESP32_COMMANDS: &[&dyn carrier::exec::Command] = carrier::define_comma
     ("latency", "show drawing latency measurements", cmd_latency),
     ("uptime", "show uptime", cmd_uptime),
     ("reboot", "reset the board", cmd_reboot),
+    ("touchcal", "burst of touch readings for calibration", cmd_touchcal),
+    ("touchscan", "convert every touch channel", cmd_touchscan),
 );
 
 /// Kernel-provided memory hooks; defaults are explicit, not fabricated.
@@ -71,6 +109,10 @@ pub static mut UPTIME: Option<fn() -> u64> = None;
 pub static mut REBOOT: Option<fn() -> bool> = None;
 /// Kernel-provided drawing-latency report; empty when no probe has run.
 pub static mut LATENCY: Option<fn() -> String> = None;
+/// Kernel hook that asks the display task to scan the touch channels.
+pub static mut TOUCH_SCAN: Option<fn()> = None;
+/// Kernel hook that asks the display task for a calibration burst.
+pub static mut TOUCH_CAL: Option<fn()> = None;
 
 fn meminfo() -> (usize, usize) {
     unsafe { MEMINFO.map(|hook| hook()).unwrap_or((0, 0)) }

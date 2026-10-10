@@ -11,12 +11,73 @@ use lattice::arch::xtensa::esp32::{
 use nitrogen::arch::xtensa::esp32::{
     board::BoardProfile,
     display::{FULL_FRAME, LcdRect, SpiLcd},
-    touchscreen::Xpt2046Touch,
+    touchscreen::{TouchChannel, Xpt2046Touch},
     uart,
 };
 use nitrogen::geometry::Rect;
 use nitrogen::input::{PointerEvent, PointerPhase, PointerQueue};
 use spin::Mutex;
+
+/// Microseconds since boot, from the timer's 1 MHz count.
+fn now_us() -> u32 {
+    time::uptime_micros() as u32
+}
+
+/// Cross-check the clocks against a physical reference.
+///
+/// Two clocks disagreeing tells you only that they disagree. The UART is the
+/// trustworthy one: its baud rate comes from the APB clock through a divider
+/// with an error of a few parts per million, so a known number of bytes takes a
+/// known time. Timing that same burst on both the timer and the cycle counter
+/// yields each one's real rate.
+fn report_uart_reference_probe() {
+    /// 64 characters; repeated to make the burst long enough to time.
+    const RULER: &str = "................................................................";
+    const REPEATS: u32 = 16;
+    // 115200 baud, 10 bit-times per byte (8N1).
+    const MICROS_PER_BYTE: u32 = 10_000_000 / 115_200;
+    let bytes = RULER.len() as u32 * REPEATS;
+    let expected_us = bytes * MICROS_PER_BYTE;
+
+    let uart = nitrogen::arch::xtensa::esp32::uart::write_str;
+    let number = nitrogen::arch::xtensa::esp32::uart::write_u32;
+
+    let start_us = time::uptime_micros();
+    let start_cycles = time::cycles();
+    uart("UART RULER START\n");
+    for _ in 0..REPEATS {
+        uart(RULER);
+    }
+    let cycles = time::cycles().wrapping_sub(start_cycles);
+    let timer_us = (time::uptime_micros() - start_us) as u32;
+    uart("\n");
+
+    let timer_ratio_permille = if expected_us == 0 {
+        0
+    } else {
+        timer_us / (expected_us / 1_000).max(1)
+    };
+    let cpu_mhz = if timer_us == 0 {
+        0
+    } else {
+        cycles / timer_us
+    };
+
+    uart("UART RULER bytes=");
+    number(bytes);
+    uart(" expected_us=");
+    number(expected_us);
+    uart(" timer_us=");
+    number(timer_us);
+    uart(" cycles=");
+    number(cycles);
+    uart(" timer_ratio_permille=");
+    number(timer_ratio_permille);
+    uart(" cpu_mhz=");
+    number(cpu_mhz);
+    uart("\n");
+    MEASURED_CPU_MHZ.store(cpu_mhz, Ordering::Relaxed);
+}
 
 static NEXT_TASK_ID: AtomicU32 = AtomicU32::new(0);
 static DISPLAY: Mutex<Option<SpiLcd>> = Mutex::new(None);
@@ -24,15 +85,44 @@ static DISPLAY: Mutex<Option<SpiLcd>> = Mutex::new(None);
 /// Events produced while a flush was in flight wait here for the shell.
 const INPUT_QUEUE_EVENTS: usize = 16;
 
-/// The on-panel pointer indicator, inside the top panel.
-///
-/// Down/Move/Up each repaint exactly this square, so the event path costs a
-/// 12x12 transfer (288 bytes) and never leaves a trail to erase - the reason it
-/// is a fixed indicator rather than a marker at the contact point.
-const POINTER_INDICATOR: Rect = Rect::new(292, 5, POINTER_MARKER, POINTER_MARKER);
 const POINTER_DOWN_COLOR: u16 = 0xf800;
 const POINTER_MOVE_COLOR: u16 = 0xfd20;
 const POINTER_UP_COLOR: u16 = 0x07e0;
+
+/// Report what the timer peripheral actually answers.
+///
+/// Printed as plain decimal so the whole check works without the allocator:
+/// 4660 and 22136 are the patterns written to the load and alarm registers, so
+/// seeing them come back means the bus clock is open and the block is
+/// reachable.
+fn report_time_probe() {
+    let probe = time::probe();
+    let uart = nitrogen::arch::xtensa::esp32::uart::write_str;
+    let number = nitrogen::arch::xtensa::esp32::uart::write_u32;
+    uart("TIMER PROBE load_lo=");
+    number(probe.load_lo);
+    uart(" alarm_lo=");
+    number(probe.alarm_lo);
+    uart(" config=");
+    number(probe.config);
+    uart(" count_a=");
+    number(probe.count_a);
+    uart(" count_b=");
+    number(probe.count_b);
+    uart(" dport_clk_en=");
+    number(probe.perip_clk_en);
+    uart("\n");
+    uart(if probe.registers_respond() {
+        "TIMER PROBE registers=ok\n"
+    } else {
+        "TIMER PROBE registers=UNREACHABLE\n"
+    });
+    uart(if probe.counter_advances() {
+        "TIMER PROBE counter=advancing\n"
+    } else {
+        "TIMER PROBE counter=STUCK\n"
+    });
+}
 
 pub fn boot() -> ! {
     nitrogen::arch::xtensa::esp32::uart::write_str("FULLERENE BOOT\n");
@@ -43,19 +133,29 @@ pub fn boot() -> ! {
     if lcd.init().is_err() {
         crate::arch::xtensa::esp32::runtime::panic_message("LCD initialization failed");
     }
-    let mut banner = String::new();
-    core::fmt::Write::write_fmt(
-        &mut banner,
-        format_args!("LCD OK hspi_hz={}\n", lcd.clock_hz()),
-    )
-    .ok();
-    nitrogen::arch::xtensa::esp32::uart::write_str(&banner);
+    // Deliberately allocation-free: the heap is not proven ready at this
+    // point, and the boot markers must not depend on it.
+    nitrogen::arch::xtensa::esp32::uart::write_str("LCD OK\n");
+    // Paint a known pattern and leave it up briefly. A lit but blank panel and
+    // a panel that simply has not been written yet look identical otherwise,
+    // and this is the only way to tell them apart without a scope.
+    match lcd.draw_test_pattern() {
+        Ok(()) => nitrogen::arch::xtensa::esp32::uart::write_str("PANEL TEST BARS\n"),
+        Err(_) => nitrogen::arch::xtensa::esp32::uart::write_str("PANEL TEST FAILED\n"),
+    }
+    for _ in 0..400_000 {
+        core::hint::spin_loop();
+    }
     *DISPLAY.lock() = Some(lcd);
     // Pin 21 is tied to the display backlight on the profile board.
     nitrogen::arch::xtensa::esp32::gpio::enable_output(board::LCD_BACKLIGHT);
     nitrogen::arch::xtensa::esp32::gpio::set_output_high(board::LCD_BACKLIGHT);
+    nitrogen::arch::xtensa::esp32::uart::write_str("BACKLIGHT OK\n");
 
     time::init();
+    report_time_probe();
+    TIMER_COUNTS.store(time::probe().counter_advances(), Ordering::Relaxed);
+    report_uart_reference_probe();
     nitrogen::arch::xtensa::esp32::uart::write_str("TIME OK\n");
     let mut scheduler = Scheduler::new();
     unsafe {
@@ -64,6 +164,8 @@ pub fn boot() -> ! {
         nozzle_commands::UPTIME = Some(time::uptime_millis);
         nozzle_commands::REBOOT = Some(reboot);
         nozzle_commands::LATENCY = Some(latency_report);
+        nozzle_commands::TOUCH_SCAN = Some(request_touch_scan);
+        nozzle_commands::TOUCH_CAL = Some(request_touch_cal);
     }
     if scheduler
         .spawn("lattice", lattice_task as *const () as usize, 8 * 1024)
@@ -92,6 +194,58 @@ fn reboot() -> bool {
     crate::arch::xtensa::esp32::platform::software_reset()
 }
 
+/// Convert every candidate touch channel and print the pairs.
+///
+/// This is the experiment that separates a wrong control byte from a plate with
+/// no signal: with a finger held on the panel, the channel that works moves,
+/// and every other one stays where it was.
+fn report_touch_scan(touch: &mut Xpt2046Touch) {
+    let uart = nitrogen::arch::xtensa::esp32::uart::write_str;
+    uart("TOUCH SCAN BEGIN\n");
+    let mut lines = String::new();
+    touch.scan_channels(&mut |command, first, second| {
+        let _ = core::fmt::Write::write_fmt(
+            &mut lines,
+            format_args!(
+                "TOUCH SCAN cmd={} first={} second={}\n",
+                command, first, second
+            ),
+        );
+        if lines.len() > 256 {
+            uart(&lines);
+            lines.clear();
+        }
+    });
+    uart(&lines);
+    for (label, command) in [("X", nitrogen::arch::xtensa::esp32::touchscreen::X_COMMAND),
+                             ("Y", nitrogen::arch::xtensa::esp32::touchscreen::Y_COMMAND)] {
+        let mut repeated = String::new();
+        let mut values = String::new();
+        touch.scan_repeat(command, &mut |value| {
+            let _ = core::fmt::Write::write_fmt(&mut values, format_args!(" {}", value));
+        });
+        let _ = core::fmt::Write::write_fmt(
+            &mut repeated,
+            format_args!("TOUCH SCAN repeat {} ({}){}", label, command, values),
+        );
+        uart(&repeated);
+        uart("\n");
+    }
+    let axes = touch.last_axes();
+    let mut tail = String::new();
+    let _ = core::fmt::Write::write_fmt(
+        &mut tail,
+        format_args!(
+            "TOUCH SCAN END axes={},{} p={} pen={}\n",
+            axes.0,
+            axes.1,
+            touch.last_pressure(),
+            u8::from(touch.pen_active())
+        ),
+    );
+    uart(&tail);
+}
+
 /// Input that keeps running while the display transfers.
 ///
 /// The panel driver calls [`InputPump::service`] between SPI chunks. With the
@@ -106,23 +260,51 @@ struct InputPump {
 
 impl InputPump {
     fn new(profile: BoardProfile) -> Self {
+        let mut touch = Xpt2046Touch::new(profile);
+        // Ask the panel whether it is answering before trusting anything it
+        // says. A silent channel otherwise produces a storm of phantom taps.
+        let channel = touch.detect_channel();
+        let uart = nitrogen::arch::xtensa::esp32::uart::write_str;
+        let number = nitrogen::arch::xtensa::esp32::uart::write_u32;
+        match channel {
+            TouchChannel::Silent => {
+                uart("TOUCH SELFTEST SILENT raw=");
+                let (raw, pressure) = (touch.last_raw(), touch.last_pressure());
+                number(u32::from(raw.0));
+                uart(",");
+                number(u32::from(raw.1));
+                uart(" p=");
+                number(u32::from(pressure));
+                uart(" events=suppressed\n");
+            }
+            _ => uart("TOUCH SELFTEST REPORTING\n"),
+        }
         Self {
-            touch: Xpt2046Touch::new(profile),
+            touch,
             queue: PointerQueue::new(),
             pen_seen: 0,
         }
     }
 
+    /// Whether events from this panel may be believed.
+    fn trusted(&self) -> bool {
+        self.touch.channel() != TouchChannel::Silent
+    }
+
     /// Called between display chunks. Returns whether the pen was down.
+    ///
+    /// PENIRQ is a hint, not a gate: this board needs an external pull-up for
+    /// it, so the idle sampling floor in `poll_due` keeps the panel observable
+    /// even when the line floats.
     fn service(&mut self, now_ms: u32) -> bool {
-        if !self.touch.pen_active() {
-            return false;
+        let pen = self.touch.pen_active();
+        if pen {
+            self.pen_seen = self.pen_seen.saturating_add(1);
         }
-        self.pen_seen = self.pen_seen.saturating_add(1);
-        if let Some(event) = self.touch.poll(now_ms) {
+        if let Some(event) = self.touch.poll_due(now_ms) {
             self.queue.push(event);
         }
-        true
+        pen
     }
 
     /// Take the next event, sampling directly when the pacer queued nothing.
@@ -132,6 +314,11 @@ impl InputPump {
         }
         self.service(now_ms);
         self.queue.pop()
+    }
+
+    /// Raw panel readings from the last conversion, for calibration output.
+    fn raw(&self) -> ((u16, u16), u16) {
+        (self.touch.last_raw(), self.touch.last_pressure())
     }
 
     fn samples(&self) -> u32 {
@@ -177,6 +364,12 @@ impl Latency {
 
 static LATENCY: Mutex<Latency> = Mutex::new(Latency::empty());
 
+/// The CPU clock the UART-ruler probe measured, in MHz.
+static MEASURED_CPU_MHZ: AtomicU32 = AtomicU32::new(0);
+
+/// Whether the timer peripheral's count advances, recorded once at boot.
+static TIMER_COUNTS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 fn note_latency(update: impl FnOnce(&mut Latency)) {
     update(&mut LATENCY.lock());
 }
@@ -196,10 +389,14 @@ pub fn latency_report() -> String {
     let _ = core::fmt::Write::write_fmt(
         &mut report,
         format_args!(
-            "  spi_hz={} timer_prescale={} tick_us={}\n",
+            "  spi_hz={} cpu_mhz_measured={} timer_counter={} clock=1us_timer\n",
             current_spi_hz(),
-            time::prescale(),
-            1_000 / time::prescale().max(1),
+            MEASURED_CPU_MHZ.load(Ordering::Relaxed),
+            if TIMER_COUNTS.load(Ordering::Relaxed) {
+                "advancing"
+            } else {
+                "STUCK"
+            },
         ),
     );
     let _ = core::fmt::Write::write_fmt(
@@ -269,17 +466,17 @@ fn flush_region(
     let Some(lcd) = display.as_mut() else {
         return (0, 0);
     };
-    let started = time::uptime_micros();
+    let started = now_us();
     let mut pace = || {
         pace_calls = pace_calls.saturating_add(1);
-        pump.service(time::uptime_millis() as u32);
+        pump.service(now_us() / 1_000);
     };
     let result = lcd.flush_paced(
         pixels,
         LcdRect::new(rect.x, rect.y, rect.width, rect.height),
         &mut pace,
     );
-    let elapsed = time::uptime_micros().saturating_sub(started) as u32;
+    let elapsed = now_us().wrapping_sub(started);
     drop(display);
     if result.is_err() {
         panic_message("LCD flush failed");
@@ -306,7 +503,7 @@ fn drawing_latency_probe(
     }
 
     // 1. Surface fill only: no transfer, so this is the CPU cost of painting.
-    let fill_started = time::uptime_micros();
+    let fill_started = now_us();
     let _ = surface.fill(
         WINDOW_RECT.x,
         WINDOW_RECT.y,
@@ -314,7 +511,7 @@ fn drawing_latency_probe(
         WINDOW_RECT.height,
         0x001f,
     );
-    let fill_us = time::uptime_micros().saturating_sub(fill_started) as u32;
+    let fill_us = now_us().wrapping_sub(fill_started);
 
     // 2. A whole frame, the worst case the old path paid on every redraw.
     let _ = surface.take_dirty();
@@ -384,10 +581,14 @@ extern "C" fn lattice_task() -> ! {
     drawing_latency_probe(true, &mut surface, &mut desktop, &mut pump);
 
     loop {
-        let now_ms = time::uptime_millis() as u32;
+        let now_ms = now_us() / 1_000;
 
-        if let Some(event) = pump.poll(now_ms) {
-            let event_started = time::uptime_micros();
+        // A silent channel still prints raw readings (that is the evidence),
+        // but it must not drive the shell.
+        if !pump.trusted() {
+            pump.poll(now_ms);
+        } else if let Some(event) = pump.poll(now_ms) {
+            let event_started = now_us();
             handle_pointer(
                 event,
                 &mut desktop,
@@ -395,6 +596,46 @@ extern "C" fn lattice_task() -> ! {
                 &mut redraw_window,
                 event_started,
             );
+        }
+
+        if TOUCH_SCAN_REQUESTED.swap(false, Ordering::Relaxed) {
+            report_touch_scan(&mut pump.touch);
+        }
+        if TOUCH_CAL_REQUESTED.swap(false, Ordering::Relaxed) {
+            run_calibration_burst(&mut pump.touch);
+        }
+
+        // Calibration evidence, printed whether or not a press is believed:
+        // the numbers a calibration has to be derived from are these, and
+        // seeing the idle baseline next to a finger's readings is what says
+        // whether the panel is answering and where it thinks the finger is.
+        let now = now_us();
+        if now.wrapping_sub(RAW_PRINT_AT.load(Ordering::Relaxed)) > 100_000 {
+            RAW_PRINT_AT.store(now, Ordering::Relaxed);
+            let axes = pump.touch.last_axes();
+            let pressure = pump.touch.last_pressure();
+            let mut line = String::new();
+            let _ = core::fmt::Write::write_fmt(
+                &mut line,
+                format_args!(
+                    "TOUCH AXES x={} y={} p={} pen={} chan={} rejects={} quad={},{},{},{}\n",
+                    axes.0,
+                    axes.1,
+                    pressure,
+                    u8::from(pump.touch.pen_active()),
+                    match pump.touch.channel() {
+                        TouchChannel::Reporting => "reporting",
+                        TouchChannel::Silent => "silent",
+                        TouchChannel::Unknown => "unknown",
+                    },
+                    pump.touch.spread_rejects(),
+                    pump.touch.last_quad().0,
+                    pump.touch.last_quad().1,
+                    pump.touch.last_quad().2,
+                    pump.touch.last_quad().3
+                ),
+            );
+            uart::write_str(&line);
         }
 
         if redraw_window {
@@ -408,7 +649,7 @@ extern "C" fn lattice_task() -> ! {
             // A zero deadline means no press is waiting to be shown.
             let tap_started = PENDING_TAP_US.swap(0, Ordering::Relaxed);
             if tap_started != 0 {
-                let delta = time::uptime_micros().saturating_sub(u64::from(tap_started)) as u32;
+                let delta = now_us().wrapping_sub(tap_started);
                 note_latency(|latency| {
                     latency.tap_to_flush_us = delta;
                     latency.worst_tap_to_flush_us = latency.worst_tap_to_flush_us.max(delta);
@@ -424,12 +665,85 @@ extern "C" fn lattice_task() -> ! {
 /// Microsecond timestamp of the last Down event still waiting to be painted.
 static PENDING_TAP_US: AtomicU32 = AtomicU32::new(0);
 
+/// When the raw touch values were last printed.
+static RAW_PRINT_AT: AtomicU32 = AtomicU32::new(0);
+
+/// Set by the `touchscan` shell command; served by the display task.
+static TOUCH_SCAN_REQUESTED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Raise a touch channel scan request from the shell.
+fn request_touch_scan() {
+    TOUCH_SCAN_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+/// Set by the `touchcal` shell command; served by the display task.
+static TOUCH_CAL_REQUESTED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Raise a calibration burst request from the shell.
+fn request_touch_cal() {
+    TOUCH_CAL_REQUESTED.store(true, Ordering::Relaxed);
+}
+
+/// Stream pressed readings as fast as the panel allows.
+///
+/// The window and the reporting gap are both fixed: run it with a finger held
+/// still on the spot being calibrated and the readings for that spot arrive as
+/// a dense cluster instead of the four or five the render loop manages.
+fn run_calibration_burst(touch: &mut Xpt2046Touch) {
+    let uart = nitrogen::arch::xtensa::esp32::uart::write_str;
+    uart("TOUCH CAL BEGIN\n");
+    let mut lines = String::new();
+    let mut now = now_us;
+    let samples = touch.calibration_burst(
+        4_000_000,
+        20_000,
+        &mut now,
+        &mut |x, y, pressure| {
+            let _ = core::fmt::Write::write_fmt(
+                &mut lines,
+                format_args!("TOUCH CAL x={} y={} p={}\n", x, y, pressure),
+            );
+            if lines.len() > 512 {
+                uart(&lines);
+                lines.clear();
+            }
+        },
+    );
+    uart(&lines);
+    let mut tail = String::new();
+    let _ = core::fmt::Write::write_fmt(
+        &mut tail,
+        format_args!("TOUCH CAL END samples={}\n", samples),
+    );
+    uart(&tail);
+}
+
+/// Draw the contact marker where the finger actually is.
+///
+/// The marker sits at the touch point rather than in a fixed corner because
+/// that is the only way to see whether the mapping is right: press a spot, and
+/// the square appears there or it does not. Moving leaves a trail, which is
+/// acceptable for a bring-up view and is the next thing to replace with a
+/// marker that repaints underneath itself.
+fn draw_touch_marker(surface: &mut Esp32Compositor, x: u16, y: u16, color: u16) {
+    let half = POINTER_MARKER / 2;
+    let _ = surface.fill(
+        x.saturating_sub(half),
+        y.saturating_sub(half),
+        POINTER_MARKER,
+        POINTER_MARKER,
+        color,
+    );
+}
+
 fn handle_pointer(
     event: PointerEvent,
     desktop: &mut EmbeddedDesktop,
     surface: &mut Esp32Compositor,
     redraw_window: &mut bool,
-    event_started_us: u64,
+    event_started_us: u32,
 ) {
     let mut line = String::new();
     let _ = core::fmt::Write::write_fmt(
@@ -437,7 +751,7 @@ fn handle_pointer(
         format_args!(
             "TOUCH {} us={} at={},{}\n",
             event.phase.name(),
-            event_started_us as u32,
+            event_started_us,
             event.x,
             event.y
         ),
@@ -448,38 +762,20 @@ fn handle_pointer(
         PointerPhase::Down => {
             // The tap-to-flush measurement starts here and is closed out when
             // the resulting transfer completes.
-            PENDING_TAP_US.store(event_started_us as u32, Ordering::Relaxed);
+            PENDING_TAP_US.store(event_started_us, Ordering::Relaxed);
             if let Some(app) = desktop.hit_taskbar(event.x, event.y) {
                 if desktop.set_active(app) {
                     uart::write_str("LATTICE APP SWITCH\n");
                     *redraw_window = true;
                 }
             }
-            let _ = surface.fill(
-                POINTER_INDICATOR.x,
-                POINTER_INDICATOR.y,
-                POINTER_INDICATOR.width,
-                POINTER_INDICATOR.height,
-                POINTER_DOWN_COLOR,
-            );
+            draw_touch_marker(surface, event.x, event.y, POINTER_DOWN_COLOR);
         }
         PointerPhase::Move => {
-            let _ = surface.fill(
-                POINTER_INDICATOR.x,
-                POINTER_INDICATOR.y,
-                POINTER_INDICATOR.width,
-                POINTER_INDICATOR.height,
-                POINTER_MOVE_COLOR,
-            );
+            draw_touch_marker(surface, event.x, event.y, POINTER_MOVE_COLOR);
         }
         PointerPhase::Up => {
-            let _ = surface.fill(
-                POINTER_INDICATOR.x,
-                POINTER_INDICATOR.y,
-                POINTER_INDICATOR.width,
-                POINTER_INDICATOR.height,
-                POINTER_UP_COLOR,
-            );
+            draw_touch_marker(surface, event.x, event.y, POINTER_UP_COLOR);
         }
     }
 }

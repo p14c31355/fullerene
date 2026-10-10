@@ -75,7 +75,7 @@ impl PointerConfig {
     /// A sane default for a resistive panel sampled in a tight loop.
     pub const fn resistive_default() -> Self {
         Self {
-            press_confirm_samples: 2,
+            press_confirm_samples: 3,
             release_confirm_samples: 2,
             move_threshold: 4,
             move_interval_ms: 0,
@@ -356,6 +356,28 @@ mod queue_tests {
 mod tests {
     use super::*;
 
+    /// A configuration that confirms a press on two samples, so the tests
+    /// below describe the state machine rather than the current default.
+    fn two_sample_press() -> PointerConfig {
+        PointerConfig {
+            press_confirm_samples: 2,
+            ..PointerConfig::resistive_default()
+        }
+    }
+
+    fn tracker() -> PointerTracker {
+        PointerTracker::new(two_sample_press())
+    }
+
+    #[test]
+    fn the_default_needs_three_samples_to_believe_a_press() {
+        let mut default_tracker = PointerTracker::new(PointerConfig::resistive_default());
+        assert_eq!(default_tracker.update(pressed(10, 10), 0), None);
+        assert_eq!(default_tracker.update(pressed(10, 10), 0), None);
+        assert!(!default_tracker.is_pressed());
+        assert!(default_tracker.update(pressed(10, 10), 0).is_some());
+    }
+
     fn pressed(x: u16, y: u16) -> PointerSample {
         PointerSample {
             x,
@@ -366,7 +388,7 @@ mod tests {
 
     #[test]
     fn a_single_noisy_sample_does_not_open_a_press() {
-        let mut tracker = PointerTracker::new(PointerConfig::resistive_default());
+        let mut tracker = tracker();
         assert_eq!(tracker.update(pressed(10, 10), 0), None);
         assert_eq!(tracker.update(PointerSample::released(), 0), None);
         assert!(!tracker.is_pressed());
@@ -378,7 +400,7 @@ mod tests {
 
     #[test]
     fn two_consecutive_samples_make_a_down() {
-        let mut tracker = PointerTracker::new(PointerConfig::resistive_default());
+        let mut tracker = tracker();
         assert_eq!(tracker.update(pressed(10, 10), 0), None);
         assert_eq!(
             tracker.update(pressed(11, 10), 0),
@@ -393,7 +415,7 @@ mod tests {
 
     #[test]
     fn moves_below_the_threshold_are_suppressed() {
-        let mut tracker = PointerTracker::new(PointerConfig::resistive_default());
+        let mut tracker = tracker();
         tracker.update(pressed(100, 100), 0);
         tracker.update(pressed(100, 100), 0);
         assert_eq!(tracker.update(pressed(101, 101), 0), None);
@@ -409,7 +431,7 @@ mod tests {
 
     #[test]
     fn up_reports_the_last_contact_point() {
-        let mut tracker = PointerTracker::new(PointerConfig::resistive_default());
+        let mut tracker = tracker();
         tracker.update(pressed(40, 50), 0);
         tracker.update(pressed(40, 50), 0);
         tracker.update(pressed(70, 60), 0);
@@ -429,7 +451,7 @@ mod tests {
     fn the_move_rate_limit_holds_back_rapid_moves() {
         let mut tracker = PointerTracker::new(PointerConfig {
             move_interval_ms: 30,
-            ..PointerConfig::resistive_default()
+            ..two_sample_press()
         });
         tracker.update(pressed(0, 0), 0);
         tracker.update(pressed(0, 0), 0);
@@ -445,7 +467,7 @@ mod tests {
 
     #[test]
     fn a_full_gesture_reports_down_moves_and_up_in_order() {
-        let mut tracker = PointerTracker::new(PointerConfig::resistive_default());
+        let mut tracker = tracker();
         let mut phases = alloc::vec::Vec::new();
         for (sample, now) in [
             (pressed(10, 10), 0),

@@ -52,7 +52,11 @@ const SPI_USR_MOSI: u32 = 1 << 27;
 /// `SPI_PIN` bits.
 const SPI_CS0_DIS: u32 = 1 << 0;
 const SPI_CK_IDLE_EDGE: u32 = 1 << 29;
-/// `SPI_CTRL` bit: 0 selects MSB-first transmission.
+/// `SPI_CTRL.SPI_WR_BIT_ORDER` (bit 26). The reference header is explicit:
+/// "In command address write-data (MOSI) phases 1: LSB first 0: MSB first",
+/// and its reset value is 0. The panel needs MSB first, so this bit must stay
+/// clear - setting it reverses every bit of every byte and the controller
+/// never sees a valid command, which presents as a lit but blank panel.
 const SPI_WR_BIT_ORDER: u32 = 1 << 26;
 /// `SPI_CLOCK` fields.
 const SPI_CLK_EQU_SYSCLK: u32 = 1 << 31;
@@ -66,11 +70,12 @@ pub const APB_CLOCK_HZ: u32 = 80_000_000;
 /// Bytes staged per hardware transaction: the CPU-side buffer is W0..W15.
 pub const HSPI_CHUNK_BYTES: usize = 64;
 
-/// A conservative starting clock. The ILI9341 write cycle is 66 ns, and the
-/// bit-banged path never approached it, so this is a large win already; the
-/// panel type is carried in the board profile so it can be raised once the
-/// specific module is known to tolerate more.
-pub const DEFAULT_SPI_HZ: u32 = 20_000_000;
+/// The starting clock. The ILI9341 write cycle is 66 ns (about 15 MHz), so
+/// this deliberately stays under it: the panel sits on jumper wires, and signal
+/// integrity on loose wiring matters more than the last few megahertz. It is
+/// still roughly ten times the bit-banged path. Raise it only with the panel
+/// showing a correct image at this rate first.
+pub const DEFAULT_SPI_HZ: u32 = 8_000_000;
 
 /// Bound on the wait for `SPI_CMD.USR` to clear. A 64-byte transfer at the
 /// slowest clock this module can produce is a few microseconds; this is far
@@ -151,7 +156,8 @@ impl SpiController {
             // transaction is a bare MOSI burst. Every other USER bit stays
             // clear (no duplex, no SIO, CPHA = 0 for mode 0, no CS hold/setup
             // because software owns the chip select).
-            core::ptr::write_volatile(HSPI_CTRL as *mut u32, SPI_WR_BIT_ORDER);
+            let ctrl = core::ptr::read_volatile(HSPI_CTRL as *const u32);
+            core::ptr::write_volatile(HSPI_CTRL as *mut u32, ctrl & !SPI_WR_BIT_ORDER);
             core::ptr::write_volatile(HSPI_USER as *mut u32, SPI_USR_MOSI);
             core::ptr::write_volatile(
                 HSPI_CLOCK as *mut u32,

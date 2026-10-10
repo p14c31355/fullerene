@@ -80,13 +80,68 @@ count instead of writing the value 1, which ESP-IDF documents as invalid
 follows from neither reading. One tick is one microsecond by construction, and
 the drawing-latency numbers are measured against it.
 
-**Verification status.** The three targets build (xtensa, x86_64-uefi,
-aarch64-ane) and the host test suite covers the rectangle arithmetic, the
-divider search, the debounce state machine and the event queue. The on-hardware
-run has not been captured yet - the numbers the probe prints over UART
-(`LATENCY` lines, also available as the Nozzle `latency` command) are the next
-evidence to collect, and the 20 MHz default clock is the first thing to lower
-if the panel misbehaves.
+**Verification status (measured on the board, 2026-10-11).** All three targets
+build (xtensa, x86_64-uefi, aarch64-ane) and the host suite covers the rectangle
+arithmetic, the divider search, the debounce state machine and the event queue.
+The device reports:
+
+```text
+PANEL TEST BARS                 four bars painted straight from the driver
+TIMER PROBE counter=advancing
+UART RULER bytes=1024 expected_us=88064 timer_us=45220 cycles=3617536 cpu_mhz=79
+TOUCH SELFTEST REPORTING
+  spi_hz=8000000 cpu_mhz_measured=79 clock=1us_timer
+  surface_fill_us=4725     (304x176 px)
+  full_flush_us=207274     bytes=153600
+  window_flush_us=144702   bytes=107008
+  marker_flush_us=468      bytes=288
+  pace_calls_per_full_frame=2400 input_samples_during_flush=26
+```
+
+Two things to read from that. The full frame transfers 153,600 bytes in 207 ms,
+which is the 8 MHz shift clock plus about 25% of per-chunk overhead - so the
+divider arithmetic is right and the ratio between a frame and a marker is the
+dirty-region path working. And input kept sampling 26 times *during* that
+transfer, which is the whole point of the paced flush.
+
+The UART ruler is not a time reference, incidentally: it writes into a FIFO and
+returns before the wire has drained, so it times the push, not the burst. It is
+kept because it cross-checks the cycle counter against the timer, and those two
+agree: 3,617,536 cycles over the 45,220 us the timer reports is 80 MHz, which is
+this chip's running CPU clock (not the 240 MHz in the chip description).
+
+### Touch: what the panel actually answered
+
+The pin table above is the profile's assumption. It is correct for this board -
+every IO_MUX offset was checked against `io_mux_reg.h` - but the *protocol* was
+wrong in three ways, each found on hardware:
+
+- The command bytes. A sweep of sixteen candidates with a finger held on the
+  panel (`touchscan`, or the `touchscan` shell command) showed channel 101
+  answering as 1024/1025 and channel 001 as 791 with the low bits at 00, while
+  the same channels with the low bits at 01 returned a constant near 50 and
+  never moved. The commands are `0xd0` for X and `0x90` for Y on this unit.
+- The frame length. The conversion frame is sixteen clocks - a leading zero, the
+  twelve result bits, three trailing zeros - read as a word and shifted down by
+  three. Taking twelve clocks straight after the command byte loses the low bit:
+  the panel centre measured 1024 where mid-scale is 2048.
+- The channel pairing. The conversion after a channel change belongs to the
+  previous channel, so an axis needs its own settling conversion first. The
+  earlier code alternated X and Y and averaged them together, which mixed the
+  two axes.
+
+Contact discrimination was also replaced: `z1 - z2` separates cleanly (nothing
+touching reads within a few counts of zero, a finger pulls them about 475
+apart), where the previous `z1 + 4095 - z2` sat near 4092 idle and 4570 pressed
+and so fired on an untouched panel.
+
+With those four fixed, `read()` reports stable mid-scale axes, the tracker emits
+Down/Move/Up with coordinates that follow the finger, and a dense calibration
+burst reads 14,000 samples per second. The calibration constants were then taken
+from four corners pressed in turn: top-left (0, 0) and bottom-right (3305, 3411)
+on the ADC rails, with the direct mapping - no mirror, no swap.
+
+`TOUCH_SCAN` and `TOUCH_CAL` are the shell commands (`touchscan`, `touchcal`).
 
 Two pre-existing build breakages were fixed to get here, both unrelated to the
 display work: `solvent` re-exported `runtime_context` on Xtensa without a cfg
