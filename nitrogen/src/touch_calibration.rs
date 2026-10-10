@@ -121,8 +121,22 @@ mod tests {
         // Raw grows right and down, exactly like the screen.
         let resolved = resolve(corners((0, 0), (3300, 0), (0, 3400), (3300, 3400)));
         assert_eq!(resolved.swap_xy, false);
-        assert_eq!(resolved.x, AxisMapping { min: 0, max: 3300, mirror: false });
-        assert_eq!(resolved.y, AxisMapping { min: 0, max: 3400, mirror: false });
+        assert_eq!(
+            resolved.x,
+            AxisMapping {
+                min: 0,
+                max: 3300,
+                mirror: false
+            }
+        );
+        assert_eq!(
+            resolved.y,
+            AxisMapping {
+                min: 0,
+                max: 3400,
+                mirror: false
+            }
+        );
     }
 
     #[test]
@@ -149,10 +163,16 @@ mod tests {
         assert!(resolved.swap_xy, "horizontal movement changed raw Y");
         assert_eq!(resolved.x.min, 0);
         assert_eq!(resolved.x.max, 3300);
-        assert!(resolved.x.mirror, "the left edge reads the high end of raw Y");
+        assert!(
+            resolved.x.mirror,
+            "the left edge reads the high end of raw Y"
+        );
         assert_eq!(resolved.y.min, 0);
         assert_eq!(resolved.y.max, 3400);
-        assert!(resolved.y.mirror, "the top edge reads the high end of raw X");
+        assert!(
+            resolved.y.mirror,
+            "the top edge reads the high end of raw X"
+        );
     }
 
     #[test]

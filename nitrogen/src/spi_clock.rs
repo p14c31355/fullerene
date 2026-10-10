@@ -79,9 +79,7 @@ pub fn solve(
         if nearest.is_none_or(|(_, _, best)| error <= best) {
             nearest = Some((candidate, prescale, error));
         }
-        if frequency <= target
-            && below.is_none_or(|(_, _, best)| error <= best)
-        {
+        if frequency <= target && below.is_none_or(|(_, _, best)| error <= best) {
             below = Some((candidate, prescale, error));
         }
         candidate += 1;
@@ -154,7 +152,10 @@ mod tests {
         for target in [1_000_000u32, 2_500_000, 10_000_000, 26_000_000, 40_000_000] {
             let divider = solve_esp32(80_000_000, target);
             let actual = divider.frequency_hz(80_000_000);
-            assert!(actual <= target, "{actual} Hz exceeded the {target} Hz request");
+            assert!(
+                actual <= target,
+                "{actual} Hz exceeded the {target} Hz request"
+            );
             let step = actual / 2 + 1;
             assert!(
                 target - actual <= step,

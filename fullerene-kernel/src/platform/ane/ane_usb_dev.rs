@@ -960,8 +960,7 @@ pub fn setups_seen() -> u32 {
 /// config-1 with zero served strings (the one-behind state mangles exactly
 /// the string stage). The watchdog uses this to auto-cycle D+ on a garbled
 /// boot - the host never speaks to it again otherwise.
-pub static STRINGS_SERVED: core::sync::atomic::AtomicU32 =
-    core::sync::atomic::AtomicU32::new(0);
+pub static STRINGS_SERVED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 pub fn strings_served() -> u32 {
     STRINGS_SERVED.load(core::sync::atomic::Ordering::Relaxed)
@@ -1268,8 +1267,7 @@ fn parse_hex(bytes: &[u8]) -> usize {
 /// The used length of the main durable text block. The loader tramples the
 /// header between boots, so an out-of-range size means an empty block (the
 /// same guard the writer applies). ANE-only: the block itself lives in the
-/// ANE's durable-log zone (`blackbox::TEXT_BLOCK_*` is cfg'd the same way).
-#[cfg(fullerene_aarch64_ane)]
+/// ANE's durable-log zone. Only the ANE USB path calls this function.
 fn main_log_len() -> usize {
     let raw = unsafe { ptr::read_volatile((crate::blackbox::TEXT_BLOCK_BASE + 4) as *const u32) }
         as usize;

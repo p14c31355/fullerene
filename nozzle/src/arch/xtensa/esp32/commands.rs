@@ -117,8 +117,16 @@ pub const ESP32_COMMANDS: &[&dyn carrier::exec::Command] = carrier::define_comma
     ("latency", "show drawing latency measurements", cmd_latency),
     ("uptime", "show uptime", cmd_uptime),
     ("reboot", "reset the board", cmd_reboot),
-    ("touchcal", "burst of touch readings for calibration", cmd_touchcal),
-    ("touchcal4", "four-point on-screen touch calibration", cmd_touchcal4),
+    (
+        "touchcal",
+        "burst of touch readings for calibration",
+        cmd_touchcal
+    ),
+    (
+        "touchcal4",
+        "four-point on-screen touch calibration",
+        cmd_touchcal4
+    ),
     ("touchscan", "convert every touch channel", cmd_touchscan),
 );
 

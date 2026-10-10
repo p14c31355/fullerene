@@ -209,7 +209,13 @@ impl EmbeddedDesktop {
     /// Draw a square marker centred on a point and return the region it
     /// dirtied. The caller is responsible for repainting underneath a moved
     /// marker; the shell uses a fixed indicator instead, so it never has to.
-    pub fn draw_pointer(&mut self, target: &mut Esp32Compositor, x: u16, y: u16, color: u16) -> Option<Rect> {
+    pub fn draw_pointer(
+        &mut self,
+        target: &mut Esp32Compositor,
+        x: u16,
+        y: u16,
+        color: u16,
+    ) -> Option<Rect> {
         let half = POINTER_MARKER / 2;
         let left = x.saturating_sub(half);
         let top = y.saturating_sub(half);
@@ -421,7 +427,10 @@ mod tests {
         desktop_marker(&mut target);
         let dirty = target.take_dirty().unwrap();
         assert_eq!(dirty, EmbeddedDesktop::pointer_rect(100, 100));
-        assert_eq!(dirty.rgb565_bytes(), u32::from(POINTER_MARKER) * u32::from(POINTER_MARKER) * 2);
+        assert_eq!(
+            dirty.rgb565_bytes(),
+            u32::from(POINTER_MARKER) * u32::from(POINTER_MARKER) * 2
+        );
         assert!(dirty.rgb565_bytes() < 1024);
     }
 

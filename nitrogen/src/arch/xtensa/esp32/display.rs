@@ -119,7 +119,12 @@ impl SpiLcd {
             x_end as u8,
         ])?;
         self.command(0x2B)?;
-        self.data(&[(rect.y >> 8) as u8, rect.y as u8, (y_end >> 8) as u8, y_end as u8])?;
+        self.data(&[
+            (rect.y >> 8) as u8,
+            rect.y as u8,
+            (y_end >> 8) as u8,
+            y_end as u8,
+        ])?;
         self.command(0x2C)
     }
 
@@ -168,7 +173,8 @@ impl SpiLcd {
             }
             match pace.as_mut() {
                 Some(callback) => {
-                    self.controller.write_data_paced(&row[..length], *callback)?;
+                    self.controller
+                        .write_data_paced(&row[..length], *callback)?;
                 }
                 None => {
                     self.controller.write_data(&row[..length])?;

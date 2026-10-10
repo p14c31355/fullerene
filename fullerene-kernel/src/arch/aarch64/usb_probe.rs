@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 #![feature(alloc_error_handler)]
+extern crate alloc;
 // The black box lives at the package's `src/` root and is referred to from
 // `usb/live_digit_words.rs` as `crate::blackbox`, so every crate root that pulls
 // the usb tree in has to declare it. This probe binary is one of them; without

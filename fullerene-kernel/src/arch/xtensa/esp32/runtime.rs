@@ -57,11 +57,7 @@ fn report_uart_reference_probe() {
     } else {
         timer_us / (expected_us / 1_000).max(1)
     };
-    let cpu_mhz = if timer_us == 0 {
-        0
-    } else {
-        cycles / timer_us
-    };
+    let cpu_mhz = if timer_us == 0 { 0 } else { cycles / timer_us };
 
     uart("UART RULER bytes=");
     number(bytes);
@@ -218,8 +214,10 @@ fn report_touch_scan(touch: &mut Xpt2046Touch) {
         }
     });
     uart(&lines);
-    for (label, command) in [("X", nitrogen::arch::xtensa::esp32::touchscreen::X_COMMAND),
-                             ("Y", nitrogen::arch::xtensa::esp32::touchscreen::Y_COMMAND)] {
+    for (label, command) in [
+        ("X", nitrogen::arch::xtensa::esp32::touchscreen::X_COMMAND),
+        ("Y", nitrogen::arch::xtensa::esp32::touchscreen::Y_COMMAND),
+    ] {
         let mut repeated = String::new();
         let mut values = String::new();
         touch.scan_repeat(command, &mut |value| {
@@ -456,12 +454,7 @@ fn current_spi_hz() -> u32 {
 ///
 /// Returns the microseconds the transfer took and how many times the input
 /// pacer ran, so the caller can report both without a second pass.
-fn flush_region(
-    pixels: &[u16],
-    rect: Rect,
-    pump: &mut InputPump,
-    count_pace: bool,
-) -> (u32, u32) {
+fn flush_region(pixels: &[u16], rect: Rect, pump: &mut InputPump, count_pace: bool) -> (u32, u32) {
     let mut pace_calls = 0u32;
     let mut display = DISPLAY.lock();
     let Some(lcd) = display.as_mut() else {
@@ -752,7 +745,7 @@ fn draw_calibration_target(surface: &mut Esp32Compositor, step: usize) {
 
 /// Resolve and install the mapping once four points have been collected.
 fn finish_touch_calibration(touch: &mut Xpt2046Touch) {
-    use nitrogen::touch_calibration::{resolve, CornerSamples, Point};
+    use nitrogen::touch_calibration::{CornerSamples, Point, resolve};
 
     let points = *CAL_POINTS.lock();
     let corners = CornerSamples {
@@ -805,21 +798,16 @@ fn run_calibration_burst(touch: &mut Xpt2046Touch) {
     // Long enough that the operator can move between corners at their own
     // pace: a window that expires mid-sequence silently loses the corners it
     // did not reach.
-    let samples = touch.calibration_burst(
-        60_000_000,
-        20_000,
-        &mut now,
-        &mut |x, y, pressure| {
-            let _ = core::fmt::Write::write_fmt(
-                &mut lines,
-                format_args!("TOUCH CAL us={} x={} y={} p={}\n", now_us(), x, y, pressure),
-            );
-            if lines.len() > 512 {
-                uart(&lines);
-                lines.clear();
-            }
-        },
-    );
+    let samples = touch.calibration_burst(60_000_000, 20_000, &mut now, &mut |x, y, pressure| {
+        let _ = core::fmt::Write::write_fmt(
+            &mut lines,
+            format_args!("TOUCH CAL us={} x={} y={} p={}\n", now_us(), x, y, pressure),
+        );
+        if lines.len() > 512 {
+            uart(&lines);
+            lines.clear();
+        }
+    });
     uart(&lines);
     let mut tail = String::new();
     let _ = core::fmt::Write::write_fmt(

@@ -257,10 +257,7 @@ impl SpiController {
                 word_index += 1;
             }
             // `spi_ll_set_mosi_bitlen`: the register holds bitlen - 1.
-            core::ptr::write_volatile(
-                HSPI_MOSI_DLEN as *mut u32,
-                (bytes.len() as u32) * 8 - 1,
-            );
+            core::ptr::write_volatile(HSPI_MOSI_DLEN as *mut u32, (bytes.len() as u32) * 8 - 1);
             core::ptr::write_volatile(HSPI_CMD as *mut u32, SPI_USR);
         }
 

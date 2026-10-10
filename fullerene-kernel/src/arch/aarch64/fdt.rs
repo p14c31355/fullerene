@@ -219,11 +219,11 @@ pub fn find_memory_regions(address: u64, out: &mut [Region]) -> usize {
 /// reservations before a controller can receive its address.
 pub fn find_reserved_memory_regions(address: u64, out: &mut [Region]) -> usize {
     // Mark l: the reserved-memory walk entry (k->l is the current wall).
-    unsafe { super::entry::ane_step_byte(b'l') };
+    ane_walk_step(b'l');
     let mut states = [ReservedMemoryNodeState::new(); 16];
     // Mark m: the 16-slot node-state scratch is up (if the screen stops at m,
     // the walk's visitor frame is what the device cannot survive).
-    unsafe { super::entry::ane_step_byte(b'm') };
+    ane_walk_step(b'm');
     let mut count = 0usize;
     let walk_result = walk_structure(address, |event| {
         match event {
@@ -284,8 +284,25 @@ pub fn find_reserved_memory_regions(address: u64, out: &mut [Region]) -> usize {
         true
     });
     // Mark n: the structure walk returned.
-    unsafe { super::entry::ane_step_byte(b'n') };
+    ane_walk_step(b'n');
     if walk_result.is_some() { count } else { 0 }
+}
+
+#[inline(always)]
+fn ane_walk_step(byte: u8) {
+    #[cfg(fullerene_aarch64_ane)]
+    unsafe {
+        // The shared FDT walker also builds in probe binaries, which do not
+        // include `entry`. Keep the same durable mark layout as entry.rs.
+        const BASE: usize = 0x348d_f000;
+        let count = core::ptr::read_volatile((BASE + 4) as *const u32);
+        if count < 16 {
+            core::ptr::write_volatile((BASE + 8 + count as usize) as *mut u8, byte);
+            core::ptr::write_volatile((BASE + 4) as *mut u32, count + 1);
+        }
+    }
+    #[cfg(not(fullerene_aarch64_ane))]
+    let _ = byte;
 }
 
 #[derive(Clone, Copy)]

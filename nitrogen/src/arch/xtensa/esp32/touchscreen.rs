@@ -387,8 +387,7 @@ impl Xpt2046Touch {
             // snapshot is one refactor away from reporting the wrong thing.
             let reading = self.read();
             let stamp = now();
-            if self.last_pressure >= PRESSURE_FLOOR
-                && stamp.wrapping_sub(next_report) >= min_gap_us
+            if self.last_pressure >= PRESSURE_FLOOR && stamp.wrapping_sub(next_report) >= min_gap_us
             {
                 if let Some(sample) = reading {
                     next_report = stamp;
@@ -457,7 +456,7 @@ impl Xpt2046Touch {
     /// `pen_active` is a cheap pad read and stays the fast path; the interval
     /// is the fallback for a board without the external pull-up.
     pub fn poll_due(&mut self, now_ms: u32) -> Option<PointerEvent> {
-        if !self.pen_active() && now_ms.saturating_sub(self.last_sample_ms) < IDLE_SAMPLE_INTERVAL_MS
+        if !self.pen_active() && now_ms.wrapping_sub(self.last_sample_ms) < IDLE_SAMPLE_INTERVAL_MS
         {
             return None;
         }

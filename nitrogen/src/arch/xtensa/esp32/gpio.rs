@@ -56,8 +56,7 @@ pub fn enable_output_function(pin: u8, function: u32) {
         return;
     };
     unsafe {
-        ((IO_MUX_BASE + offset as usize) as *mut u32)
-            .write_volatile((function << 12) | 2 << 10);
+        ((IO_MUX_BASE + offset as usize) as *mut u32).write_volatile((function << 12) | 2 << 10);
         if pin < 32 {
             (GPIO_ENABLE_W1TS as *mut u32).write_volatile(1 << u32::from(pin));
         } else {

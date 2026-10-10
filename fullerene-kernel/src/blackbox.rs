@@ -1369,13 +1369,11 @@ const ANE_PSTORE_WINDOW: u64 = 0x10_0000;
 /// mirror writes at most a kilobyte at the zone's start), and nothing on
 /// either side touches it during an ordinary boot. 56 KiB of text, ending
 /// 4 KiB below the marks so the two can never meet.
-#[cfg(fullerene_aarch64_ane)]
 pub const TEXT_BLOCK_BASE: u64 = 0x348d_0000;
 /// "FTLX" little-endian: the first four bytes of a live block.
 #[cfg(fullerene_aarch64_ane)]
 pub const TEXT_BLOCK_MAGIC: u32 = 0x584c_5446;
 /// Text capacity of the block; header is magic/size/cap (12 bytes).
-#[cfg(fullerene_aarch64_ane)]
 pub const TEXT_BLOCK_CAP: u32 = 0xe000;
 /// Offset of the header-independent log copy inside the block. The header
 /// (magic/size/cap) is trampled by loader boots, so this copy appends from a
