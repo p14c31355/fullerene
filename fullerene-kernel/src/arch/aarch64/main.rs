@@ -922,6 +922,18 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     // Mark a: the MMU is live (identity map, caches on).
     unsafe { entry::ane_step_byte(b'a') };
 
+    // v278 REVERTED: an epoch mark written here (line ~922, before the
+    // blackbox's own init) garbled the responder's descriptors - v279 collected
+    // 'Љ'. step_probe is not safe this early in the ANE path, so the trail's
+    // per-boot reset stays where the blackbox is already live and the
+    // attribution problem is solved by the reader's KEEP_TRAIL instead.
+    #[cfg(fullerene_aarch64_ane)]
+    if option_env!("FULLERENE_ANE_KEEP_TRAIL").is_none() {
+        unsafe {
+            core::ptr::write_volatile(0x348d_e800 as *mut u32, 0);
+        }
+    }
+
     #[cfg(feature = "aarch64-user-launchd")]
     let mut allocator_ready = false;
     if let Some(mut frames) = allocator::PhysicalFrameAllocator::from_boot_info(&boot_info) {
@@ -1026,17 +1038,9 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         if option_env!("FULLERENE_ANE_IRQ_NO_PAINT").is_some() {
             platform::ane_fb::IRQ_QUIET.store(true, core::sync::atomic::Ordering::Relaxed);
         }
-        // v268: reset the SMK/VFS trail for THIS boot. The block lives in the
-        // ramoops tail and survives resets; read_vfs_path only clears it when
-        // the launchd reads a file, so a boot that never reaches the launchd
-        // inherited the previous boot's marks and the trail lied about
-        // progress. Clearing it here makes any nonzero trail live evidence.
-        #[cfg(fullerene_aarch64_ane)]
-        if option_env!("FULLERENE_ANE_KEEP_TRAIL").is_none() {
-            unsafe {
-                core::ptr::write_volatile(0x348d_e800 as *mut u32, 0);
-            }
-        }
+        // v268/v278: the per-boot trail reset lives at the top of the ANE path
+        // now (see the '@' epoch mark), because fs::init() is itself a trail
+        // writer and used to run before the reset.
         // Readable copy of the bootup-keypoint write for the durable log
         // (the binary ring record was taken at entry, before this console
         // exists). Re-writing is idempotent; the readback proves the value.
