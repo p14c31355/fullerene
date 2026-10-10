@@ -1270,8 +1270,19 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         // so from here the timer IRQ stops touching DWC2 and the boot thread
         // owns the CPU for the storage probe, the desktop and the launchd -
         // the phases the pump used to starve.
+        // v286: only close it when the host actually configured the device.
+        // The v285 boot sat in the loader forever: with no host on the other
+        // end the bounded wait timed out at 5 s with config=0, the window
+        // then closed anyway, and from that point NOTHING serviced the
+        // responder (the watchdog disarmed with the closed window and the
+        // boot thread never returns to service()) - the device stopped
+        // answering fastboot entirely. The window now stays open until the
+        // handoff is real; a config=0 timeout keeps the pump running so the
+        // device stays answerable to a late host.
         #[cfg(fullerene_aarch64_ane)]
-        if option_env!("FULLERENE_ANE_PUMP_WINDOW").is_some() {
+        if option_env!("FULLERENE_ANE_PUMP_WINDOW").is_some()
+            && platform::ane_usb_dev::usb_config_was_1()
+        {
             platform::ane::usb_pump_window(false);
         }
         #[cfg(fullerene_aarch64_ane)]
