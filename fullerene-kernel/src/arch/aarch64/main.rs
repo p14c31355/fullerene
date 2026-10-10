@@ -1235,9 +1235,24 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
             // renderer monopolize the boot thread during those EP0 requests.
             // The timer IRQ keeps servicing USB and bounds failed attempts via
             // its reconnect budget, ultimately returning to the loader.
-            while !platform::ane_usb_dev::usb_config_was_1() {
-                platform::ane_usb_dev::service(ane_log);
-                core::hint::spin_loop();
+            //
+            // v283: bound the wait. The wait exists so the predesktop config
+            // handshake finishes before the renderer claims the canvas, but
+            // with no host on the other end (unattended boots) it spins
+            // forever and the watchdog files BOOT PROGRESS STALLED - the
+            // probe trail's WD lines. 5 s is far beyond every observed
+            // handoff, so timing out here changes nothing for a hosted boot
+            // and lets an unattended one proceed to the desktop.
+            {
+                let t0 = super::timer::uptime_us();
+                while !platform::ane_usb_dev::usb_config_was_1() {
+                    platform::ane_usb_dev::service(ane_log);
+                    if super::timer::uptime_us().wrapping_sub(t0) > 5_000_000 {
+                        ane_log("usb: predesktop-wait timeout", 0);
+                        break;
+                    }
+                    core::hint::spin_loop();
+                }
             }
             platform::ane_usb_dev::service(ane_log);
             ane_log(
