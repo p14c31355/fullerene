@@ -1014,7 +1014,7 @@ const TEE_CAP: usize = 4096;
 pub struct ProgressWatchdog {
     count: core::sync::atomic::AtomicU32,
     last_seen: core::sync::atomic::AtomicU32,
-    stalled_since_us: core::sync::atomic::AtomicU64,
+    stalled_since_us: AtomicU64,
     warned: core::sync::atomic::AtomicBool,
     in_irq: core::sync::atomic::AtomicBool,
 }
@@ -1023,10 +1023,43 @@ pub struct ProgressWatchdog {
 pub static PROGRESS_WATCHDOG: ProgressWatchdog = ProgressWatchdog {
     count: core::sync::atomic::AtomicU32::new(0),
     last_seen: core::sync::atomic::AtomicU32::new(0),
-    stalled_since_us: core::sync::atomic::AtomicU64::new(0),
+    stalled_since_us: AtomicU64::new(0),
     warned: core::sync::atomic::AtomicBool::new(false),
     in_irq: core::sync::atomic::AtomicBool::new(false),
 };
+
+// A 64-bit counter with the widest storage the target can back.
+//
+// The watchdog is shared by every architecture this kernel builds for, but not
+// every target has 64-bit atomics: Xtensa (ESP32) has none, so
+// `core::sync::atomic::AtomicU64` does not exist there and the ESP32 build used
+// to stop here. The ESP32 port runs a cooperative scheduler on one core and the
+// watchdog only ever does relaxed loads and stores, so a volatile cell is the
+// correct mechanism for that target - there is no concurrent writer to lose
+// against. Targets with real 64-bit atomics keep them.
+#[cfg(not(target_arch = "xtensa"))]
+type AtomicU64 = core::sync::atomic::AtomicU64;
+
+#[cfg(target_arch = "xtensa")]
+struct AtomicU64(core::cell::UnsafeCell<u64>);
+
+#[cfg(target_arch = "xtensa")]
+unsafe impl Sync for AtomicU64 {}
+
+#[cfg(target_arch = "xtensa")]
+impl AtomicU64 {
+    const fn new(value: u64) -> Self {
+        Self(core::cell::UnsafeCell::new(value))
+    }
+
+    fn load(&self, _ordering: core::sync::atomic::Ordering) -> u64 {
+        unsafe { core::ptr::read_volatile(self.0.get()) }
+    }
+
+    fn store(&self, value: u64, _ordering: core::sync::atomic::Ordering) {
+        unsafe { core::ptr::write_volatile(self.0.get(), value) }
+    }
+}
 
 impl ProgressWatchdog {
     /// Stall thresholds, chosen well above the slowest legitimate stall (an
@@ -1112,7 +1145,7 @@ pub fn watchdog_note() {
 /// cycle magic. The reply that precedes the request must reach the host
 /// before the link drops, so the reset is scheduled ~2 s out and fired from
 /// the timer tick instead of panicking inline.
-static RESET_DEADLINE_US: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static RESET_DEADLINE_US: AtomicU64 = AtomicU64::new(0);
 
 /// Schedule a deliberate panic+reset at the given uptime (us). 0 disarms.
 pub fn schedule_reset_at(deadline_us: u64) {

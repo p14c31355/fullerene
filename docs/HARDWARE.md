@@ -37,6 +37,63 @@ Do not treat these values as hardware confirmation. Probe traces, chip IDs, and
 runtime responses before relying on them; update this table only with verified
 evidence.
 
+### Display transport, dirty regions, and touch events (2026-10-11)
+
+The LCD moved from bit-banged GPIO to the ESP32's HSPI (SPI2) peripheral, the
+dirty region now travels from the compositor to the transfer, and the touch
+controller produces events instead of raw samples.
+
+**Registers.** Every offset and bit position comes from ESP-IDF v5.3 rather
+than from memory: `reg_base.h` (`DR_REG_SPI2_BASE = 0x3ff64000`,
+`DR_REG_DPORT_BASE = 0x3ff00000`), `spi_reg.h`, `dport_reg.h`
+(`DPORT_PERIP_CLK_EN_REG` at 0xc0 with `DPORT_SPI2_CLK_EN` on bit 6),
+`io_mux_reg.h` (GPIO13 = HSPID and GPIO14 = HSPICLK on MCU_SEL 1) and
+`hal/esp32/include/hal/spi_ll.h` for the transaction shape
+(`usr_mosi_dbitlen = bitlen - 1`, little-endian W0..W15 staging, poll
+`SPI_CMD.USR` back to zero). The clock-divider search is a port of
+`spi_ll_master_cal_clock`, with one deliberate change: the requested frequency
+is treated as a ceiling, because a panel's timing limit is a spec and not a
+suggestion.
+
+**Layout.**
+
+| Piece | Where |
+| --- | --- |
+| HSPI transport, chunking, pacing | `nitrogen/src/arch/xtensa/esp32/spi.rs` |
+| Panel driver, rectangle flush | `nitrogen/src/arch/xtensa/esp32/display.rs` |
+| Shared rectangle arithmetic | `nitrogen/src/geometry.rs` |
+| Divider arithmetic | `nitrogen/src/spi_clock.rs` |
+| Pointer events and debounce | `nitrogen/src/input.rs` |
+| XPT2046 sampler to events | `nitrogen/src/arch/xtensa/esp32/touchscreen.rs` |
+| Dirty-region owner | `lattice/src/arch/xtensa/esp32/backend.rs` |
+| Wiring, drawn latency probe | `fullerene-kernel/src/arch/xtensa/esp32/runtime.rs` |
+
+**Why the flush no longer stalls input.** The peripheral shifts each 64-byte
+chunk without the CPU, and the driver calls back into the input path between
+chunks. That callback is a single pad read when the pen is idle and a full
+conversion when it is down, so the sampling rate is set by the chunk size
+rather than by the frame duration.
+
+**Timebase.** `time.rs` now programs the timer prescaler to 80 for a 1 MHz
+count instead of writing the value 1, which ESP-IDF documents as invalid
+("0 and 1 are not valid") while the tick accounting assumed a rate that
+follows from neither reading. One tick is one microsecond by construction, and
+the drawing-latency numbers are measured against it.
+
+**Verification status.** The three targets build (xtensa, x86_64-uefi,
+aarch64-ane) and the host test suite covers the rectangle arithmetic, the
+divider search, the debounce state machine and the event queue. The on-hardware
+run has not been captured yet - the numbers the probe prints over UART
+(`LATENCY` lines, also available as the Nozzle `latency` command) are the next
+evidence to collect, and the 20 MHz default clock is the first thing to lower
+if the panel misbehaves.
+
+Two pre-existing build breakages were fixed to get here, both unrelated to the
+display work: `solvent` re-exported `runtime_context` on Xtensa without a cfg
+gate, `blackbox.rs` required 64-bit atomics that Xtensa does not have, and
+`petroleum` declared `graphics::x86_64::uefi` without re-exporting it, which
+broke the `bellows` PC build.
+
 ## InsydeH2O Firmware (June 2026)
 
 Running on real hardware with InsydeH2O UEFI firmware required three fixes:

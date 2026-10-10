@@ -993,6 +993,7 @@ version = "0.1.0"
 dependencies = [
  "ab_glyph",
  "embedded-graphics",
+ "nitrogen",
  "resvg",
  "spin 0.12.0",
  "tiny-skia",

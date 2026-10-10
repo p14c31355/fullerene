@@ -33,8 +33,11 @@ pub mod arch;
 pub mod debug;
 pub mod driver_context;
 pub mod error;
+pub mod geometry;
 pub mod hid;
+pub mod input;
 pub mod metrics;
+pub mod spi_clock;
 
 // Platform surface: whichever tree the target selected answers these names.
 #[cfg(target_arch = "aarch64")]

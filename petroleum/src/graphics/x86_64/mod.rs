@@ -15,6 +15,9 @@ mod vga_initializer;
 pub use framebuffer::UefiFramebufferWriter;
 pub use framebuffer::*;
 pub use framebuffer_mapper::{CacheMode, FramebufferMapper};
+// `bellows` reaches the GOP discovery through `petroleum::init_graphics_protocols`,
+// which only resolves if this subtree is globbed in.
+pub use uefi::*;
 pub use setup::{
     detect_and_init_vga_graphics, detect_cirrus_vga, init_vga_graphics, init_vga_text_mode,
     setup_cirrus_vga_mode,

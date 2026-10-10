@@ -166,6 +166,7 @@ pub use window_api::{
     scaled_framebuffer_dims, suspend_rendering, with_window_surface, write_terminal,
 };
 
+#[cfg(not(target_arch = "xtensa"))]
 pub(crate) use runtime_context::{
     BACK_BUFFER, CURSOR_TIMER_ID, DEFAULT_COLS, DEFAULT_ROWS, FB_DIMS, FRAME_INTERVAL_MS,
     FRAME_TIMER_ID, GLYPH_H, GLYPH_W, PREV_MOUSE_BUTTONS, TERM_WIN_H, TERM_WIN_W, TSC_PER_MS,

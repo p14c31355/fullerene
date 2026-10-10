@@ -4,8 +4,24 @@ use alloc::string::String;
 use carrier::exec::CommandContext;
 
 pub fn cmd_help(ctx: &mut CommandContext) -> bool {
-    ctx.terminal
-        .write_str("clear\thelp\tmem\ttasks\treboot\tuptime\n");
+    ctx.terminal.write_str(
+        "clear\thelp\tlatency\tmem\ttasks\treboot\tuptime\n",
+    );
+    true
+}
+
+/// Report the last drawing-latency probe.
+///
+/// The numbers come from the kernel's own measurement run, so this prints what
+/// the device actually observed rather than what the clock rates imply.
+pub fn cmd_latency(ctx: &mut CommandContext) -> bool {
+    let report = latency_report();
+    if report.is_empty() {
+        ctx.terminal
+            .write_str("no drawing latency probe has run yet\n");
+    } else {
+        ctx.terminal.write_str(&report);
+    }
     true
 }
 
@@ -43,6 +59,7 @@ pub const ESP32_COMMANDS: &[&dyn carrier::exec::Command] = carrier::define_comma
     ("help", "show ESP32 commands", cmd_help),
     ("mem", "show heap state", cmd_mem),
     ("tasks", "list scheduled tasks", cmd_tasks),
+    ("latency", "show drawing latency measurements", cmd_latency),
     ("uptime", "show uptime", cmd_uptime),
     ("reboot", "reset the board", cmd_reboot),
 );
@@ -52,6 +69,8 @@ pub static mut MEMINFO: Option<fn() -> (usize, usize)> = None;
 pub static mut TASK_NAMES: Option<fn() -> alloc::vec::Vec<String>> = None;
 pub static mut UPTIME: Option<fn() -> u64> = None;
 pub static mut REBOOT: Option<fn() -> bool> = None;
+/// Kernel-provided drawing-latency report; empty when no probe has run.
+pub static mut LATENCY: Option<fn() -> String> = None;
 
 fn meminfo() -> (usize, usize) {
     unsafe { MEMINFO.map(|hook| hook()).unwrap_or((0, 0)) }
@@ -67,4 +86,8 @@ fn uptime_millis() -> u64 {
 
 fn reboot() -> bool {
     unsafe { REBOOT.map(|hook| hook()).unwrap_or(false) }
+}
+
+fn latency_report() -> String {
+    unsafe { LATENCY.map(|hook| hook()).unwrap_or_default() }
 }

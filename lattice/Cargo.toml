@@ -24,3 +24,7 @@ ttf-noto-sans = "0.1"
 [target.'cfg(target_arch = "xtensa")'.dependencies]
 embedded-graphics = { workspace = true }
 spin = { workspace = true, features = ["spin_mutex", "once"] }
+# The ESP32 compositor shares Nitrogen's rectangle type with the display
+# driver, so a dirty region is described once and cannot drift between the
+# compositor and the transfer.
+nitrogen = { path = "../nitrogen", features = ["esp32"] }

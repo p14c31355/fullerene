@@ -46,6 +46,26 @@ pub fn enable_output(pin: u8) {
     }
 }
 
+/// Select a peripheral function for the pad and leave it as an output.
+///
+/// This is the IO_MUX "direct" route: on this board GPIO13/14 carry HSPID and
+/// HSPICLK on function 1, so the peripheral drives the pad without a GPIO-matrix
+/// entry. Input enable stays off, matching `enable_output`.
+pub fn enable_output_function(pin: u8, function: u32) {
+    let Some(offset) = io_mux_offset(pin) else {
+        return;
+    };
+    unsafe {
+        ((IO_MUX_BASE + offset as usize) as *mut u32)
+            .write_volatile((function << 12) | 2 << 10);
+        if pin < 32 {
+            (GPIO_ENABLE_W1TS as *mut u32).write_volatile(1 << u32::from(pin));
+        } else {
+            (GPIO_ENABLE1_W1TS as *mut u32).write_volatile(1 << u32::from(pin - 32));
+        }
+    }
+}
+
 /// Select GPIO function and enable the pad input path. Pins 34..39 are input
 /// only; all supported pins remain safe to call here.
 pub fn enable_input(pin: u8) {

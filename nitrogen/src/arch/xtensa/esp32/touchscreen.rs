@@ -1,10 +1,20 @@
 //! XPT2046 resistive-touch backend for the ESP32 carrier board.
 //!
-//! The controller uses a separate SPI transport from the LCD. Coordinates are
-//! normalized by calibration, but the absolute calibration is still provisional
-//! until the user performs a four-corner touch calibration.
+//! The controller uses a separate SPI transport from the LCD, and it stays
+//! bit-banged: it is specified for a ~2.5 MHz clock, its four signal pins are
+//! not the LCD's, and the LCD is what needs the peripheral. What changed here
+//! is the interface above the sampler - `press`/`release`/`move` are turned
+//! into Down/Move/Up events by the shared tracker in `nitrogen::input`, so the
+//! shell no longer does edge detection of its own.
+//!
+//! Coordinates are normalized by calibration, but the absolute calibration is
+//! still provisional until the user performs a four-corner touch calibration.
 
-use super::{board::BoardProfile, gpio};
+use super::{
+    board::{BoardProfile, DISPLAY_HEIGHT, DISPLAY_WIDTH},
+    gpio,
+};
+use crate::input::{PointerConfig, PointerEvent, PointerSample, PointerTracker};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TouchSample {
@@ -74,6 +84,11 @@ pub struct Xpt2046Touch {
     cs: u8,
     irq: u8,
     calibration: Calibration,
+    tracker: PointerTracker,
+    /// Count of device reads this object has performed, including the ones
+    /// taken between display chunks. The latency report uses it to prove that
+    /// input kept running while a flush was in flight.
+    samples_taken: u32,
 }
 
 impl Xpt2046Touch {
@@ -104,11 +119,60 @@ impl Xpt2046Touch {
                 mirror_y: false,
                 swap_xy: false,
             },
+            tracker: PointerTracker::new(PointerConfig::resistive_default()),
+            samples_taken: 0,
         }
     }
 
     pub fn set_calibration(&mut self, calibration: Calibration) {
         self.calibration = calibration;
+    }
+
+    pub fn tracker(&mut self) -> &mut PointerTracker {
+        &mut self.tracker
+    }
+
+    pub fn samples_taken(&self) -> u32 {
+        self.samples_taken
+    }
+
+    /// Cheap liveness test on the pen line.
+    ///
+    /// PENIRQ is active low and open-drain on this controller, so a single
+    /// pad read answers "is a finger down right now" without starting a
+    /// conversion. The display flush uses this to decide whether a full
+    /// sample is worth taking between chunks: idle frames pay one register
+    /// read per chunk instead of a full conversion sequence.
+    pub fn pen_active(&self) -> bool {
+        gpio::input(self.irq) == Some(false)
+    }
+
+    /// One device sample, mapped into surface coordinates.
+    ///
+    /// A released reading keeps `pressed = false` and its coordinates are
+    /// meaningless, so they are reported as zero.
+    pub fn sample(&mut self) -> PointerSample {
+        self.samples_taken = self.samples_taken.saturating_add(1);
+        let Some(raw) = self.read() else {
+            return PointerSample::released();
+        };
+        if !raw.pressed {
+            return PointerSample::released();
+        }
+        let (x, y) = self
+            .calibration
+            .map_to_screen(raw, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        PointerSample {
+            x,
+            y,
+            pressed: true,
+        }
+    }
+
+    /// Read the panel once and return the event, if any, that it completed.
+    pub fn poll(&mut self, now_ms: u32) -> Option<PointerEvent> {
+        let sample = self.sample();
+        self.tracker.update(sample, now_ms)
     }
 
     /// Read the touch controller once. The XPT2046 PENIRQ line is active low;
