@@ -349,7 +349,7 @@ pub fn runtime_tick_no_fb() {
         let frame_tsc = TSC_PER_MS
             .load(core::sync::atomic::Ordering::Relaxed)
             .saturating_mul(FRAME_INTERVAL_MS);
-        let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
+        let now_tsc = crate::arch::now_tsc();
         let (do_render, cursor_only) = RUNTIME_CONTEXT
             .runtime()
             .as_mut()
@@ -401,7 +401,7 @@ pub fn runtime_tick_no_fb() {
                     .load(core::sync::atomic::Ordering::Relaxed)
                     .saturating_mul(FRAME_INTERVAL_MS);
                 let last = LAST_RENDER_TSC.load(core::sync::atomic::Ordering::Relaxed);
-                let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
+                let now_tsc = crate::arch::now_tsc();
                 if !video_frame_due && now_tsc.wrapping_sub(last) < frame_tsc {
                     runtime.frame_due = true;
                     return (false, false);

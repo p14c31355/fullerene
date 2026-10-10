@@ -10,6 +10,7 @@ mod handler;
 mod queue;
 pub mod scancode;
 mod source;
+pub mod touch;
 pub mod tracing;
 
 pub use dispatcher::*;

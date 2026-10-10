@@ -127,6 +127,9 @@ pub fn init() {
                 table_descriptor(core::ptr::addr_of!(L2_3) as u64),
             );
         }
+        // Mark q: the L1/L2 identity tables and every user-space root are
+        // built; the register programming below commits them.
+        super::entry::ane_step_byte(b'q');
         // QEMU places its DTB at 0x44000000; Bramble's normal DRAM load
         // address is 0x80080000 (DRAM base plus the arm64 Image text offset).
         // Mapping through 0xffffffff keeps both entry contracts identity
@@ -147,11 +150,53 @@ pub fn init() {
             "isb",
             options(nostack)
         );
+        // Mark r: TTBR0/MAIR/TCR are programmed and the TLB is invalidated.
+        super::entry::ane_step_byte(b'r');
+        // The loader handed over with its caches in an unknown state and the
+        // entry shim cleared SCTLR.M only, so every access until now bypassed
+        // the caches while stale lines from the loader's own boot can still
+        // sit at any address this kernel is about to reuse. Drop the
+        // instruction side wholesale before the switch; the data side stays
+        // disabled below (C = 0, ANE only) so a first cacheable access cannot
+        // hit an unknown stale line - the measured flaky death lives exactly
+        // in this window (stepmarks13: count 6, between r and s).
+        asm!("ic iallu", "dsb sy", "isb", options(nostack));
+        // Mark t: the loader's instruction-cache state is gone; the SCTLR
+        // write is next.
+        super::entry::ane_step_byte(b't');
 
         let mut sctlr: u64;
         asm!("mrs {sctlr}, SCTLR_EL1", sctlr = out(reg) sctlr, options(nomem, nostack));
         sctlr &= !(1 << 19); // WXN would make the RW bootstrap blocks non-executable.
-        sctlr |= 1 | (1 << 2) | (1 << 12); // MMU, data cache, instruction cache.
+        #[cfg(fullerene_aarch64_ane)]
+        {
+            // 2026-10-04: data cache turned ON for the measurement. With C=0
+            // (uncached Normal) the kernel's byte stores to the private log
+            // block landed only on even addresses - the ZH/ZB probe read back
+            // "46 00 4C 44 45 00 ..." for the log's "FULLERENE..." (odd bytes
+            // stale), while the loader-side probe's own stores at the same
+            // addresses were clean. Cacheable write-back is the one variable
+            // that differs, so C=1 plus the tee_flush's clean is the fix test.
+            //
+            // 2026-10-07 (v232): the C=1 switch went in WITHOUT a data-side
+            // invalidate, so the loader's stale lines (and the C=0 era's)
+            // survived into the cacheable world. Observed consequence: the
+            // first cacheable write to a never-touched line crawls (tens of
+            // ms per line - the desktop's 24 KiB fill never finished within
+            // the boot's collection window; see BUG_JOURNAL 046 addendum 20).
+            // Invalidate the whole L1 data cache by set/way first - the
+            // data-side counterpart of the `ic iallu` above, same operand
+            // layout as the Linux `invalidate_dcache_all`.
+            // v237: parked under audit - after v232 every draw of the
+            // desktop images died pre-USB (v234-236, 0/7 draws) while v228
+            // (no invalidate) boots; the set/way operand math or an
+            // unpredictable clean/writeback is the prime suspect. Do not
+            // re-enable until the operand layout is verified against a
+            // primary source AND the draws behave.
+            invalidate_data_cache();
+            sctlr |= 1 << 2;
+        }
+        sctlr |= 1 | (1 << 12); // MMU and instruction cache only.
         asm!(
             "msr SCTLR_EL1, {sctlr}",
             "isb",
@@ -159,6 +204,9 @@ pub fn init() {
             options(nostack)
         );
         asm!("ic iallu", "dsb sy", "isb", options(nostack));
+        // Mark s: MMU and caches are enabled (SCTLR_EL1 written, I-cache
+        // invalidated) - the last statement of init.
+        super::entry::ane_step_byte(b's');
     }
 }
 
@@ -842,6 +890,55 @@ fn flush_translations() {
     }
 }
 
+/// Invalidate the whole data cache (by set/way, every data-cache level).
+///
+/// Faithful Rust port of the Linux arm64 `invalidate_dcache_all`
+/// (arch/arm64/mm/proc.S, 4.4): levels 0, 2, 4 ... are the D-cache levels;
+/// the set/way operand is `way << clz(way_max) | set << (line_words + 4)`.
+/// `dc cisw` cleans dirty lines out to the PoC before dropping them, so the
+/// loader's still-dirty data is not lost. Runs before SCTLR.C is set (v232:
+/// the C=1 switch went in without this, and the loader's stale lines made
+/// every first-touch cacheable store crawl - BUG_JOURNAL 046 addendum 20).
+unsafe fn invalidate_data_cache() {
+    use core::arch::asm;
+    unsafe {
+        asm!("dmb sy", options(nostack));
+        let clidr: u64;
+        asm!("mrs {}, clidr_el1", out(reg) clidr, options(nostack));
+        let loc = (clidr >> 24) & 7;
+        if loc == 0 {
+            return;
+        }
+        let mut level = 0u64;
+        while level < loc {
+            let ctype = (clidr >> (level * 3)) & 7;
+            if ctype >= 2 {
+                asm!("msr csselr_el1, {}", "isb", in(reg) level, options(nostack));
+                let ccsidr: u64;
+                asm!("mrs {}, ccsidr_el1", out(reg) ccsidr, options(nostack));
+                let set_shift = (ccsidr & 7) as u32 + 4;
+                let ways_max = ((ccsidr >> 3) & 0x3ff) as u32;
+                let sets_max = ((ccsidr >> 13) & 0x7fff) as u32;
+                let way_shift = (ways_max | 1).leading_zeros();
+                let mut way = ways_max as i64;
+                while way >= 0 {
+                    let mut set = sets_max as i64;
+                    while set >= 0 {
+                        let operand =
+                            ((way as u64) << way_shift) | level | ((set as u64) << set_shift);
+                        asm!("dc cisw, {}", in(reg) operand, options(nostack));
+                        set -= 1;
+                    }
+                    way -= 1;
+                }
+            }
+            level += 2;
+        }
+        asm!("msr csselr_el1, {}", in(reg) 0u64, options(nostack));
+        asm!("dsb sy", "isb", options(nostack));
+    }
+}
+
 fn table_descriptor(address: u64) -> u64 {
     (address & !0xfff) | DESC_VALID | DESC_TABLE
 }
@@ -881,23 +978,80 @@ fn page_descriptor(
     descriptor
 }
 
-fn is_mmio(physical: u64) -> bool {
-    const MMIO_RANGES: &[(u64, u64)] = &[
-        (0x0800_0000, 0x09ff_ffff),
-        (0x0010_0000, 0x001f_ffff),
-        (0x0080_0000, 0x009f_ffff),
-        (0x17a0_0000, 0x17c1_ffff),
-        (0x0a60_0000, 0x0a6f_ffff),
-        (0x1500_0000, 0x153f_ffff),
-        (0x0c20_0000, 0x0c3f_ffff),
-        (0x0c40_0000, 0x0e7f_ffff),
-    ];
+/// The active platform's Device aperture for the early identity map.
+///
+/// The tables live in the platform modules because the classification is a
+/// property of the SoC, not of the MMU: the same 2 MiB block can be a UART on
+/// one chip and DRAM on another.
+fn mmio_ranges() -> &'static [(u64, u64)] {
+    if cfg!(fullerene_aarch64_ane) {
+        super::platform::ane::MMIO_RANGES
+    } else if cfg!(fullerene_aarch64_bramble) {
+        super::platform::bramble::MMIO_RANGES
+    } else {
+        super::platform::qemu_virt::MMIO_RANGES
+    }
+}
+
+/// True when the 2 MiB identity block containing `physical` overlaps any
+/// Device range.
+fn in_mmio_ranges(ranges: &[(u64, u64)], physical: u64) -> bool {
     let block_end = physical.saturating_add(BLOCK_SIZE - 1);
-    if MMIO_RANGES
+    ranges
         .iter()
         .any(|(start, end)| physical <= *end && block_end >= *start)
-    {
-        return true;
+}
+
+fn is_mmio(physical: u64) -> bool {
+    in_mmio_ranges(mmio_ranges(), physical)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::platform;
+    use super::*;
+
+    #[test]
+    fn ane_aperture_is_device_and_ram_stays_normal() {
+        let ranges = platform::ane::MMIO_RANGES;
+        for address in [
+            0xfdf0_2000u64, // PL011 console - the first post-MMU write
+            0xe862_0000,    // DSS VG0
+            0xe865_a000,    // DSS WCH0
+            0xff10_0000,    // susb controller window
+            0xfff3_5000,    // CRG
+            0xffff_ffff,    // top of the 32-bit aperture
+        ] {
+            assert!(
+                in_mmio_ranges(ranges, address),
+                "{address:#x} must be Device on hi6250"
+            );
+        }
+        for address in [
+            0x3100_0000u64, // graphic carveout - the visible scan surface
+            0x01ae_0000,    // the kernel's own embedded payload island
+            0x0800_0000,    // plain RAM below 0xE000_0000 (legacy list entry)
+            0x8000_0000,    // second RAM bank
+            0x3490_0000,    // carveout region inside RAM
+            0x1234_5678,    // ordinary low RAM
+        ] {
+            assert!(
+                !in_mmio_ranges(ranges, address),
+                "{address:#x} must stay Normal on hi6250"
+            );
+        }
     }
-    false
+
+    #[test]
+    fn bramble_and_qemu_tables_keep_their_peripherals() {
+        for ranges in [
+            platform::bramble::MMIO_RANGES,
+            platform::qemu_virt::MMIO_RANGES,
+        ] {
+            assert!(in_mmio_ranges(ranges, 0x0098_8000), "SM7250 UART");
+            assert!(in_mmio_ranges(ranges, 0x17a0_0000), "SM7250 GICD");
+            assert!(in_mmio_ranges(ranges, 0x0900_0000), "QEMU PL011");
+            assert!(in_mmio_ranges(ranges, 0x0800_0000), "QEMU GICD");
+        }
+    }
 }

@@ -152,6 +152,26 @@ pub fn init_qcom_geni(base: u64) {
 }
 
 pub fn putc(byte: u8) {
+    // Tee first, device second: the durable log must exist even when the UART
+    // itself wedges (the failure this device keeps producing).
+    crate::blackbox::text_byte(byte);
+    // v174: every console byte also tends the loader watchdog. Narration is
+    // the densest non-storage activity, and unlike the timer-IRQ feed this
+    // works on boots where the timer never came up.
+    //
+    // v211: DISABLED on the ANE build. The launchd-entry stall's ELR sits
+    // inside this function (historically 0x1BFD1A4/0x1BFD1C0) and the ONLY
+    // ANE-side code after the ring tee is this SP805 read: on the ANE path
+    // the hardware UART is already skipped ("a stalled bus access cannot
+    // be bounded"), but the watchdog_tend() read/write at 0xe8a06000 was
+    // not. The main thread freezes on its next console byte right at the
+    // launchd entry (the ring's last line is "launchd: pre t=" with no
+    // newline), while the timer IRQ keeps running - the IRQ's own SP805
+    // feed is a write-only kick, so a read here is the one access class
+    // that can stall. The SP805 is still fed by the timer IRQ (beats % 8),
+    // the USB path and the storage loops (their own watchdog_tend calls).
+    #[cfg(all(fullerene_aarch64_ane, not(fullerene_ane_no_putc_wd_tend)))]
+    super::platform::ane::watchdog_tend();
     let uart_base = BASE.load(Ordering::Relaxed);
     match BACKEND.load(Ordering::Relaxed) {
         value if value == Backend::QcomGeni as u8 => unsafe {
@@ -167,12 +187,31 @@ pub fn putc(byte: u8) {
             write32(uart_base + SE_GENI_M_IRQ_CLEAR, M_TX_FIFO_WATERMARK);
             poll_tx_done(uart_base);
         },
-        _ => unsafe {
-            while read_volatile((uart_base + 0x18) as *const u32) & UART_FR_TXFF != 0 {
-                core::hint::spin_loop();
+        _ => {
+            // The ANE's PL011 window has no observable console attached, so
+            // the hardware half is best-effort everywhere. On the ANE build
+            // it is skipped entirely: a stalled bus access (an unclocked
+            // block - the v39 dwmmc lesson) cannot be bounded by a spin
+            // count, and the ring tee above already holds the byte.
+            // Evidence trail: the launchd-entry stall's ELR sits inside this
+            // function (0x1BFD1A4/0x1BFD1C0) and the v140 bounded-spin fix
+            // did not cure it (v143 photo), which points at the MMIO access
+            // itself rather than the wait.
+            #[cfg(not(fullerene_aarch64_ane))]
+            unsafe {
+                let mut spins = 0u32;
+                while read_volatile((uart_base + 0x18) as *const u32) & UART_FR_TXFF != 0 {
+                    spins += 1;
+                    if spins > 200_000 {
+                        break;
+                    }
+                    core::hint::spin_loop();
+                }
+                write_volatile(uart_base as *mut u32, byte as u32);
             }
-            write_volatile(uart_base as *mut u32, byte as u32);
-        },
+            #[cfg(fullerene_aarch64_ane)]
+            let _ = uart_base;
+        }
     }
 }
 
@@ -231,6 +270,16 @@ unsafe fn write32(address: usize, value: u32) {
     unsafe { write_volatile(address as *mut u32, value) };
 }
 
+/// Read the flag register (base+0x18) for diagnostics: bit 5 = TXFF (FIFO
+/// full - the bit the putc spin waits on), bit 3 = BUSY. The launchd-entry
+/// stall investigation samples this before and after a short write burst to
+/// tell "FIFO was already full before launchd" from "the burst filled it and
+/// the drain is dead".
+pub fn fr_state() -> u64 {
+    let uart_base = BASE.load(Ordering::Relaxed);
+    unsafe { read_volatile((uart_base + 0x18) as *const u32) as u64 }
+}
+
 pub fn puts(message: &str) {
     for byte in message.bytes() {
         if byte == b'\n' {
@@ -255,4 +304,18 @@ pub fn put_hex_value(value: u64) {
         });
     }
     putc(b'\n');
+}
+
+/// Eight hex digits and no newline: the compact single-line form the ANE
+/// one-photo status report uses for 32-bit registers, where two values plus
+/// labels must fit one 45-character console line.
+pub fn put_hex32(label: &str, value: u32) {
+    puts(label);
+    for shift in (0..8).rev() {
+        let nibble = ((value >> (shift * 4)) & 0xf) as u8;
+        putc(match nibble {
+            0..=9 => b'0' + nibble,
+            _ => b'a' + (nibble - 10),
+        });
+    }
 }

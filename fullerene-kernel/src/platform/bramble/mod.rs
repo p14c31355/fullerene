@@ -486,7 +486,7 @@ pub fn apply_usb_pm_qos(vote: UsbBusVote) -> UsbPmQosPolicy {
     let gicd = unsafe { USB_GICD_BASE };
     if gicd != 0 {
         unsafe {
-            let _ = super::gicv3::set_spi_usb_latency_policy(
+            let _ = super::common::gicv3::set_spi_usb_latency_policy(
                 gicd,
                 usb_controller_irq(),
                 policy.irq_affine,
@@ -1933,9 +1933,9 @@ pub fn set_usb_power_event_irq_enabled(enabled: bool) -> bool {
     }
     unsafe {
         if enabled {
-            super::gicv3::enable_spis(gicd, &[usb_power_event_irq()]);
+            super::common::gicv3::enable_spis(gicd, &[usb_power_event_irq()]);
         } else {
-            super::gicv3::disable_spis(gicd, &[usb_power_event_irq()]);
+            super::common::gicv3::disable_spis(gicd, &[usb_power_event_irq()]);
         }
     }
     true
@@ -2991,7 +2991,7 @@ pub fn init_interrupt_controller(gicd_base: Option<usize>, gicr_base: Option<usi
     } else {
         Some(usb_controller_irq())
     };
-    let gic_ready = super::gicv3::init(gicd, gicr, controller_irq);
+    let gic_ready = super::common::gicv3::init(gicd, gicr, controller_irq);
     unsafe {
         // DWC3 has five platform sources plus the Apps-SMMU global and up to
         // 80 context-bank fault lines. Keep the controller and SMMU fault
@@ -3043,7 +3043,7 @@ pub fn init_interrupt_controller(gicd_base: Option<usize>, gicr_base: Option<usi
         // child IRQ, so do not route its parent summary into the new GIC
         // owner. A role-changing cold-boot path must explicitly install the
         // child IRQ before adding this parent route.
-        super::gicv3::enable_spis(gicd, &spis[..count]);
+        super::common::gicv3::enable_spis(gicd, &spis[..count]);
     }
     if gic_ready {
         unsafe {
@@ -3647,6 +3647,22 @@ pub unsafe fn refresh_usb_qmp_power() -> bool {
     ok &= unsafe { send_usb_regulator_request(power.qmp_core, true) };
     ok
 }
+
+/// The early identity map's Device aperture: the shared list that served the
+/// Bramble (SM7250) and QEMU virt bring-ups (`mmu::is_mmio` before the
+/// per-platform split). ANE carries its own table
+/// (`platform::ane::MMIO_RANGES`) because several entries here name plain
+/// RAM on hi6250.
+pub const MMIO_RANGES: &[(u64, u64)] = &[
+    (0x0800_0000, 0x09ff_ffff),
+    (0x0010_0000, 0x001f_ffff),
+    (0x0080_0000, 0x009f_ffff),
+    (0x17a0_0000, 0x17c1_ffff),
+    (0x0a60_0000, 0x0a6f_ffff),
+    (0x1500_0000, 0x153f_ffff),
+    (0x0c20_0000, 0x0c3f_ffff),
+    (0x0c40_0000, 0x0e7f_ffff),
+];
 
 #[cfg(test)]
 mod tests {

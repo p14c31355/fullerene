@@ -2397,6 +2397,12 @@ pub(crate) fn init() {
     unsafe {
         *core::ptr::addr_of_mut!(VFS) = Some(Mutex::new(Vfs::new(Box::new(MemFileSystem::new()))));
     }
+    // v226: prove the assignment executed and record the static's identity.
+    #[cfg(fullerene_aarch64_ane)]
+    {
+        crate::blackbox::step_probe(b'B');
+        crate::blackbox::addr_probe(0x348d_e840, core::ptr::addr_of!(VFS) as u64);
+    }
     let unpacked = with_vfs(|vfs| unpack_initramfs(vfs, INITRAMFS)).flatten();
     if let Some(count) = unpacked {
         uart::puts("aarch64 fs: initramfs entries=");
@@ -7630,10 +7636,147 @@ pub(super) fn android_system_mounted() -> bool {
     .unwrap_or(false)
 }
 
+/// v252: public stamp point for the launchd era. `vfs_step` is private to
+/// `read_vfs_path`; launchd.rs's milestones go through this wrapper so the
+/// SMK trail covers boot + VFS + launchd in one durable line.
+#[cfg(fullerene_aarch64_ane)]
+pub(crate) fn vfs_step_mark(byte: u8) {
+    unsafe {
+        const BASE: usize = 0x348d_e800;
+        const CAP: u32 = 32;
+        let cnt = core::ptr::read_volatile(BASE as *const u32);
+        if cnt < CAP {
+            core::ptr::write_volatile((BASE + 4 + cnt as usize) as *mut u8, byte);
+            core::ptr::write_volatile(BASE as *mut u32, cnt + 1);
+        }
+    }
+}
+
 fn read_vfs_path(path: &str, destination: &mut [u8]) -> Result<usize, u64> {
+    /// v213/v215: append a VFS step-marker byte. v213 wrote into the shared
+    /// step-mark block (0x348df000) - dead on arrival: the boot's own stage
+    /// letters ('1','9','q','r','s','e','a','h','f','k','l','m','n','o','p')
+    /// already fill its 16 slots by main.rs:1183, so every VFS append
+    /// returned early (measured: the first SMK read showed the stage trail,
+    /// none of the '1'..'D' VFS markers). v215 uses a PRIVATE trail at
+    /// 0x348de800 - the documented 4 KiB gap between the text block
+    /// (ends 0x348de00c) and the step marks (0x348df000): [u32 count] then
+    /// up to 16 bytes.
+    #[cfg(fullerene_aarch64_ane)]
+    fn vfs_step(byte: u8) {
+        unsafe {
+            const BASE: usize = 0x348d_e800;
+            // v252: capacity 16 -> 32. The '1'..'D' prologue exactly filled 16,
+            // so every later marker (launchd-era, 'E'..) was silently dropped
+            // and the trail read as saturated "123456789aBCD"-class residue.
+            // The 4 KiB gap holds 4092 bytes; 32 is far inside it. The IRQ
+            // restamp reader (exceptions.rs) and this bound must agree.
+            const CAP: u32 = 32;
+            let cnt = core::ptr::read_volatile(BASE as *const u32);
+            if cnt < CAP {
+                core::ptr::write_volatile((BASE + 4 + cnt as usize) as *mut u8, byte);
+                core::ptr::write_volatile(BASE as *mut u32, cnt + 1);
+            }
+        }
+    }
+    // Fine-grained durable marks (ANE): the v146 boot stalled inside the VFS
+    // path lookup (find_fs_index_for_absolute_path, ELR frozen across
+    // refreshes). These pin the reached step by name so the next stall is
+    // cornered by name instead of by PC. Ring-only on the ANE build, so they
+    // cost nothing on the panel and cannot MMIO-stall.
+    #[cfg(fullerene_aarch64_ane)]
+    {
+        // v213/v215: non-text step markers. Every ring write in this region
+        // is a suspect for the launchd-era freeze (main thread dies 2 bytes
+        // into "vfs: resolve begin" while IRQ ring writes keep working).
+        // v215: the trail is PRIVATE at 0x348de800 (the shared step-mark
+        // block's 16 slots are exhausted by the boot's own stage letters
+        // before the VFS ever runs). Reset it so the trail is ours.
+        unsafe {
+            core::ptr::write_volatile(0x348d_e800 as *mut u32, 0);
+        }
+        vfs_step(b'1');
+        super::uart::puts("vfs: open begin\n");
+    }
+    // v170: the same milestone on the append-only photo ledger, so a single
+    // screen photo maps how far the boot is grinding through storage.
+    #[cfg(fullerene_aarch64_ane)]
+    {
+        vfs_step(b'2');
+        super::platform::ane_fb::event(b"VFS OPEN");
+        vfs_step(b'e');
+    }
     let read_result = with_vfs(|vfs| {
+        // Decompose the open: the v147 stall sat inside open_with_mount's
+        // internals, which does resolve_path -> find -> get_mut -> fs.open.
+        // Resolving first with a mark on each side tells allocator/Vec stalls
+        // (done missing = resolve) from lookup stalls (done present).
+        #[cfg(fullerene_aarch64_ane)]
+        {
+            vfs_step(b'3');
+            super::uart::puts("vfs: resolve begin\n");
+            vfs_step(b'4');
+            super::platform::ane_fb::event(b"VFS RESV");
+            vfs_step(b'5');
+            super::uart::put_hex32(
+                "vfs: t1=",
+                super::exceptions::TICK_NOW.load(core::sync::atomic::Ordering::Relaxed),
+            );
+            vfs_step(b'6');
+            super::uart::put_hex("vfs: heap used=", super::allocator::heap_used() as u64);
+            // v150 forensics: the heap is nearly empty yet the resolve still
+            // sticks, so dump the input path and replay the split here with a
+            // guard. 16 components is beyond any sane path; tripping it means
+            // the iterator itself never terminates.
+            super::uart::puts("vfs: path=");
+            let pb = path.as_bytes();
+            for &b in pb.iter().take(40) {
+                super::uart::putc(b);
+            }
+            super::uart::puts("\n");
+            vfs_step(b'7');
+            super::uart::put_hex("vfs: path len=", pb.len() as u64);
+            vfs_step(b'8');
+            super::uart::puts("vfs: pre-split\n");
+            vfs_step(b'9');
+            let mut it = path.split('/');
+            super::uart::puts("vfs: it made\n");
+            let first = it.next();
+            super::uart::puts("vfs: first next done\n");
+            super::uart::put_hex(
+                "vfs: first len=",
+                first.map(|f| f.len()).unwrap_or(0xDEAD) as u64,
+            );
+            let mut comps = 1u32;
+            for comp in it {
+                super::uart::puts("vfs: comp=");
+                for &b in comp.as_bytes().iter().take(20) {
+                    super::uart::putc(b);
+                }
+                super::uart::putc(b'\n');
+                comps += 1;
+                if comps > 16 {
+                    super::uart::puts("vfs: comp guard tripped\n");
+                    break;
+                }
+            }
+            super::uart::put_hex("vfs: ncomp=", comps as u64);
+            super::uart::puts("vfs: split replay done\n");
+        }
+        #[cfg(fullerene_aarch64_ane)]
+        vfs_step(b'a');
+        let _absolute = vfs.resolve_path(path);
+        #[cfg(fullerene_aarch64_ane)]
+        {
+            vfs_step(b'B');
+            super::uart::puts("vfs: resolve done\n");
+        }
         let (mount_index, local_file) = vfs.open_with_mount(path, 0).ok_or(ERR_NO_ENTRY)?;
+        #[cfg(fullerene_aarch64_ane)]
+        super::uart::put_hex("vfs: open ok mi=", mount_index as u64);
         let local_fd = local_file.fd;
+        #[cfg(fullerene_aarch64_ane)]
+        vfs_step(b'C');
         let result = (|| {
             let mut total = 0usize;
             while total < destination.len() {
@@ -7657,6 +7800,20 @@ fn read_vfs_path(path: &str, destination: &mut [u8]) -> Result<usize, u64> {
         let _ = vfs.close_at(mount_index, local_fd);
         result
     });
+    #[cfg(fullerene_aarch64_ane)]
+    {
+        vfs_step(b'D');
+        match &read_result {
+            Some(Ok(n)) => super::uart::put_hex("vfs: read n=", *n as u64),
+            _ => super::uart::puts("vfs: read err\n"),
+        }
+        // v252: post-'D' markers. 'D' closed the 16-slot era; these extend
+        // the trail into the launchd era. 'E' = read_vfs_path returning,
+        // 'F' = this VFS open fully done. launchd.rs stamps 'G' (L0) onward
+        // via its own read_kernel_path trails, so the SMK line covers the
+        // whole boot without stepping on the boot stage letters ('1'..'t').
+        vfs_step(b'E');
+    }
     match read_result {
         Some(Ok(length)) => Ok(length),
         Some(Err(error)) => Err(error),
@@ -7846,8 +8003,22 @@ where
     F: FnOnce(&mut Vfs) -> R,
 {
     unsafe {
-        (*core::ptr::addr_of!(VFS)).as_ref().map(|vfs| {
+        #[cfg(fullerene_aarch64_ane)]
+        crate::blackbox::addr_probe(0x348d_e850, core::ptr::addr_of!(VFS) as u64);
+        let static_ref = (*core::ptr::addr_of!(VFS)).as_ref();
+        #[cfg(fullerene_aarch64_ane)]
+        if static_ref.is_none() {
+            crate::blackbox::step_probe(b'N');
+        }
+        static_ref.map(|vfs| {
+            // v225: mark the blocking lock's entrance/exit. If 'l' appears
+            // but 'L' does not, the spin::Mutex acquisition is the freeze
+            // (the launchd-era stall: the closure's first probe never ran).
+            #[cfg(fullerene_aarch64_ane)]
+            crate::blackbox::step_probe(b'l');
             let mut guard = vfs.lock();
+            #[cfg(fullerene_aarch64_ane)]
+            crate::blackbox::step_probe(b'L');
             function(&mut guard)
         })
     }

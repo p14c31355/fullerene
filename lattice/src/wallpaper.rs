@@ -58,7 +58,21 @@ include!(concat!(env!("OUT_DIR"), "/wallpaper_beach.rs"));
 include!(concat!(env!("OUT_DIR"), "/wallpaper_mountain.rs"));
 include!(concat!(env!("OUT_DIR"), "/wallpaper_city.rs"));
 include!(concat!(env!("OUT_DIR"), "/wallpaper_fullerene.rs"));
+// The ANE kernel image must fit the stock loader's entry window (~11 MiB);
+// the two 6 MiB presets together blow it. Keep the default preset's data
+// (index 3, "fullerene") and swap the "fullerene-sharp" preset for a 1x1
+// stub on aarch64 so the preset indices stay identical across platforms
+// (persisted wallpaper modes keep pointing at the same preset).
+#[cfg(not(target_arch = "aarch64"))]
 include!(concat!(env!("OUT_DIR"), "/wallpaper_sharp.rs"));
+#[cfg(target_arch = "aarch64")]
+mod wallpaper_sharp_stub {
+    pub const SHARP_W: u32 = 1;
+    pub const SHARP_H: u32 = 1;
+    pub static SHARP_PIXELS: [u32; 1] = [0xFF20_2030];
+}
+#[cfg(target_arch = "aarch64")]
+use wallpaper_sharp_stub::{SHARP_H, SHARP_PIXELS, SHARP_W};
 
 static WALLPAPER_PRESETS: [WallpaperPreset; 5] = [
     WallpaperPreset {

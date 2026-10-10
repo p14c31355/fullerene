@@ -588,6 +588,46 @@ pub fn runstop_blips(count: u32) {
     }
 }
 
+/// Emit a sequence of Run/Stop pulses whose *widths* carry symbols.
+///
+/// Why a second transport instead of more blips: `runstop_blips_fast()` puts a
+/// small count (up to six) into each scheduled field, which is worth about 2.5
+/// bits, and a run is worth about 10 bits. A black box record is 32 bytes, so
+/// reading the box back through that transport would take roughly twenty-six runs
+/// per record - a black box nobody can read is not a black box. The host measures
+/// the width of every transition in its own usbmon capture, and both 0.062 s and
+/// 0.414 s have been measured on real runs, so the width has room to carry
+/// several bits per pulse. Which widths stay separable on this board and this
+/// cable is what `usb2-live-pulse-cal` measures; nothing here assumes a class
+/// count.
+///
+/// The link test happens **once, before the sequence**, exactly as
+/// `runstop_blips_fast()` does it. An earlier version tested it before every
+/// pulse and emitted exactly one: after the first stop/run pair the link is not
+/// back in U0 yet - the host is still re-enumerating - so every later pulse
+/// returned early and the ladder came out as a single mark. Six blips work in
+/// the existing transport precisely because it checks once.
+///
+/// `wdt_pet()` sits between pulses because a sequence of these is longer than the
+/// secure watchdog's window if nothing feeds it. Delays use `timer::delay_ms`
+/// rather than `readout_keepalive_delay_ms()`, which rounds whatever it is asked
+/// for to about two seconds and would destroy the very duration used as symbol.
+pub fn runstop_width_sequence(widths: &[u64], gap_ms: u64) {
+    unsafe {
+        let dsts = read(DSTS);
+        if dsts & DSTS_DEVCTRLHLT != 0 || (dsts >> 18) & 0xf != 0 {
+            return;
+        }
+        for width in widths {
+            let _ = run_stop_device_no_readback(false);
+            super::super::timer::delay_ms(*width);
+            let _ = run_stop_device_no_readback(true);
+            wdt_pet();
+            super::super::timer::delay_ms(gap_ms);
+        }
+    }
+}
+
 /// Fast Run/Stop transport for categorical readouts: 100 ms disconnected +
 /// 70 ms reconnected per pair. Six pairs fit in about 1.2 s. The status
 /// readback is intentionally skipped here to stay inside the secure-WDT
@@ -616,7 +656,7 @@ pub fn runstop_blips_fast(count: u32) {
 #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
 pub(super) unsafe fn enable_gadget_controller_irq() {
     unsafe {
-        let _ = super::super::platform::gicv3::init(
+        let _ = super::super::platform::common::gicv3::init(
             super::super::platform::bramble::GICD_BASE,
             super::super::platform::bramble::GICR_BASE,
             Some(super::super::platform::bramble::USB_DWC3_IRQ),

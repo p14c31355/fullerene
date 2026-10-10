@@ -97,23 +97,17 @@ pub trait Console: core::fmt::Write {
     fn scroll(&mut self);
 }
 
-pub mod boot_screen;
 pub mod color;
 pub mod constants;
-pub mod framebuffer;
-pub mod framebuffer_mapper;
-pub mod registers;
-pub mod setup;
 pub mod text;
-pub mod uefi;
+
+// x86 VGA/UEFI backends live in a whole directory, so the shared items above
+// stay free of per-line cfg.
+#[cfg(not(target_arch = "aarch64"))]
+pub mod x86_64;
+#[cfg(not(target_arch = "aarch64"))]
+pub use x86_64::*;
 
 pub use color::*;
 pub use constants::*;
-// VGA graphics modes
-pub use framebuffer::UefiFramebufferWriter;
-pub use framebuffer::*;
-pub use setup::{
-    detect_and_init_vga_graphics, detect_cirrus_vga, init_vga_graphics, init_vga_text_mode,
-    setup_cirrus_vga_mode,
-};
 pub use text::{Color, ColorCode, ScreenChar, TextBufferOperations};

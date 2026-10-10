@@ -37,6 +37,146 @@ Do not treat these values as hardware confirmation. Probe traces, chip IDs, and
 runtime responses before relying on them; update this table only with verified
 evidence.
 
+### Display transport, dirty regions, and touch events (2026-10-11)
+
+The LCD moved from bit-banged GPIO to the ESP32's HSPI (SPI2) peripheral, the
+dirty region now travels from the compositor to the transfer, and the touch
+controller produces events instead of raw samples.
+
+**Registers.** Every offset and bit position comes from ESP-IDF v5.3 rather
+than from memory: `reg_base.h` (`DR_REG_SPI2_BASE = 0x3ff64000`,
+`DR_REG_DPORT_BASE = 0x3ff00000`), `spi_reg.h`, `dport_reg.h`
+(`DPORT_PERIP_CLK_EN_REG` at 0xc0 with `DPORT_SPI2_CLK_EN` on bit 6),
+`io_mux_reg.h` (GPIO13 = HSPID and GPIO14 = HSPICLK on MCU_SEL 1) and
+`hal/esp32/include/hal/spi_ll.h` for the transaction shape
+(`usr_mosi_dbitlen = bitlen - 1`, little-endian W0..W15 staging, poll
+`SPI_CMD.USR` back to zero). The clock-divider search is a port of
+`spi_ll_master_cal_clock`, with one deliberate change: the requested frequency
+is treated as a ceiling, because a panel's timing limit is a spec and not a
+suggestion.
+
+**Layout.**
+
+| Piece | Where |
+| --- | --- |
+| HSPI transport, chunking, pacing | `nitrogen/src/arch/xtensa/esp32/spi.rs` |
+| Panel driver, rectangle flush | `nitrogen/src/arch/xtensa/esp32/display.rs` |
+| Shared rectangle arithmetic | `nitrogen/src/geometry.rs` |
+| Divider arithmetic | `nitrogen/src/spi_clock.rs` |
+| Pointer events and debounce | `nitrogen/src/input.rs` |
+| XPT2046 sampler to events | `nitrogen/src/arch/xtensa/esp32/touchscreen.rs` |
+| Dirty-region owner | `lattice/src/arch/xtensa/esp32/backend.rs` |
+| Wiring, drawn latency probe | `fullerene-kernel/src/arch/xtensa/esp32/runtime.rs` |
+
+**Why the flush no longer stalls input.** The peripheral shifts each 64-byte
+chunk without the CPU, and the driver calls back into the input path between
+chunks. That callback is a single pad read when the pen is idle and a full
+conversion when it is down, so the sampling rate is set by the chunk size
+rather than by the frame duration.
+
+**Timebase.** `time.rs` now programs the timer prescaler to 80 for a 1 MHz
+count instead of writing the value 1, which ESP-IDF documents as invalid
+("0 and 1 are not valid") while the tick accounting assumed a rate that
+follows from neither reading. One tick is one microsecond by construction, and
+the drawing-latency numbers are measured against it.
+
+**Verification status (measured on the board, 2026-10-11).** All three targets
+build (xtensa, x86_64-uefi, aarch64-ane) and the host suite covers the rectangle
+arithmetic, the divider search, the debounce state machine and the event queue.
+The device reports:
+
+```text
+PANEL TEST BARS                 four bars painted straight from the driver
+TIMER PROBE counter=advancing
+UART RULER bytes=1024 expected_us=88064 timer_us=45220 cycles=3617536 cpu_mhz=79
+TOUCH SELFTEST REPORTING
+  spi_hz=8000000 cpu_mhz_measured=79 clock=1us_timer
+  surface_fill_us=4725     (304x176 px)
+  full_flush_us=207274     bytes=153600
+  window_flush_us=144702   bytes=107008
+  marker_flush_us=468      bytes=288
+  pace_calls_per_full_frame=2400 input_samples_during_flush=26
+```
+
+Two things to read from that. The full frame transfers 153,600 bytes in 207 ms,
+which is the 8 MHz shift clock plus about 25% of per-chunk overhead - so the
+divider arithmetic is right and the ratio between a frame and a marker is the
+dirty-region path working. And input kept sampling 26 times *during* that
+transfer, which is the whole point of the paced flush.
+
+The UART ruler is not a time reference, incidentally: it writes into a FIFO and
+returns before the wire has drained, so it times the push, not the burst. It is
+kept because it cross-checks the cycle counter against the timer, and those two
+agree: 3,617,536 cycles over the 45,220 us the timer reports is 80 MHz, which is
+this chip's running CPU clock (not the 240 MHz in the chip description).
+
+### Touch: what the panel actually answered
+
+The pin table above is the profile's assumption. It is correct for this board -
+every IO_MUX offset was checked against `io_mux_reg.h` - but the *protocol* was
+wrong in three ways, each found on hardware:
+
+- The command bytes. A sweep of sixteen candidates with a finger held on the
+  panel (`touchscan`, or the `touchscan` shell command) showed channel 101
+  answering as 1024/1025 and channel 001 as 791 with the low bits at 00, while
+  the same channels with the low bits at 01 returned a constant near 50 and
+  never moved. The commands are `0xd0` for X and `0x90` for Y on this unit.
+- The frame length. The conversion frame is sixteen clocks - a leading zero, the
+  twelve result bits, three trailing zeros - read as a word and shifted down by
+  three. Taking twelve clocks straight after the command byte loses the low bit:
+  the panel centre measured 1024 where mid-scale is 2048.
+- The channel pairing. The conversion after a channel change belongs to the
+  previous channel, so an axis needs its own settling conversion first. The
+  earlier code alternated X and Y and averaged them together, which mixed the
+  two axes.
+
+Contact discrimination was also replaced: `z1 - z2` separates cleanly (nothing
+touching reads within a few counts of zero, a finger pulls them about 475
+apart), where the previous `z1 + 4095 - z2` sat near 4092 idle and 4570 pressed
+and so fired on an untouched panel.
+
+A fifth fault was in the shell rather than the panel: the boot self-test saw the
+idle axes never change and concluded the channel was silent, then suppressed
+every event. Contact is decided by the pressure discriminator, which is a direct
+measurement; requiring idle axis variation as well was an inference too far, and
+it is gone. The self-test still runs, as a diagnostic line.
+
+With those fixed, `read()` reports stable mid-scale axes, the tracker emits
+Down/Move/Up with coordinates that follow the finger, and a dense burst reads
+14,000 samples per second.
+
+The axes turned out to be **crossed** on this unit: moving the finger
+horizontally changes the raw Y reading. That is what made bottom-left and
+top-right appear exchanged, and it is not something a per-corner guess can see
+reliably. The fix is an on-screen four-point calibration (`touchcal4`): the
+display draws a crosshair, the operator taps it, the device records the raw
+reading for that *known* screen position, and the resolver in
+`nitrogen/src/touch_calibration.rs` derives the swap, the mirrors and the ranges
+from the four pairs. On this panel it reported:
+
+```text
+TOUCH CAL4 x_min=403 x_max=3429 y_min=602 y_max=3201 mirror_x=0 mirror_y=0 swap_xy=1
+```
+
+Since the four targets sit twenty pixels inside the panel, those spans cover
+279x199 screen pixels rather than the full 320x239, so the baked-in defaults
+extrapolate to the panel edges at the same counts per pixel (186..3646 and
+341..3462). With that mapping installed, taps land on the taskbar button that was
+actually pressed and the desktop switches application - the end-to-end check.
+
+Contact also gained hysteresis: a finger leaving the glass crosses a single
+threshold several times on the way out, and the shell saw eight Down/Up pairs in
+twenty milliseconds. The press floor is 250 and the release level 180.
+
+Shell commands: `touchscan` (sweep every control byte), `touchcal` (dense burst),
+`touchcal4` (on-screen four-point calibration).
+
+Two pre-existing build breakages were fixed to get here, both unrelated to the
+display work: `solvent` re-exported `runtime_context` on Xtensa without a cfg
+gate, `blackbox.rs` required 64-bit atomics that Xtensa does not have, and
+`petroleum` declared `graphics::x86_64::uefi` without re-exporting it, which
+broke the `bellows` PC build.
+
 ## InsydeH2O Firmware (June 2026)
 
 Running on real hardware with InsydeH2O UEFI firmware required three fixes:

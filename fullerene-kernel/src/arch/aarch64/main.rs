@@ -4,6 +4,8 @@ use fullerene_abi::boot::{self, BootArchitecture, BootInfo, BootPlatform};
 
 mod allocator;
 mod cpu;
+#[cfg(fullerene_aarch64_ane)]
+mod desktop;
 mod devices;
 #[cfg(fullerene_aarch64_bramble)]
 mod display;
@@ -23,6 +25,19 @@ mod task;
 pub(crate) mod timer;
 mod uart;
 mod ufs;
+
+/// Pump the ANE fastboot responder from the syscall boundary.
+///
+/// `launchd::run()` enters EL0 and never returns to the wait loop, so from
+/// that point nothing in the kernel drives `ane_usb_dev::service` and every
+/// bench read times out while the USB link stays enumerated. The user task
+/// crosses the SVC boundary constantly, so the responder gets pumped from
+/// here instead (the log hook is a no-op: during user-task execution the
+/// ring must carry boot markers, not USB chatter).
+#[cfg(fullerene_aarch64_ane)]
+fn ane_service_pump() {
+    platform::ane_usb_dev::service(|_label: &str, _value: u64| {});
+}
 // ── Why the USB test/simulation modules are *siblings* of `usb`, not inside it
 //
 // `usb_protocol`, `usb_regs`, `usb_dwc3_sim`, `usb_qemu_sim` and
@@ -98,13 +113,122 @@ fn make_boot_info(platform: BootPlatform, dtb_address: Option<u64>) -> BootInfo 
                 info.memory_map_size = (count * core::mem::size_of::<fdt::Region>()) as u64;
                 info.memory_map_descriptor_size = core::mem::size_of::<fdt::Region>() as u64;
             }
+
+            // Claim the black box region for this boot.
+            //
+            // Base and length come from the tree the bootloader actually handed
+            // us, matched by node name, and are never assumed: the box writes
+            // across a reboot, and this device's `/reserved-memory` also holds
+            // modem, PIL and CDSP windows, so being handed the wrong range would
+            // be a silent corruption of memory another component owns. If the
+            // name is absent the box simply stays disabled - its readout word
+            // reports that, rather than reporting a zero that would read as
+            // "nothing was recorded".
+            let mut reserved = [fdt::Region { base: 0, size: 0 }; 8];
+            // The ring's home is `ramoops_meta_region`, and it is deliberately a
+            // *within-boot* instrument: this region does not keep its contents across a
+            // reboot. The cross-boot copy of the sequence is the durable text log in the
+            // ramoops pmsg zone, which is where the measurement said persistence actually
+            // is.
+            let found = unsafe {
+                fdt::find_reserved_region_named(
+                    address,
+                    b"ramoops_meta_region",
+                    core::slice::from_raw_parts_mut(reserved.as_mut_ptr(), reserved.len()),
+                )
+            };
+            for region in reserved[..found.min(reserved.len())].iter() {
+                // The ring needs the header plus at least one record; asking for 4 KiB beyond
+                // the offset was wrong and rejected the very region it is pinned to (the meta
+                // region is exactly 0x1000, so `0x100 + 4096` never passed). The requirement
+                // lives in the module so the two cannot drift apart again.
+                if region.base == 0 || region.size < crate::blackbox::RING_MIN_BYTES {
+                    continue;
+                }
+                if crate::blackbox::init(region.base, region.size) {
+                    // arg0 carries the boot number this record belongs to, so a
+                    // *later* boot can read the ring and tell "this one is mine"
+                    // from "this one is the previous boot's". Without that, a
+                    // record that survived and a record written twice inside one
+                    // boot look identical - which is exactly the confusion the
+                    // first device run produced.
+                    crate::blackbox::record(
+                        crate::blackbox::CODE_BOOT,
+                        0,
+                        crate::blackbox::boots() as u64,
+                        region.base,
+                    );
+                    crate::blackbox::record(
+                        crate::blackbox::CODE_DT_RESERVED_REGION,
+                        0,
+                        region.size,
+                        found as u64,
+                    );
+                    // Only stop once a region has actually been claimed. The lookup is a prefix
+                    // match on the node name, so it returns every candidate and `init` rejects
+                    // the ones whose address is not the one this build was told about.
+                    break;
+                }
+            }
         }
+
+        // Arm the Android-readable mirror.
+        //
+        // Same discipline as the ring: the names are looked up in the tree the bootloader
+        // handed us and the base each resolves to is checked against the address this
+        // device's memory DTBO documents, so a renamed or moved region disables the mirror
+        // instead of writing into memory another component owns. Note that
+        // `alt_ramoops_region` contains `ramoops_region` as a substring, so both lookups can
+        // return the same region; the address check is what keeps them apart.
+        //
+        // This is the route that makes the box readable. The ramoops console zone is memory
+        // Android's own pstore driver reads after the next boot and presents as a file, and
+        // `adb` can read that file. Getting our records out through someone else's reader is
+        // what "readable" turned out to mean on this device, since our own ring does not
+        // survive the reboot.
+        let mut ramoops = [fdt::Region { base: 0, size: 0 }; 4];
+        // The reserved-memory node carrying the ramoops window is named per
+        // platform: Bramble's trees call it `ramoops_region`, while the
+        // ANE-LX2J tree calls it `pstore-mem` and points at it from its
+        // `/ramoops` node by phandle. The address check inside `init_pstore`
+        // is what still decides whether the region found is the one this
+        // build was told about.
+        let primary_name: &[u8] = if cfg!(fullerene_aarch64_ane) {
+            b"pstore-mem"
+        } else {
+            b"ramoops_region"
+        };
+        let primary_found = unsafe {
+            fdt::find_reserved_region_named(
+                address,
+                primary_name,
+                core::slice::from_raw_parts_mut(ramoops.as_mut_ptr(), ramoops.len()),
+            )
+        };
+        for region in ramoops[..primary_found.min(ramoops.len())].iter() {
+            crate::blackbox::init_pstore(region.base, region.size);
+        }
+        let mut alternate = [fdt::Region { base: 0, size: 0 }; 4];
+        let alt_found = unsafe {
+            fdt::find_reserved_region_named(
+                address,
+                b"alt_ramoops_region",
+                core::slice::from_raw_parts_mut(alternate.as_mut_ptr(), alternate.len()),
+            )
+        };
+        for region in alternate[..alt_found.min(alternate.len())].iter() {
+            crate::blackbox::init_pstore_alt(region.base, region.size);
+        }
+        crate::blackbox::publish_console();
     }
     info
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext) -> ! {
+    // Mark 6: the Rust entry is alive. The bootstrap's own marks stop at 5
+    // (EL1 configured); from here the marks follow this function's stages to
+    // the early-boot loop at 'c'.
     // The context lives at the top of the bootstrap stack. Copy it before
     // Rust starts using that stack for ordinary locals and call frames.
     let boot = entry::Aarch64BootContext::read(boot_context);
@@ -113,13 +237,93 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     let fdt_arg2 = boot.x2 as u64;
     let arg3 = boot.x3 as u64;
 
+    // First durable mark, ahead of every device access this boot performs.
+    //
+    // The ANE-LX2J has no console an outside observer can read, so the only
+    // channel a failed bring-up leaves behind is reserved RAM (its device tree
+    // carries a ramoops window; see `crate::blackbox`). Writing the mark before
+    // the console's clock gate and UART - the first register writes of the
+    // whole boot - is what lets a later boot tell "the loader entered us and
+    // the early bring-up died" from "the loader never entered us": an entry
+    // record exists, or nothing does.
+    #[cfg(fullerene_aarch64_ane)]
+    crate::blackbox::mark_entry();
+
+    // Carry the previous boot's bare-metal l1d USB trace into the black box.
+    //
+    // The l1d probe leaves 24 [step, value] entries at a fixed address in the
+    // same reserved window these marks live in. Its boot ends in a loader
+    // park, so nothing on the USB side can report what happened - this copy,
+    // taken before the console path can die, is what makes the failure point
+    // readable at all. Two entries per record: arg0/arg1 hold
+    // (step << 32 | value) each, 12 records for the 24 entries. Runs after
+    // mark_entry() so both the record ring and the text zone are armed, and
+    // before the clock gate/UART so it is on the surviving side of any
+    // console-path death.
+    #[cfg(fullerene_aarch64_ane)]
+    {
+        let trace = entry::StepMarks::L1D_TRACE_ADDRESS as *const u32;
+        for i in 0..12u32 {
+            let base = (i * 4) as usize;
+            let s0 = unsafe { core::ptr::read_volatile(trace.add(base)) } as u64;
+            let v0 = unsafe { core::ptr::read_volatile(trace.add(base + 1)) } as u64;
+            let s1 = unsafe { core::ptr::read_volatile(trace.add(base + 2)) } as u64;
+            let v1 = unsafe { core::ptr::read_volatile(trace.add(base + 3)) } as u64;
+            crate::blackbox::record(
+                crate::blackbox::CODE_L1D_TRACE,
+                i as u64,
+                (s0 << 32) | v0,
+                (s1 << 32) | v1,
+            );
+        }
+    }
+
+    // Tell the loader's BFM this boot reached the OS.
+    //
+    // The stock kernel writes STAGE_BOOTUP_END (250) to the PMIC bootup
+    // keypoint register from hisi_bootup_keypoint.c -
+    // BOOTUP_KEYPOINT_OFFSET = PMIC_HRST_REG1_ADDR(0) = PMIC reg 0x18C,
+    // byte 0xFFF34630 - as the OS half of the loader's boot chain-of-custody
+    // protocol. The loader reads it at its next start: any value but 250
+    // counts as an unfinished boot, and three of those escalate to the
+    // eRecovery rescue image. Fullerene never wrote it, so every boot looked
+    // unfinished to the BFM - the eRecovery landings of v100/v102/v105c came
+    // from there, not from any single crash. The PMIC cell is alive from
+    // power-on (no clock gate needed), so the write goes first, before the
+    // console: a crash later in this boot still leaves the loader a clean
+    // marker, and only a boot that dies before this line can count against us.
+    #[cfg(fullerene_aarch64_ane)]
+    {
+        platform::common::pmic::pmic_wr(0x18C, 250);
+        let rb = platform::common::pmic::pmic_rd(0x18C) as u64;
+        crate::blackbox::record(crate::blackbox::CODE_BOOT_KEYPOINT, 0, rb, 0);
+        // v174: feed the inherited loader watchdog before anything slow
+        // runs. The timer-IRQ feed only exists once exceptions::install()
+        // has run and the timer actually ticks; some boots demonstrably
+        // died 11-46 s after enumeration with no tick evidence, and the
+        // SP805 (programmed by the loader, counting down through our
+        // handoff) is the one always-running suspect. This early kick
+        // covers the whole pre-timer boot phase.
+        platform::ane::watchdog_tend();
+    }
+
     // Establish a compiled-in console before looking at any bootloader
     // pointer. A vendor trampoline can hand us an invalid or absent DTB;
     // touching that address before VBAR and UART are ready turns a useful
     // handoff failure into an invisible synchronous abort.
     let compiled_bramble = cfg!(fullerene_aarch64_bramble);
+    let compiled_ane = cfg!(fullerene_aarch64_ane);
+    if compiled_ane {
+        // The console's clock gate first: a loader that ran a console has it
+        // open already, but nothing guarantees that across a handoff, and a
+        // closed gate makes the very next step (the first PL011 write) the
+        // last thing this boot does. See platform::ane::open_uart_clock_gate.
+        platform::ane::open_uart_clock_gate();
+    }
     let early_uart_base = if compiled_bramble {
         platform::bramble::UART_BASE
+    } else if compiled_ane {
+        platform::ane::UART_BASE
     } else {
         platform::qemu_virt::UART_BASE
     };
@@ -129,6 +333,10 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         uart::init_at(early_uart_base as u64);
     }
     exceptions::install();
+    // Mark 7: the compiled-in console and the exception vectors are up - the
+    // first device accesses (the console's clock gate, then the UART register
+    // write) and the fault path all survived. A run whose marks stop at 6 died
+    // in exactly that step.
     #[cfg(fullerene_aarch64_bramble)]
     {
         // XBL/ABL's secure watchdog can expire while the normal path is
@@ -191,7 +399,11 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         .into_iter()
         .filter(|address| *address != 0 && *address % 8 == 0)
         .find(|address| fdt::inspect(*address).is_some())
-        .or_else(|| (!compiled_bramble).then_some(platform::qemu_virt::DTB_BASE));
+        // A compiled-in fallback exists only for QEMU virt, which places the
+        // DTB at a fixed address on its direct `-kernel` path. Bramble and the
+        // ANE-LX2J LK both supply theirs in x0, and on those a fallback would
+        // point into unrelated peripheral space rather than RAM.
+        .or_else(|| (!compiled_bramble && !compiled_ane).then_some(platform::qemu_virt::DTB_BASE));
     let qcom_uart = dtb_address.and_then(|address| {
         fdt::find_compatible(address, b"qcom,geni-debug-uart")
             .or_else(|| fdt::find_compatible(address, b"qcom,geni-uart"))
@@ -554,6 +766,8 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         },
         dtb_address,
     );
+    // Mark 8: the bootloader's tree has been walked and the black box (ring
+    // plus both pstore mirrors) has been claimed at the addresses it names.
     let gicd_base = gicd_region.map(|region| region.base as usize);
     let gicr_base = gicr_region.map(|region| region.base as usize);
     let uart_region = if bramble { qcom_uart } else { pl011_uart };
@@ -665,9 +879,16 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         }
         None => uart::puts("ufs: no active qcom,ufshc platform contract\n"),
     }
+    // Mark 9: the UFS contract stage returned (this stage only reads the
+    // tree; a stop at 8 means the death was in the DT walk or the black box).
+    unsafe { entry::ane_step_byte(b'9') };
 
     uart::puts("arch: aarch64, exception vectors: ready\n");
     uart::put_hex("currentel: ", exceptions::current_el() as u64);
+    // Mark b was retired for stepmarks16: the 9->e splitter proved its point
+    // twice (stepmarks13/14), and the record's 16 slots now cover the GIC
+    // window (marks o/p). The console output above still exercises the tee
+    // path before the MMU is up.
 
     #[cfg(fullerene_aarch64_qemu_usb_sim)]
     {
@@ -675,8 +896,43 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         cpu::semihost_exit(passed);
     }
 
+    // Mark c was retired with b (stepmarks16); the in-init q/r/t/s split
+    // below localises the flaky 9->e deaths: q = identity tables and user
+    // roots built, r = TTBR/MAIR/TCR written and the TLB invalidated,
+    // t = the loader's instruction cache dropped, s = SCTLR_EL1 flipped
+    // (MMU and instruction cache live, data cache left off on the ANE).
     mmu::init();
+    // ANE fingerprint: with our own identity map live, plant a known word at
+    // the private block's +0x20 so the next boot's screen probe (its ZK row
+    // reads this back) can tell whether the kernel's plain stores reach the
+    // region at all. The loader-side probe's own fingerprint already lands
+    // (its ZH row shows FTLX/FEED), so a missing KRNL here isolates the
+    // failure to the kernel's world.
+    #[cfg(fullerene_aarch64_ane)]
+    unsafe {
+        let p = 0x348d_0020 as *mut u32;
+        core::ptr::write_volatile(p, 0x4c4e_524b); // "KRNL" little-endian
+        core::ptr::write_volatile(p.add(1), 0x5445_5345); // "ESET"
+    }
+    // Mark d stays retired: the in-init r/s pair already brackets the
+    // SCTLR switch, so the post-return position is covered by e below.
     uart::puts("mmu: identity map and caches ready\n");
+    // Mark e: the post-MMU print survived.
+    unsafe { entry::ane_step_byte(b'e') };
+    // Mark a: the MMU is live (identity map, caches on).
+    unsafe { entry::ane_step_byte(b'a') };
+
+    // v278 REVERTED: an epoch mark written here (line ~922, before the
+    // blackbox's own init) garbled the responder's descriptors - v279 collected
+    // 'Љ'. step_probe is not safe this early in the ANE path, so the trail's
+    // per-boot reset stays where the blackbox is already live and the
+    // attribution problem is solved by the reader's KEEP_TRAIL instead.
+    #[cfg(fullerene_aarch64_ane)]
+    if option_env!("FULLERENE_ANE_KEEP_TRAIL").is_none() {
+        unsafe {
+            core::ptr::write_volatile(0x348d_e800 as *mut u32, 0);
+        }
+    }
 
     #[cfg(feature = "aarch64-user-launchd")]
     let mut allocator_ready = false;
@@ -709,20 +965,190 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         uart::puts("memory: no usable DTB map; frame allocator withheld\n");
     }
 
+    // The allocator-block marks (d, e) used to bracket this section; they are
+    // retired while the fine-grained h/q/r/s/t/i marks inside
+    // from_boot_info consume the record's 16-byte mark budget.
     allocator::smoke();
     uart::puts("allocator: bump heap ready\n");
 
-    if !timer::init() {
-        uart::puts("timer: CNTFRQ_EL0 is zero; refusing to use the timer\n");
-        loop {
-            cpu::wait_for_event();
+    // The ANE's loader can hand EL1 over with the generic counter gated
+    // (CNTFRQ_EL0 reads zero, or the count never advances), and the old
+    // "refuse to use the timer" path parked the boot right here - observed
+    // 2026-10-04 as the first stop after the MMU fix (record: ...9a).
+    // Measure when the counter is alive; proceed either way.
+    if timer::init() {
+        let before = timer::counter();
+        timer::delay_ms(10);
+        let elapsed = timer::counter().wrapping_sub(before);
+        uart::puts("timer: generic counter ready, ticks=");
+        uart::put_hex_value(elapsed);
+        // Host-timed measurement hook: the run is timed host-side from the
+        // flash to the fallback window, so pairing cntfrq + uptime here with
+        // the heartbeat lines at the end yields the real counter frequency.
+        uart::put_hex(" cntfrq=", timer::frequency());
+        uart::put_hex(" up_ms=", timer::uptime_us() / 1_000);
+    } else {
+        uart::puts("timer: CNTFRQ_EL0 is zero; running without the generic counter\n");
+    }
+    // Mark b used to sit here; it is temporarily retired in favour of the
+    // fine-grained h/i/j marks inside `from_boot_info` - the record's mark
+    // block holds 16 bytes and the bring-up is currently stopped well before
+    // this point (observed 2026-10-04: the run records end at a, h, or i).
+    // Re-add a mark here once the timer stage is being reached.
+
+    // The loader arms the SP805 watchdog for the boot attempt; the OS is
+    // expected to take it over. Report its state once (read-only) - the feed
+    // itself runs from the timer IRQ.
+    #[cfg(fullerene_aarch64_ane)]
+    {
+        let wd = platform::ane::watchdog_state();
+        uart::put_hex("ane: sp805 load=", wd.load as u64);
+        uart::put_hex(" value=", wd.value as u64);
+        uart::put_hex(" ctrl=", wd.control as u64);
+        uart::put_hex(" lock=", wd.lock as u64);
+    }
+
+    // The USB bring-up runs once here: the vendor sequence ported into
+    // platform::ane, reported on the console the same boot. Cross-boot
+    // handoff turned out to be impossible - the loader re-initialises DRAM
+    // every boot (measured six times) - so the writer must also be the
+    // reporter. DCTL is the critical readback: SftDiscon stayed cleared
+    // only if there is a real attach for the host to see.
+    /// The ANE console mirror the platform self-reports use (tee -> durable
+    /// log), shared by the USB bring-up report and the device-side service.
+    #[cfg(fullerene_aarch64_ane)]
+    fn ane_log(label: &str, value: u64) {
+        uart::put_hex(label, value);
+        uart::puts("\n");
+    }
+
+    #[cfg(fullerene_aarch64_ane)]
+    {
+        // Wipe canvas rows inherited from the previous (warm-reset) boot;
+        // stale lines must never masquerade as current evidence in a photo.
+        platform::ane_fb::clear();
+        // v273 ABLATION: every per-tick diagnostic paint goes through
+        // ane_fb::flush_row, which already early-returns on IRQ_QUIET. Setting
+        // it here removes ALL of the flush_row work (a full-row memcpy plus a
+        // cache_clean per channel and window - the cache maintenance is the
+        // suspect) without touching the pump, the meter, or the responder, so
+        // one collection prices the paints against the DWC2 access. The
+        // instruments go blind in this build only.
+        #[cfg(fullerene_aarch64_ane)]
+        if option_env!("FULLERENE_ANE_IRQ_NO_PAINT").is_some() {
+            platform::ane_fb::IRQ_QUIET.store(true, core::sync::atomic::Ordering::Relaxed);
+        }
+        // v268/v278: the per-boot trail reset lives at the top of the ANE path
+        // now (see the '@' epoch mark), because fs::init() is itself a trail
+        // writer and used to run before the reset.
+        // Readable copy of the bootup-keypoint write for the durable log
+        // (the binary ring record was taken at entry, before this console
+        // exists). Re-writing is idempotent; the readback proves the value.
+        platform::common::pmic::pmic_wr(0x18C, 250);
+        uart::put_hex("bkp: rb=", platform::common::pmic::pmic_rd(0x18C) as u64);
+        uart::puts("\n");
+        // The loader wrote the reset reason into PMIC reg 0x18B (0x01 =
+        // bootloader reset, 0x02 = recovery, 0x10 = cold boot; anything else
+        // means a watchdog fired). Painting it puts the cause of the LAST
+        // reset on the panel where a photo can reach it.
+        uart::put_hex(
+            "rr: pmic18b=",
+            platform::common::pmic::pmic_rd(0x18B) as u64,
+        );
+        uart::puts("\n");
+        platform::ane_fb::RST_REASON.store(
+            platform::common::pmic::pmic_rd(0x18B) as u64,
+            core::sync::atomic::Ordering::Relaxed,
+        );
+        platform::ane_fb::paint_hex_at(
+            17,
+            300,
+            b"RST",
+            platform::common::pmic::pmic_rd(0x18B) as u64,
+        );
+        platform::ane_fb::flush_panel();
+        let usb = platform::ane::usb_bringup();
+        uart::put_hex("usb: abb=", usb.abb as u64);
+        uart::put_hex(" ppll0=", usb.ppll0.0 as u64);
+        uart::put_hex("->", usb.ppll0.1 as u64);
+        uart::puts("\n");
+        uart::put_hex("usb: gusbcfg=", usb.core[0] as u64);
+        uart::put_hex(" dcfg=", usb.core[1] as u64);
+        uart::put_hex(" dctl=", usb.core[2] as u64);
+        uart::put_hex(" gintsts=", usb.core[3] as u64);
+        uart::puts("\n");
+        uart::put_hex("usb: phy0=", usb.phy[0] as u64);
+        uart::put_hex(" phy4=", usb.phy[1] as u64);
+        uart::put_hex(" phy8=", usb.phy[2] as u64);
+        uart::put_hex(" phyc=", usb.phy[3] as u64);
+        uart::puts("\n");
+        // Previous boot's dying words (the durable block survives reboots):
+        // the rows above the tail window show the last panic file/line, the
+        // only fault channel that needs no USB to read.
+        platform::ane_fb::report_previous_panic();
+        // Device-side USB: answer the host's control transfers now that the
+        // link is up (EP0 + descriptors; fastboot bulk is the next stage).
+        platform::ane_usb_dev::init(ane_log);
+        // The host enumerates from the moment the link is up: service the
+        // responder once before the storage work, and the storage waits
+        // service it too (see ane_dwmmc::spin_usb). Unanswered control
+        // requests piling up here were the v49/v52 "one request behind"
+        // enumeration break.
+        platform::ane_usb_dev::service(ane_log);
+        // Storage bring-up: phase A logged the loader's dwmmc1/CRG/PMIC
+        // state; phase B opens the clocks, releases the reset, powers the
+        // rails, then reads the controller identity (all painted on panel).
+        platform::ane_dwmmc::bringup(ane_log);
+        platform::ane_usb_dev::service(ane_log);
+        // eMMC (Arasan SDHCI @0xFF390000) phase 3: verify the inherited
+        // clocks/reset/rail, read the controller identity, run the vendor
+        // reset toggle + SDHCI software reset and clock re-init, then the
+        // first card commands (CMD0/CMD1).
+        platform::ane_emmc::probe(ane_log, 3);
+        // v197: attach only now - the whole bring-up above ran with the
+        // device soft-disconnected (usb_bringup step 10), so the host's
+        // fresh enumeration meets an armed responder and the live
+        // timer-IRQ pump instead of racing them. The old flow attached
+        // early and ~half the boots enumerated garbled ("Љ") or never.
+        // v210: the deferred attach returns to this site (the v208 experiment
+        // that moved it after the GIC/timer bring-up is REVERTED: it did not
+        // fix the first-read timeouts, and the longer IRQ-less pre-attach
+        // window only widened the exposure).
+        platform::ane::usb_attach();
+        // Do not read DWC2 registers before ENUMDONE: the v184/v185
+        // instrument showed that even diagnostic reads can disturb the
+        // first enumeration. Keep the pre-desktop snapshot below gated.
+        // Keep the attach visible to the timer-side recovery state machine.
+        // This is deliberately separate from SETUP_SEEN: a host can be
+        // physically connected while the very first descriptor request is
+        // lost, and that case must still reach the no-button loader reset.
+        platform::ane_usb_dev::mark_attached();
+        // v199: stamp the attach tick for the enumeration sentinel.
+        platform::ane_usb_dev::ATTACH_BEAT.store(
+            exceptions::tick_count(),
+            core::sync::atomic::Ordering::Relaxed,
+        );
+        ane_log("usb: attach=", 1);
+        // Do not hold the boot thread in a pre-GIC polling loop here.  The
+        // timer/GIC path is the proven responder pump; one immediate pass
+        // handles a request already latched, then the normal IRQ service owns
+        // later descriptor traffic.  The full-screen panel remains gated on
+        // ENUMDONE below so it cannot compete with the first read.
+        platform::ane_usb_dev::service(ane_log);
+        // If a host reset/ENUMDONE was already latched, the panel is now safe
+        // to paint. Otherwise leave the canvas alone until a later boot stage;
+        // USB has priority over the diagnostic repaint.
+        if platform::ane_usb_dev::usb_enumerated() {
+            platform::ane_fb::report(&usb, ane_log);
+            platform::ane_usb_dev::service(ane_log);
         }
     }
-    let before = timer::counter();
-    timer::delay_ms(10);
-    let elapsed = timer::counter().wrapping_sub(before);
-    uart::puts("timer: generic counter ready, ticks=");
-    uart::put_hex_value(elapsed);
+    // The usb report above is the newest text in the private block and sits
+    // behind plain stores; the loader's reset comes long after the last
+    // allocator flush, so the cache must drain now or the report dies with
+    // the boot. tee_flush is safe to call repeatedly (appends only new bytes).
+    #[cfg(fullerene_aarch64_ane)]
+    crate::blackbox::tee_flush();
 
     // The UFS platform/storage backend is a Bramble build opt-in. Flasks
     // enables the read-only attempt for `--android-init` images; the direct
@@ -779,24 +1205,126 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     // be live before launchd: native SLEEP and event deadlines are scheduler
     // waits, not architectural-counter spin loops. QEMU follows the same
     // ordering even though it has no physical Bramble handoff to perform.
+    // Mark o: about to bring up the interrupt controller. The ANE's is a
+    // memory-mapped GIC-400 (`arm,cortex-a9-gic`); the QEMU path's `msr
+    // ICC_*` sequence is an undefined instruction on this CPU and was the
+    // first post-timer death (stepmarks15: exception ELR at the msr).
+    unsafe { entry::ane_step_byte(b'o') };
     if bramble {
         platform::bramble::init_interrupt_controller(gicd_base, gicr_base);
+    } else if cfg!(fullerene_aarch64_ane) {
+        platform::ane::init_interrupt_controller(gicd_base, gicr_base);
     } else {
         platform::qemu_virt::init_interrupt_controller(gicd_base, gicr_base);
     }
+    // Mark p: the interrupt controller came back.
+    unsafe { entry::ane_step_byte(b'p') };
     timer::arm_ms(1);
     exceptions::enable_irqs();
     timer::mark_irq_ready();
 
     #[cfg(feature = "aarch64-user-launchd")]
     if allocator_ready {
+        // v229: the desktop (solvent + lattice) takes the canvas before the
+        // user task starts. The launchd's VFS work can park for good; the
+        // desktop paint makes the screen carry the result either way.
+        //
+        // v298: the v283-v297 production path (predesktop config wait +
+        // enumeration watchdog) killed every unattended boot: the host's
+        // first draw runs -110/-71 retries for 20-90 s, the bounded wait
+        // abandoned EP0 mid-dance, the watchdog's reconnect tore D+ down
+        // under the live host session, and the boot panicked to the loader.
+        // The byte-exact v280 reproduction (see BUG_JOURNAL) proved the
+        // reliable shape: NO predesktop wait, NO enumeration watchdog —
+        // the historical flow attach -> service -> desktop ->
+        // usb_reenumerate() -> service -> launchd, where the reenumerate
+        // D+ drop/raise is the DESIGNED second enumeration edge and the
+        // boot thread parks on its slow DCTL read while the timer-IRQ pump
+        // answers the host. Restore that flow for the production path and
+        // keep the HISTORICAL gate as the same-sequence alias.
+        #[cfg(fullerene_aarch64_ane)]
+        // v277: close the responder's duty window. The handoff is behind us,
+        // so from here the timer IRQ stops touching DWC2 and the boot thread
+        // owns the CPU for the storage probe, the desktop and the launchd -
+        // the phases the pump used to starve.
+        // v286: only close it when the host actually configured the device.
+        // The v285 boot sat in the loader forever: with no host on the other
+        // end the bounded wait timed out at 5 s with config=0, the window
+        // then closed anyway, and from that point NOTHING serviced the
+        // responder (the watchdog disarmed with the closed window and the
+        // boot thread never returns to service()) - the device stopped
+        // answering fastboot entirely. The window now stays open until the
+        // handoff is real; a config=0 timeout keeps the pump running so the
+        // device stays answerable to a late host.
+        #[cfg(fullerene_aarch64_ane)]
+        if option_env!("FULLERENE_ANE_PUMP_WINDOW").is_some()
+            && platform::ane_usb_dev::usb_config_was_1()
+        {
+            platform::ane::usb_pump_window(false);
+        }
+        #[cfg(fullerene_aarch64_ane)]
+        {
+            // v300: reorder the production flow around the proven v280 shape.
+            // v297 measured: with the desktop ON, the post-DESKTOP
+            // reenumerate always lands mid-enumeration of the host's second
+            // draw and the garbled-string state sticks for the whole boot.
+            // The v280 sequence raises the second edge BEFORE the long CPU
+            // work, so the fresh enumeration is answered by the timer pump
+            // while nothing else runs. Do the same here: reenumerate FIRST,
+            // then hand the canvas to the desktop renderer. The
+            // HISTORICAL_NO_RECONNECT / FORCE_POST_RECONNECT knobs keep
+            // their A/B roles.
+            if (option_env!("FULLERENE_ANE_HISTORICAL_USB_SEQUENCE") == Some("1")
+                && option_env!("FULLERENE_ANE_HISTORICAL_NO_RECONNECT") != Some("1"))
+                || option_env!("FULLERENE_ANE_FORCE_POST_RECONNECT") == Some("1")
+                || (option_env!("FULLERENE_ANE_HISTORICAL_USB_SEQUENCE").is_none()
+                    && option_env!("FULLERENE_ANE_NO_POST_RECONNECT").is_none())
+            {
+                platform::ane::usb_reenumerate();
+            }
+            platform::ane_usb_dev::service(ane_log);
+            if option_env!("FULLERENE_ANE_SKIP_DESKTOP") != Some("1") {
+                desktop::bring_up();
+            }
+            platform::ane_usb_dev::service(ane_log);
+            if platform::ane_usb_dev::usb_enumerated() {
+                ane_log(
+                    "usb: dctl-after-desktop=",
+                    platform::ane_usb_dev::dctl_snapshot() as u64,
+                );
+            }
+        }
+        uart::putc(b'.');
+        uart::putc(b'.');
+        uart::put_hex32(
+            "launchd: pre t=",
+            exceptions::TICK_NOW.load(core::sync::atomic::Ordering::Relaxed),
+        );
+        uart::puts("launchd: calling run\n");
+        #[cfg(fullerene_aarch64_ane)]
+        platform::ane_fb::event(b"LAUNCH RUN");
         launchd::run();
     } else {
         uart::puts("launchd: allocator unavailable; refusing to start userspace\n");
     }
 
+    // Mark c used to sit here (see the mark-b note above for why the late
+    // marks are temporarily retired).
     uart::puts("aarch64 early boot complete; waiting for timer irq / USB events\n");
+
+    // stepmarks18: one line that separates a pre-IRQ abort from an abort
+    // inside the IRQ handler in the log tail.
+    uart::puts("ane: entering wait loop\n");
     loop {
+        // Serve the device-side USB control transfers in the same loop.
+        // The wait loop already wakes on the timer IRQ (the watchdog feed),
+        // so one poll pass per wake keeps the host's transfers answered.
+        #[cfg(fullerene_aarch64_ane)]
+        platform::ane_usb_dev::service(ane_log);
+        // The panel doubles as the debug channel: repaint the fastboot strip
+        // whenever its state changed, so a photo shows the last exchange.
+        #[cfg(fullerene_aarch64_ane)]
+        platform::ane_fb::draw_fb_diag(&platform::ane_usb_dev::diag());
         // The controller-IRQ A/B gives the DWC3 SPI exclusive ownership of
         // the event ring.  Its exception path calls usb::poll() after the
         // GIC acknowledges that SPI; polling here as well would consume the
@@ -961,6 +1489,11 @@ fn init_bramble_usb_handoff() -> bool {
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
+    // Durable note FIRST: if the console write below ever blocks, the log
+    // still carries the panic's source location.
+    if let Some(location) = info.location() {
+        crate::blackbox::panic_text(location.line() as u64, location.column() as u64);
+    }
     uart::puts("fullerene aarch64 panic\n");
     if let Some(location) = info.location() {
         uart::puts("panic: file=");
@@ -968,5 +1501,12 @@ fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
         uart::put_hex("panic: line=", location.line() as u64);
         uart::put_hex("panic: column=", location.column() as u64);
     }
-    cpu::wait_forever();
+    // Do not park: reset straight into the loader's fastboot (reason
+    // BOOTLOADER). Parking lets the watchdog reset us without a reason,
+    // which feeds the loader's boot-fail counter and eventually its
+    // recovery fallback; landing in fastboot instead lets the window
+    // catcher reflash the device with no key combo. The catcher has an
+    // 8-hour window armed during the work sessions.
+    uart::puts("panic: resetting into loader fastboot\n");
+    platform::ane_usb_dev::panic_reset_to_bootloader();
 }

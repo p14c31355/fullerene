@@ -61,16 +61,30 @@ pub fn uptime_us() -> u64 {
 pub fn delay_ms(milliseconds: u64) {
     let ticks = ticks_for_duration(frequency(), milliseconds, 1_000);
     let start = counter();
+    // A counter that never advances must not park the boot. Cap the spin far
+    // beyond any real delay (2^26 iterations of spin_loop is seconds even on
+    // the slowest core this kernel targets); a capped return shows up as an
+    // implausible tick delta in the caller's print.
+    let mut spins: u64 = 0;
     while counter().wrapping_sub(start) < ticks {
         core::hint::spin_loop();
+        spins += 1;
+        if spins > (1 << 26) {
+            return;
+        }
     }
 }
 
 pub fn delay_us(microseconds: u64) {
     let ticks = ticks_for_duration(frequency(), microseconds, 1_000_000);
     let start = counter();
+    let mut spins: u64 = 0;
     while counter().wrapping_sub(start) < ticks {
         core::hint::spin_loop();
+        spins += 1;
+        if spins > (1 << 26) {
+            return;
+        }
     }
 }
 

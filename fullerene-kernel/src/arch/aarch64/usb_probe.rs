@@ -1,6 +1,18 @@
 #![no_std]
 #![no_main]
 #![feature(alloc_error_handler)]
+extern crate alloc;
+// The black box lives at the package's `src/` root and is referred to from
+// `usb/live_digit_words.rs` as `crate::blackbox`, so every crate root that pulls
+// the usb tree in has to declare it. This probe binary is one of them; without
+// this line the probe build fails with "cannot find `blackbox` in the crate root"
+// and the harness reports the whole run as `build-or-audit-failure`.
+#[path = "../../adb_wire.rs"]
+mod adb_wire;
+#[path = "../../blackbox.rs"]
+mod blackbox;
+#[path = "../../cdc_acm.rs"]
+mod cdc_acm;
 
 use core::{
     alloc::{GlobalAlloc, Layout},
@@ -337,8 +349,10 @@ global_asm!(
          movk x11, #{entry_2}, lsl #32\n\
          movk x11, #{entry_3}, lsl #48\n\
          sub x10, x0, x11\n\
-         adr x8, __rela_dyn_start\n\
-         adr x9, __rela_dyn_end\n\
+         adrp x8, __rela_dyn_start\n\
+         add x8, x8, :lo12:__rela_dyn_start\n\
+         adrp x9, __rela_dyn_end\n\
+         add x9, x9, :lo12:__rela_dyn_end\n\
      1:\n\
          cmp x8, x9\n\
          b.hs 2f\n\
@@ -499,7 +513,10 @@ extern "C" fn usb_probe_irq() {
             usb::handle_platform_irq(interrupt);
             if interrupt == platform::bramble::usb_typec_parent_irq() {
                 unsafe {
-                    platform::gicv3::disable_spis(platform::bramble::GICD_BASE, &[interrupt]);
+                    platform::common::gicv3::disable_spis(
+                        platform::bramble::GICD_BASE,
+                        &[interrupt],
+                    );
                 }
             }
         } else {
@@ -1311,7 +1328,7 @@ fn run_ep0_signal_probe(signal_smmu_code: u32, signal_link_state: bool, gadget_r
     }
     // Re-run the GIC sweep: this polling branch bypasses the success-path sweep, and stray ABL IRQs
     // would reboot mid-observation.
-    let _ = platform::gicv3::init(
+    let _ = platform::common::gicv3::init(
         platform::bramble::GICD_BASE,
         platform::bramble::GICR_BASE,
         None,
@@ -2900,6 +2917,12 @@ extern "C" fn usb_probe_entry(dtb_address: u64, fallback_dtb_address: u64) -> ! 
         usb::init_usb2_handoff()
     };
     usb::trace_marker(usb::TRACE_PROBE_WATCHDOG, 0x494E_4146); // "INAF"
+    // Bracket stage 8 (selector `usb2-live-pollbracket`): the handoff call
+    // returned. Emitted before every gate between here and
+    // `run_ep0_signal_probe`, so a silent stage 8 (with stage 7 fired inside the
+    // handoff) means the call never came back. The bracket contract lives in
+    // `usb/poll.rs`.
+    usb::probe_bracket_mark(8);
     // Preserve direct-only failure attribution: no signal rescue or bare
     // pull-up publication after the selected initializer returned false.
     // "PSTA" stage markers into the retained trace so they are crate-independent.
@@ -2993,7 +3016,7 @@ extern "C" fn usb_probe_entry(dtb_address: u64, fallback_dtb_address: u64) -> ! 
         #[cfg(fullerene_aarch64_usb_gadget_handoff_probe)]
         {
             // Exercise post-controller GIC/USB-SPI ownership like normal Bramble entry.
-            let _ = platform::gicv3::init(
+            let _ = platform::common::gicv3::init(
                 platform::bramble::GICD_BASE,
                 platform::bramble::GICR_BASE,
                 // Direct handoff normally owns the event ring from the
@@ -3009,7 +3032,7 @@ extern "C" fn usb_probe_entry(dtb_address: u64, fallback_dtb_address: u64) -> ! 
             );
             #[cfg(fullerene_aarch64_usb_probe_irq_power)]
             unsafe {
-                platform::gicv3::enable_spis(
+                platform::common::gicv3::enable_spis(
                     platform::bramble::GICD_BASE,
                     &[platform::bramble::USB_PWR_EVENT_IRQ],
                 );
@@ -3019,7 +3042,7 @@ extern "C" fn usb_probe_entry(dtb_address: u64, fallback_dtb_address: u64) -> ! 
                 fullerene_aarch64_usb_probe_irq_typec_role
             ))]
             unsafe {
-                platform::gicv3::enable_spis(
+                platform::common::gicv3::enable_spis(
                     platform::bramble::GICD_BASE,
                     &[platform::bramble::usb_typec_parent_irq()],
                 );
@@ -3027,7 +3050,7 @@ extern "C" fn usb_probe_entry(dtb_address: u64, fallback_dtb_address: u64) -> ! 
             #[cfg(fullerene_aarch64_usb_probe_irq_pdc)]
             unsafe {
                 let _ = platform::bramble::configure_usb_pdc_irqs();
-                platform::gicv3::enable_spis_with_triggers(
+                platform::common::gicv3::enable_spis_with_triggers(
                     platform::bramble::GICD_BASE,
                     &[
                         (platform::bramble::USB_PDC_DP_HS_PARENT_IRQ, true),
@@ -3039,11 +3062,11 @@ extern "C" fn usb_probe_entry(dtb_address: u64, fallback_dtb_address: u64) -> ! 
             #[cfg(fullerene_aarch64_usb_probe_irq_smmu)]
             unsafe {
                 let resources = platform::bramble::usb_resources();
-                platform::gicv3::enable_spis(
+                platform::common::gicv3::enable_spis(
                     platform::bramble::GICD_BASE,
                     &resources.smmu_context_irqs[..resources.smmu_context_irq_count],
                 );
-                platform::gicv3::enable_spis(
+                platform::common::gicv3::enable_spis(
                     platform::bramble::GICD_BASE,
                     &[resources.smmu_global_irq],
                 );

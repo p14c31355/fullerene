@@ -1,5 +1,7 @@
+#[cfg(not(target_arch = "aarch64"))]
 use crate::page_table::allocator::BitmapFrameAllocator;
 use core::cell::UnsafeCell;
+#[cfg(not(target_arch = "aarch64"))]
 use x86_64::VirtAddr;
 
 pub const BOOT_CODE_PAGES: u64 = 16384;
@@ -17,11 +19,49 @@ pub const MAX_DESCRIPTOR_PAGES: u64 = 134_217_728; // 512 GiB / 4096
 pub const MAX_SYSTEM_MEMORY: u64 = 512 * 1024 * 1024 * 1024u64;
 pub const UEFI_COMPAT_PAGES: u64 = 16383;
 
+#[cfg(not(target_arch = "aarch64"))]
 pub const HIGHER_HALF_OFFSET: VirtAddr = VirtAddr::new(0xFFFF_8000_0000_0000);
+#[cfg(not(target_arch = "aarch64"))]
 pub const TEMP_VA_FOR_DESTROY: VirtAddr = VirtAddr::new(0xFFFF_A000_0000_0000);
+#[cfg(not(target_arch = "aarch64"))]
 pub const TEMP_VA_FOR_CLONE: VirtAddr = VirtAddr::new(0xFFFF_9000_0000_0000);
 
+#[cfg(not(target_arch = "aarch64"))]
 pub type BootInfoFrameAllocator = BitmapFrameAllocator;
+
+/// aarch64 (the ANE desktop port): the registry holds a function-pointer
+/// adapter because the ANE's physical frame allocator lives in the kernel
+/// (the DSM memory-map allocator), not in petroleum's x86 bitmap. The API
+/// mirrors the x86 path so the shared page_buf code is unchanged.
+#[cfg(target_arch = "aarch64")]
+pub struct AneFrameAllocator {
+    allocate: fn(usize) -> Option<u64>,
+    free: fn(u64, usize),
+}
+
+/// Error from the ANE frame allocator adapter (no contiguous run available).
+#[cfg(target_arch = "aarch64")]
+#[derive(Debug, Clone, Copy)]
+pub struct AneAllocError;
+
+#[cfg(target_arch = "aarch64")]
+impl AneFrameAllocator {
+    pub fn new(allocate: fn(usize) -> Option<u64>, free: fn(u64, usize)) -> Self {
+        Self { allocate, free }
+    }
+
+    /// Allocate `pages` contiguous 4 KiB frames; returns the physical base.
+    pub fn allocate_contiguous_frames(&mut self, pages: usize) -> Result<u64, AneAllocError> {
+        (self.allocate)(pages).ok_or(AneAllocError)
+    }
+
+    pub fn free_contiguous_frames(&mut self, start: u64, pages: usize) {
+        (self.free)(start, pages);
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
+pub type BootInfoFrameAllocator = AneFrameAllocator;
 
 // Global accessor for BootInfoFrameAllocator (deadlock-free, single-threaded kernel context)
 struct SyncUnsafeCell<T> {

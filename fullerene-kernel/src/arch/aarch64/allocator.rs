@@ -14,7 +14,10 @@ use super::fdt;
 // the bounded virtual filesystems resident at the same time. 256 KiB was
 // enough for the original launchd probe but made a valid initramfs fail as
 // soon as the property-service protocol handler grew past that boundary.
-const HEAP_SIZE: usize = 512 * 1024;
+// 8 MiB since the storage-stack bring-up mounts real gigabytes-scale
+// filesystems (f2fs/ext4) during boot: a 512 KiB heap OOM-reset the box
+// when the v100 probe mounted the 20 GB userdata partition.
+const HEAP_SIZE: usize = 32 * 1024 * 1024;
 pub const PAGE_SIZE: u64 = 4096;
 const MAX_FRAME_RANGES: usize = 8;
 const FIXED_RESERVED_RANGES: usize = 4;
@@ -33,11 +36,66 @@ struct BumpAllocator {
 
 unsafe impl Sync for BumpAllocator {}
 
+/// Heap usage for the durable log (the v148 stall sat inside resolve_path's
+/// Vec/String allocations; this tells exhaustion from corruption at a
+/// glance). The bump cursor is monotonic, so this is bytes-ever-allocated.
+pub fn heap_used() -> usize {
+    ALLOCATOR.next.load(Ordering::Relaxed)
+}
+
 #[global_allocator]
 static ALLOCATOR: BumpAllocator = BumpAllocator {
     next: AtomicUsize::new(0),
 };
 
+/// Print a step, then push the RAM tee into the pmsg zone immediately so the
+/// screen reader can see exactly how far the allocator entry got.
+fn trace(msg: &str) {
+    super::uart::puts(msg);
+    crate::blackbox::tee_flush();
+}
+
+/// The one-photo status report for the ANE port: the surviving marks and the
+/// CPU identity, in two short lines. Each line is flushed to the durable log
+/// as soon as it is printed. `stepmarks14` measured why no peripheral reads
+/// live here: the USB windows (0xff100000/0xff200000) are clock-gated by the
+/// loader at handoff, and a read of one stalls the bus - the boot died
+/// between the h mark and this report (count 0x0B, right at the first
+/// `read32`). Register reads over a bus this kernel does not own yet belong
+/// to the USB bring-up phase, not to early boot. The marks block is read
+/// through the same `entry::StepMarks` definition its writer uses.
+#[cfg(fullerene_aarch64_ane)]
+fn report() {
+    use super::entry::{STEP_MARKS_CAPACITY, StepMarks};
+    use super::uart::{put_hex32, putc, puts};
+
+    let marks = StepMarks::ADDRESS as *const StepMarks;
+    puts("R:M=");
+    let magic = unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*marks).magic)) };
+    let count = unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*marks).count)) };
+    let count = if magic == StepMarks::MAGIC {
+        count.min(STEP_MARKS_CAPACITY as u32)
+    } else {
+        putc(b'?');
+        0
+    };
+    for index in 0..count as usize {
+        let byte = unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*marks).bytes[index])) };
+        putc(byte);
+    }
+    puts("\n");
+    crate::blackbox::tee_flush();
+
+    // CPU identity only - both are `mrs` reads, no bus traffic.
+    let sctlr: u64;
+    unsafe { core::arch::asm!("mrs {}, sctlr_el1", out(reg) sctlr, options(nomem, nostack)) };
+    let cntfrq: u64;
+    unsafe { core::arch::asm!("mrs {}, cntfrq_el0", out(reg) cntfrq, options(nomem, nostack)) };
+    put_hex32("R:V=", sctlr as u32);
+    put_hex32(" F=", cntfrq as u32);
+    puts("\n");
+    crate::blackbox::tee_flush();
+}
 unsafe impl GlobalAlloc for BumpAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let base = unsafe { core::ptr::addr_of_mut!(HEAP_STORAGE.0) as usize };
@@ -165,12 +223,27 @@ impl PhysicalFrameAllocator {
         {
             return None;
         }
+        unsafe { super::entry::ane_step_byte(b'h') };
+        // MMU and caches are up by now: flush the RAM tee into the pmsg zone
+        // instead of touching the pstore machinery on every console byte far
+        // earlier in the boot.
+        trace("alloc: enter\n");
+        #[cfg(fullerene_aarch64_ane)]
+        report();
+        crate::blackbox::tee_flush();
+        unsafe { super::entry::ane_step_byte(b'f') };
         let count = (info.memory_map_size as usize)
             .checked_div(core::mem::size_of::<fdt::Region>())?
             .min(MAX_FRAME_RANGES);
+        trace("alloc: count ok\n");
+        // Mark g was retired (2026-10-04 evening) when the mmu q/r/s split
+        // took the record's 16-slot budget; the trace line stays for the
+        // log context a photo shows.
         let regions = unsafe {
             core::slice::from_raw_parts(info.memory_map_address as *const fdt::Region, count)
         };
+        trace("alloc: slice ok\n");
+        // Mark i was retired with g (see the note at count ok above).
         let mut allocator = Self {
             regions: [AddressRange::EMPTY; MAX_FRAME_RANGES],
             region_count: 0,
@@ -182,6 +255,7 @@ impl PhysicalFrameAllocator {
             released_count: 0,
             shared: [SharedFrame::EMPTY; MAX_SHARED_FRAMES],
         };
+        // Mark j was retired with g (see the note at count ok above).
 
         // The linker image, DTB, and fixed USB DMA/trace sections must not be
         // handed to a future page-table or userspace allocator.
@@ -211,6 +285,19 @@ impl PhysicalFrameAllocator {
             core::ptr::addr_of!(__ufs_dma_start) as u64,
             core::ptr::addr_of!(__ufs_dma_end) as u64,
         ));
+        unsafe { super::entry::ane_step_byte(b'k') };
+        // The ANE diagnostic tail: the FTLX log block (blackbox) and the
+        // mark/scratch page at 0x348DF000 live in an unused RAM tail that is
+        // in no reserved-memory node. stepmarks20's six-minute run proved
+        // that the frame allocator otherwise owns the page: it was handed out
+        // to the long-running timer/task work and the log read-out fell back
+        // to the stale pmsg banner. The zones are append-only diagnostics,
+        // so reserve the whole 64 KiB and keep it out of the pool for good.
+        #[cfg(fullerene_aarch64_ane)]
+        allocator.push_reserved(
+            AddressRange::new(crate::blackbox::TEXT_BLOCK_BASE, 0x1_0000)
+                .unwrap_or(AddressRange::EMPTY),
+        );
         if info.fdt_address != 0 {
             let mut reserved_regions = [fdt::Region { base: 0, size: 0 }; MAX_RESERVED_RANGES];
             let reserved_count =
@@ -221,6 +308,10 @@ impl PhysicalFrameAllocator {
                 );
             }
         }
+        // The allocator-side l/m/n duplicates were retired here:
+        // fdt.rs's find_reserved_memory_regions now owns those three
+        // letters (walk entry, node scratch, walk return), so one letter
+        // narrates exactly one position again.
         if let Some(header) = fdt::inspect(info.fdt_address) {
             allocator.push_reserved(
                 AddressRange::new(info.fdt_address, header.total_size as u64)
@@ -278,6 +369,48 @@ impl PhysicalFrameAllocator {
                 continue;
             }
             return Some(candidate);
+        }
+        None
+    }
+
+    /// Allocate `pages` consecutive 4 KiB frames and return the physical base.
+    ///
+    /// Carves a run straight from the region cursor (the single-frame
+    /// `next_frame` walk cannot express a run), stepping over anything the
+    /// reserved list covers. The bounded released list is deliberately not
+    /// consulted: a contiguous run must not be stitched together from holes.
+    /// Backs the petroleum frame-allocator adapter (`AneFrameAllocator`) that
+    /// `PageBuf` uses for the desktop's 10 MiB back buffer.
+    pub fn allocate_contiguous_frames(&mut self, pages: usize) -> Option<u64> {
+        if pages == 0 {
+            return None;
+        }
+        let bytes = (pages as u64).checked_mul(PAGE_SIZE)?;
+        while self.region_index < self.region_count {
+            let range = self.regions[self.region_index];
+            let start = align_up(self.cursor.max(range.start))?;
+            let end = start.checked_add(bytes)?;
+            if end > range.end {
+                self.region_index += 1;
+                self.cursor = self
+                    .regions
+                    .get(self.region_index)
+                    .map(|next| next.start)
+                    .unwrap_or(0);
+                continue;
+            }
+            let mut blocked_until = start;
+            for reserved in self.reserved.iter().take(self.reserved_count) {
+                if reserved.start < end && start < reserved.end {
+                    blocked_until = blocked_until.max(reserved.end);
+                }
+            }
+            if blocked_until > start {
+                self.cursor = blocked_until;
+                continue;
+            }
+            self.cursor = end;
+            return Some(start);
         }
         None
     }

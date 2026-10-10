@@ -1,4 +1,4 @@
-use super::*;
+use crate::UEFI_SYSTEM_TABLE;
 use crate::common::{
     EfiSystemTable, FULLERENE_FRAMEBUFFER_CONFIG_TABLE_GUID, FullereneFramebufferConfig,
 };

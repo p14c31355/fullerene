@@ -256,6 +256,10 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gctl_sofitpsync_clear)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gctl_pwrdnscale_2)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_ep0_initial_512)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_ane_adb_protocol)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_ane_marks_uart_only)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_ane_no_timer)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_ane_adb_protocol)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_dcfg_superspeed)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_dcfg_fullspeed)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_dcfg_lowspeed)");
@@ -381,6 +385,7 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_probe_irq_pdc)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_probe_irq_smmu)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_bramble)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_ane)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_entry_halt_probe)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_pullup_probe)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_halt_probe)");
@@ -439,6 +444,33 @@ fn main() {
         fs::write(&linker_script, aarch64_linker_script(&platform)).unwrap();
         if platform == "bramble" {
             println!("cargo:rustc-cfg=fullerene_aarch64_bramble");
+        }
+        if platform == "ane" {
+            println!("cargo:rustc-cfg=fullerene_aarch64_ane");
+        }
+        if env::var_os("FULLERENE_ANE_ADB_PROTOCOL").is_some() {
+            // Flip the ANE responder interface from fastboot (0x03) to the ADB
+            // class (0x01) so a host `adb` claims it. Experimental: whether
+            // the fastboot client still matches 0x01 is the open question.
+            println!("cargo:rustc-cfg=fullerene_ane_adb_protocol");
+        }
+        if env::var_os("FULLERENE_ANE_MARKS_UART_ONLY").is_some() {
+            // Bisection build: launchd marks go to the ring only, skipping
+            // the fb paint/flush the v145 boot stuck inside (ELR 0x1BE6C54).
+            println!("cargo:rustc-cfg=fullerene_ane_marks_uart_only");
+        }
+        if env::var_os("FULLERENE_ANE_NO_PUTC_WD_TEND").is_some() {
+            // v211 experiment: drop the per-console-byte SP805 read
+            // (watchdog_tend) from uart::putc. The launchd-entry stall's ELR
+            // sits inside putc and the ring tee is followed by this MMIO
+            // read on the ANE path - the one access that can stall a bus
+            // (unbounded by design). The timer IRQ (beats % 8), the USB
+            // path and the storage loops keep feeding the SP805.
+            println!("cargo:rustc-cfg=fullerene_ane_no_putc_wd_tend");
+        }
+        if env::var_os("FULLERENE_ANE_NO_TIMER").is_some() {
+            // Bisection build: the GIC delivers no timer PPI (the v153 test).
+            println!("cargo:rustc-cfg=fullerene_ane_no_timer");
         }
         if env::var_os("FULLERENE_AARCH64_USB_PULLUP_PROBE").is_some() {
             println!("cargo:rustc-cfg=fullerene_aarch64_usb_pullup_probe");
@@ -2358,6 +2390,15 @@ fn aarch64_linker_script(platform: &str) -> String {
         // text offset is 0x80000, and the generated 64-byte Image header is
         // immediately before the Rust payload.
         "0x80080040"
+    } else if platform == "ane" {
+        // ANE-LX2J (Kirin 659): the LK's Android boot image header says
+        // `kernel_addr = 0x00480000`, i.e. the decompressed Image is placed
+        // there and entered at its first byte. The generated 64-byte header
+        // occupies 0x00480000..0x00480040, so the Rust payload links at
+        // 0x00480040. The image stays position independent; this value only
+        // has to match what the entry stub computes the relocation delta
+        // against (see `entry::LINK_ENTRY`).
+        "0x00480040"
     } else {
         "0x42000040"
     };

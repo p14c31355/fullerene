@@ -21,10 +21,6 @@ spin = { workspace = true, features = [
   "mutex",
   "spin_mutex",
 ] }
-x86_64 = { workspace = true, features = [
-  "instructions",
-  "abi_x86_interrupt",
-] }
 linked_list_allocator = "0.10"
 once_cell = { version = "1.19", default-features = false, features = ["alloc", "race"] }
 embedded-graphics = { workspace = true }
@@ -41,6 +37,13 @@ gimli = { version = "0.33.0", default-features = false }
 goblin = { workspace = true, features = ["pe32", "pe64"] }
 embassy-futures = { version = "0.1", default-features = false }
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+
+# x86-only deps (the aarch64 desktop port uses the portable subset only).
+[target.'cfg(not(target_arch = "aarch64"))'.dependencies]
+x86_64 = { workspace = true, features = [
+  "instructions",
+  "abi_x86_interrupt",
+] }
 
 [lib]
 name = "petroleum"

@@ -150,6 +150,28 @@ impl Default for RuntimeContext {
 
 pub static RUNTIME_CONTEXT: RuntimeContext = RuntimeContext::new();
 
+/// Logical input orientation.  Zero is the legacy landscape behaviour.
+static SCREEN_ORIENTATION: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+pub fn set_screen_orientation(orientation: lattice::common::ScreenOrientation) {
+    let value = match orientation {
+        lattice::common::ScreenOrientation::Landscape => 0,
+        lattice::common::ScreenOrientation::Portrait => 1,
+        lattice::common::ScreenOrientation::ReverseLandscape => 2,
+        lattice::common::ScreenOrientation::ReversePortrait => 3,
+    };
+    SCREEN_ORIENTATION.store(value, core::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn screen_orientation() -> lattice::common::ScreenOrientation {
+    match SCREEN_ORIENTATION.load(core::sync::atomic::Ordering::Relaxed) {
+        1 => lattice::common::ScreenOrientation::Portrait,
+        2 => lattice::common::ScreenOrientation::ReverseLandscape,
+        3 => lattice::common::ScreenOrientation::ReversePortrait,
+        _ => lattice::common::ScreenOrientation::Landscape,
+    }
+}
+
 /// Mutable desktop runtime state protected by the crate's runtime lock.
 pub struct RuntimeState {
     pub desktop: Desktop,

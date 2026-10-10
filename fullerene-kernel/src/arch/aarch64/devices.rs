@@ -53,6 +53,8 @@ const DEVICE_ID_SDMMC0: u32 = 4;
 const DEVICE_ID_SDMMC1: u32 = 5;
 const DEVICE_ID_QEMU_UART: u32 = 6;
 const DEVICE_ID_TOUCH: u32 = 7;
+const DEVICE_ID_ANE_TOUCHSCREEN: u32 = 8;
+const DEVICE_ID_ANE_I2C2: u32 = 9;
 
 // A user buffer cannot be used as a UFS DMA target: the UTP contract only
 // covers the fixed, cache-maintained arena owned by the storage backend.
@@ -169,6 +171,30 @@ pub(crate) fn init(usb_ready: bool, dtb_address: Option<u64>) {
                 b"synaptics,dsx-i2c",
                 device_class::INPUT,
                 DEVICE_ID_TOUCH,
+            );
+        }
+        // The ANE active DT also contains a Huawei ts_kit description for an
+        // FTS-compatible device at I2C address 0x38 (chip id 0x54, 1080x2280).
+        // The local vendor tree has no matching FTS/ts_kit implementation, so
+        // retain this as inventory evidence only; do not probe or reset it.
+        // The older vendor-tree Synaptics bus-1/0x70 description is not active
+        // ANE evidence and must not be used as a live configuration.  Publish
+        // the DT node as an input capability even before transport exists;
+        // inventory must not claim that it is usable.
+        // The node has no controller `reg` window, so its resource remains
+        // empty rather than inventing an MMIO address from the child address.
+        if cfg!(fullerene_aarch64_ane) {
+            add_platform_device(
+                address,
+                b"hisilicon,designware-i2c",
+                device_class::OTHER,
+                DEVICE_ID_ANE_I2C2,
+            );
+            add_platform_device(
+                address,
+                b"huawei,touchscreen",
+                device_class::INPUT,
+                DEVICE_ID_ANE_TOUCHSCREEN,
             );
         }
     }

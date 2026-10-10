@@ -223,6 +223,14 @@ mod aarch64_runtime;
 #[cfg(target_arch = "aarch64")]
 pub(crate) use aarch64_runtime::timer;
 
+// The black box is architecture-independent: it only needs volatile accesses,
+// an explicit cache clean on aarch64 and a region the caller has verified. The
+// aarch64 module tree refers to it as `crate::blackbox`, so it has to be declared
+// in every crate root that pulls that tree in.
+pub mod adb_wire;
+pub mod blackbox;
+pub mod cdc_acm;
+
 // Module declarations
 // ── Drivers (storage, GPU, network) ───────────────────────────────
 #[cfg(not(target_arch = "aarch64"))]

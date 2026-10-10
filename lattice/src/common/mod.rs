@@ -82,6 +82,50 @@ pub struct Point {
     pub y: i32,
 }
 
+/// Logical screen orientation shared by desktop and phone shells.
+///
+/// Coordinates are transformed around the framebuffer rectangle rather than
+/// by rotating the final scanout.  This lets touch, pointer, hit-testing, and
+/// window placement use the same logical coordinate space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScreenOrientation {
+    Landscape,
+    Portrait,
+    ReverseLandscape,
+    ReversePortrait,
+}
+
+impl ScreenOrientation {
+    /// Map a point from physical framebuffer coordinates to logical ones.
+    pub const fn map_point(self, point: Point, width: u32, height: u32) -> Point {
+        let max_x = width.saturating_sub(1) as i32;
+        let max_y = height.saturating_sub(1) as i32;
+        match self {
+            Self::Landscape => point,
+            Self::Portrait => Point {
+                x: max_y - point.y,
+                y: point.x,
+            },
+            Self::ReverseLandscape => Point {
+                x: max_x - point.x,
+                y: max_y - point.y,
+            },
+            Self::ReversePortrait => Point {
+                x: point.y,
+                y: max_x - point.x,
+            },
+        }
+    }
+
+    /// Logical dimensions after applying this orientation.
+    pub const fn logical_size(self, width: u32, height: u32) -> (u32, u32) {
+        match self {
+            Self::Landscape | Self::ReverseLandscape => (width, height),
+            Self::Portrait | Self::ReversePortrait => (height, width),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChromeHit {
     None,
@@ -692,5 +736,48 @@ mod tests {
         ));
         assert_eq!(app_grid_route(4), Some(AppRoute::Settings));
         assert_eq!(app_grid_route(7), Some(AppRoute::Installer));
+    }
+
+    #[test]
+    fn orientation_maps_physical_corners_into_logical_space() {
+        let top_left = Point { x: 0, y: 0 };
+        let bottom_right = Point { x: 639, y: 479 };
+
+        assert_eq!(
+            ScreenOrientation::Portrait.map_point(top_left, 640, 480),
+            Point { x: 479, y: 0 }
+        );
+        assert_eq!(
+            ScreenOrientation::Portrait.map_point(bottom_right, 640, 480),
+            Point { x: 0, y: 639 }
+        );
+        assert_eq!(
+            ScreenOrientation::ReversePortrait.map_point(top_left, 640, 480),
+            Point { x: 0, y: 639 }
+        );
+        assert_eq!(
+            ScreenOrientation::ReversePortrait.map_point(bottom_right, 640, 480),
+            Point { x: 479, y: 0 }
+        );
+    }
+
+    #[test]
+    fn orientation_swaps_logical_dimensions_only_for_portrait() {
+        assert_eq!(
+            ScreenOrientation::Landscape.logical_size(640, 480),
+            (640, 480)
+        );
+        assert_eq!(
+            ScreenOrientation::Portrait.logical_size(640, 480),
+            (480, 640)
+        );
+        assert_eq!(
+            ScreenOrientation::ReverseLandscape.logical_size(640, 480),
+            (640, 480)
+        );
+        assert_eq!(
+            ScreenOrientation::ReversePortrait.logical_size(640, 480),
+            (480, 640)
+        );
     }
 }

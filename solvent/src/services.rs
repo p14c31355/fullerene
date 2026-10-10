@@ -15,22 +15,14 @@ pub fn register_service(service: Box<dyn Service>) {
     SERVICES.lock().push(service);
 }
 
-#[cfg(not(nitrogen_no_iwlwifi))]
+#[cfg(all(target_arch = "x86_64", not(nitrogen_no_iwlwifi)))]
 pub use crate::network_manager::register_wifi_service;
-
+/// Wi-Fi action queue: x86-only until the ANE Wi-Fi bring-up lands.
+#[cfg(target_arch = "x86_64")]
 #[allow(dead_code)]
 pub enum WifiAction {
     Connect(bonder::wifi::Ssid, Option<String>),
 }
 
+#[cfg(target_arch = "x86_64")]
 pub static WIFI_ACTION_QUEUE: Mutex<Vec<WifiAction>> = Mutex::new(Vec::new());
-
-pub struct NetworkSnapshot {
-    pub aps: Vec<lattice::network_menu::ApDisplay>,
-    pub status: lattice::network_menu::NetStatus,
-}
-
-pub static NETWORK_SNAPSHOT: Mutex<NetworkSnapshot> = Mutex::new(NetworkSnapshot {
-    aps: Vec::new(),
-    status: lattice::network_menu::NetStatus::NoDevice,
-});

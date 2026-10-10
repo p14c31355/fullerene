@@ -80,6 +80,25 @@ pub enum MouseButton {
     Other(u8),
 }
 
+/// Lifecycle phase of one touchscreen contact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TouchPhase {
+    Down,
+    Move,
+    Up,
+    Cancel,
+}
+
+/// One logical touchscreen contact in framebuffer coordinates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TouchContact {
+    pub id: u8,
+    pub x: i32,
+    pub y: i32,
+    pub pressure: u16,
+    pub phase: TouchPhase,
+}
+
 /// Keyboard key code (with modifier-aware variants).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum KeyCode {
@@ -180,6 +199,7 @@ pub enum InputEvent {
         dx: i32,
         dy: i32,
     },
+    Touch(TouchContact),
     KeyDown(KeyCode),
     KeyUp(KeyCode),
 }

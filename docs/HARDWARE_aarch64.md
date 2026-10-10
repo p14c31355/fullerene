@@ -4,6 +4,18 @@ Read [CONTEXT_STATUS.md](CONTEXT_STATUS.md) first. This file is the compact
 hardware contract for the Pixel 4a 5G (Bramble); the complete historical
 ledger is preserved in the compressed [full AArch64 ledger](../evidence/bramble/HARDWARE_aarch64_FULL.md.gz).
 
+The second AArch64 target, Huawei P20 Lite (ANE-LX2J, Kirin 659 / hi6250), had its
+bootloader unlocked in software on 2026-10-02. The unlock procedure and the boot
+contract that device exposes are documented separately:
+[ANE-LX2J bootloader unlock](ANE_LX2J_BOOTLOADER_UNLOCK_20261002.md) ·
+[日本語版](ANE_LX2J_BOOTLOADER_UNLOCK_20261002.ja.md).
+The port built on top of it (platform `ane`, the ramoops observation window, the
+boot ladder and the device scripts) is in [ANE-LX2J port](ANE_LX2J_PORT.md) ·
+[日本語版](ANE_LX2J_PORT.ja.md).
+The USB re-enumeration harness (bring-up sequence taken from vendor source,
+QEMU-verified) is tracked in [ANE USB harness plan](ANE_USB_HARNESS_PLAN.md) ·
+[日本語版](ANE_USB_HARNESS_PLAN.ja.md).
+
 ## Target and safety boundary
 
 | Item | Value / result |
@@ -34,15 +46,18 @@ requests the address-0 Device Descriptor but receives no descriptor bytes;
 the representative failures are `-110` timeout and zero-payload `-71`
 retries. No valid Fullerene identity has been observed.
 
-The decisive internal discriminator is already recorded: STARTTRANSFER and
-pre-Run/Stop event DMA succeed, but the SOF gate observes no SOF frames. The
-remaining blocker is the USB2 PHY HS receive/clock-recovery path (or an
-external/secure owner of it). Endpoint/TRB and packet-format changes are
-downstream of the observed boundary and remain deferred until a valid EP0 data
-stage exists; the qpr1 `DCTL.KEEP_CONNECT` branch is also closed because the
-live `GHWPARAMS1` readout shows this DWC3 instance does not advertise
-hibernation. Further progress needs a known-good comparison, USB analyzer, or
-permitted JTAG/secure-debug capture.
+The failure is not localized inside the device yet. The host-side timeout and
+zero-payload protocol errors do not establish whether DWC3 received SETUP,
+whether its event DMA reached Fullerene, whether event-register polling
+returned, or whether a response was generated. Earlier notes attributed this
+to HS-PHY receive/clock recovery based on a SOF gate; later `DSTS.SOFFN`
+readouts advanced while attached, so that gate is not enough to retain the
+PHY-RX conclusion. Until a same-boot device trace is captured, treat the PHY,
+event ingress, and EP0 response as unresolved. The latest run ledger and its
+exact next capture are in [the native USB investigation](BRAMBLE_USB_NATIVE_20260929.md).
+
+The qpr1 `DCTL.KEEP_CONNECT` branch remains closed because the live
+`GHWPARAMS1` readout shows this DWC3 instance does not advertise hibernation.
 
 For exact ABL/XBL audits, physical A/B results, commands, timestamps, hashes,
 and source links, use the compressed [full ledger](../evidence/bramble/HARDWARE_aarch64_FULL.md.gz)

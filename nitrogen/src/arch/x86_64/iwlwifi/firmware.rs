@@ -8,9 +8,9 @@ use super::types::{FirmwareBlob, FirmwareProfile};
 // submodule. A build-time override is available for hardware experiments so
 // replacing a local firmware blob does not dirty or advance the submodule.
 const FW_7260_17: &[u8] =
-    include_bytes!("../../../bonder/iwlwifi/intel/iwlwifi/iwlwifi-7260-17.ucode");
+    include_bytes!("../../../../../bonder/iwlwifi/intel/iwlwifi/iwlwifi-7260-17.ucode");
 const FW_7265_17: &[u8] =
-    include_bytes!("../../../bonder/iwlwifi/intel/iwlwifi/iwlwifi-7265-17.ucode");
+    include_bytes!("../../../../../bonder/iwlwifi/intel/iwlwifi/iwlwifi-7265-17.ucode");
 const FW_7265D_29: &[u8] = include_bytes!(env!("FULLERENE_IWLWIFI_7265D_FW"));
 
 /// Select firmware using the raw CSR_HW_REV value, before the type field is

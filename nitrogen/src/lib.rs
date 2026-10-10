@@ -1,84 +1,50 @@
 #![no_std]
 //! # Nitrogen — Hardware Mechanism Layer
 //!
-//! Nitrogen is a standalone, `no_std` crate providing **pure hardware mechanism**
-//! abstractions for x86-64 systems. It has zero dependency on the kernel or
+//! Nitrogen is a standalone, `no_std` crate providing **pure hardware
+//! mechanism** abstractions. It has zero dependency on the kernel or
 //! petroleum boot crate. All device-driver-level code (Port I/O, PCI, APIC,
 //! PIC, VirtIO, etc.) lives here; higher-level policy (memory management,
 //! scheduling, graphics compositing) belongs in other crates.
+//!
+//! ## Layout
+//!
+//! Platform trees are branched by directory under `arch/`: the full PC
+//! driver set in `arch/x86_64`, a small shim subset for the ANE in
+//! `arch/aarch64`, and the ESP32 drivers in `arch/xtensa`. lib.rs globs the
+//! active tree at the crate root, so historic paths (`nitrogen::pci::...`)
+//! are unchanged and the modules above stay free of per-item cfg branches.
 //!
 //! ## Design principle
 //!
 //! - **Hardware mechanism only** — raw register access, capability scanning,
 //!   interrupt-controller programming, DMA setup. No memory allocator policy,
 //!   no page-table logic, no process scheduling.
-//! - **Fully isolated** — depends only on `x86_64`, `spin`, and `core`/`alloc`.
-//!   No dependency on `petroleum`, `fullerene-kernel`, or any other workspace crate.
-//! - **Callback-friendly** — where memory allocation or MMIO mapping is required
-//!   (e.g. VirtIO queue setup), the caller provides pre‑allocated physical pages
-//!   and virtual addresses. Nitrogen never owns the allocator.
+//! - **Fully isolated** — depends only on the target's bus crates (x86_64,
+//!   spin, ...) and `core`/`alloc`.
+//! - **Callback-friendly** — where memory allocation or MMIO mapping is
+//!   required (e.g. VirtIO queue setup), the caller provides pre-allocated
+//!   physical pages and virtual addresses. Nitrogen never owns the allocator.
 
 extern crate alloc;
 
 // Infrastructure modules shared by every architecture.
-#[cfg(not(target_arch = "xtensa"))]
-pub mod acpi;
-#[cfg(not(target_arch = "xtensa"))]
-pub mod apic;
-#[cfg(not(target_arch = "xtensa"))]
-pub mod apic_controller;
 pub mod arch;
 pub mod debug;
-#[cfg(not(target_arch = "xtensa"))]
-pub mod driver_api;
 pub mod driver_context;
 pub mod error;
-#[cfg(not(target_arch = "xtensa"))]
-pub mod hbd;
-#[cfg(not(target_arch = "xtensa"))]
+pub mod geometry;
 pub mod hid;
-#[cfg(not(target_arch = "xtensa"))]
-pub mod i2c_hid;
+pub mod input;
 pub mod metrics;
-#[cfg(not(target_arch = "xtensa"))]
-pub mod mmio;
-#[cfg(not(target_arch = "xtensa"))]
-pub mod pci;
-#[cfg(not(target_arch = "xtensa"))]
-pub mod pci_error;
-#[cfg(not(target_arch = "xtensa"))]
-pub mod pci_health;
-#[cfg(not(target_arch = "xtensa"))]
-pub mod port;
+pub mod spi_clock;
+pub mod touch_calibration;
 
-// Desktop drivers remain available on x86_64/AArch64 while the Xtensa
-// architecture uses the bounded drivers under src/arch.
-#[cfg(all(not(target_arch = "xtensa"), not(nitrogen_no_audio)))]
-pub mod audio;
-#[cfg(all(not(target_arch = "xtensa"), not(nitrogen_no_framebuffer)))]
-pub mod framebuffer;
-#[cfg(all(not(target_arch = "xtensa"), not(nitrogen_no_hda)))]
-pub mod hda;
-#[cfg(all(not(target_arch = "xtensa"), not(nitrogen_no_ioapic)))]
-pub mod ioapic;
-#[cfg(all(not(target_arch = "xtensa"), not(nitrogen_no_iommu)))]
-pub mod iommu;
-#[cfg(all(not(target_arch = "xtensa"), not(nitrogen_no_iwlwifi)))]
-pub mod iwlwifi;
-#[cfg(all(not(target_arch = "xtensa"), not(nitrogen_no_pic)))]
-pub mod pic;
-#[cfg(all(not(target_arch = "xtensa"), not(nitrogen_no_ps2)))]
-pub mod ps2;
-#[cfg(all(not(target_arch = "xtensa"), not(nitrogen_no_storage)))]
-pub mod storage;
-#[cfg(not(target_arch = "xtensa"))]
-pub mod timing;
-#[cfg(all(not(target_arch = "xtensa"), not(nitrogen_no_usb)))]
-pub mod usb;
-#[cfg(all(not(target_arch = "xtensa"), not(nitrogen_no_virtio)))]
-pub mod virtio;
-#[cfg(all(not(target_arch = "xtensa"), not(nitrogen_no_wifi)))]
-pub mod wifi;
+// Platform surface: whichever tree the target selected answers these names.
+#[cfg(target_arch = "aarch64")]
+pub use arch::aarch64::*;
+#[cfg(target_arch = "x86_64")]
+pub use arch::x86_64::*;
 
 pub use driver_context::{DmaAllocation, DriverContext, DriverContextError, PageFlags};
 pub use error::DriverError;

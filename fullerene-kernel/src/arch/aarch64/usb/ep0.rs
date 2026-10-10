@@ -1,6 +1,14 @@
 //! EP0 TRB preparation, setup handling, and control-transfer events.
 
+use super::super::usb_protocol::{dwc3_endpoint_number, dwc3_setup_trb_complete};
 use super::*;
+
+// A resource index of zero is valid for physical EP0, so it cannot double as
+// an active-transfer flag. Keep STATUS ownership explicit to avoid rewriting
+// a live TRB on repeated XferNotReady notifications.
+static mut EP0_STATUS_STARTED: bool = false;
+static mut EP0_SETUP_PENDING: bool = false;
+static mut EP0_POLLED_SETUP_EVENT: bool = false;
 
 unsafe fn prepare_trb(index: usize, buffer: *const u8, length: usize, kind: u32) {
     let address = unsafe { dma_iova_for(buffer as usize) };
@@ -31,6 +39,79 @@ unsafe fn prepare_trb(index: usize, buffer: *const u8, length: usize, kind: u32)
 
 /// Prepare the EP0 SETUP TRB and, for the source-exact A/B, its separate
 /// controller-owned eight-byte setup buffer.
+/// Fine marks for the delayed-arm word (`usb2-live-arm-late`).
+///
+/// The drive's own two marks bracket the whole of `try_arm_setup()`; these sit
+/// inside it so one run says which step stops the loop. Measured 2026-09-29 with
+/// the delayed arm: the drive's mark A fired and its mark B never did, so the
+/// stop is inside this function.
+///
+/// Word: `usb2-live-arm-steps` (the arm-late word keeps only its own two marks).
+///
+/// step 1  after `ep0_setup_data_ptr()` chose the buffer
+/// step 2  after the zero-fill + cache clean on that buffer
+/// step 3  after the TRB was published (writes, barrier, cache clean)
+/// step 4  after the STARTTRANSFER command path returned
+/// Fine marks for the consumption words (`usb2-live-consume-late` / `-steps`).
+///
+/// One run with the arm driven and the host's traffic arriving says whether the
+/// loop stops in the SETUP handler rather than in the arm:
+///
+///   mark 1  the buffer held a fresh SETUP (before the handler runs)
+///   mark 2  the handler returned
+///
+/// mark 1 alone points at the response path (`handle_setup` and everything it
+/// calls) as the place the loop stops.
+fn consume_step_mark(step: u32) {
+    // `usb2-live-consume-late` is the word that arms immediately, which is what
+    // makes the host's first SETUP land at all; `usb2-live-consume-steps` (arm at
+    // 600 ms) lost that request entirely in an 8 s window, so its two marks never
+    // fired. Both words are accepted here so the arm timing can be changed
+    // without touching this instrument.
+    if !matches!(
+        option_env!("FULLERENE_USB_UTMI_POSTRUN_READOUT"),
+        Some("usb2-live-consume-late") | Some("usb2-live-consume-steps")
+    ) {
+        return;
+    }
+    let _ = step;
+    unsafe { ccs_pulse(300) };
+}
+
+fn late_arm_mark(step: u32) {
+    // Also gated on `usb2-live-setup-trb-state` (analyst read #5): its report can
+    // only publish if the in-drive arm returns, and every no-mark in-drive arm
+    // measured so far stops the loop (entry / 600 ms / 1.8 s timings). The step
+    // marks carry the keepalive that lets the call return - the same effect
+    // measured for `usb2-live-arm-steps` (698491 / 751403 / 763565).
+    // Also gated on `usb2-live-consume-late` (analyst read #6): that word arms at
+    // entry before its two consume marks can matter, and without marks inside the
+    // call it never returned (742348 / 771804 published nothing). The step marks
+    // give its arm the same keepalive, so its own two marks get a chance to fire.
+    // Also gated on `usb2-live-arm-land` and `usb2-live-setup-inpage` (analyst
+    // read #9): both arm at entry through this same call, and their only runs so
+    // far (573737 / 580410) were recorded before the no-mark-arm lesson and own
+    // no usable reading. The step marks give this call their keepalive; nothing
+    // else about either word changes.
+    // Also gated on `usb2-live-data-phase` (analyst read, 2026-09-30 04:45): its
+    // entry arm goes through this same call; its first run (1076991) published
+    // nothing (rows=2 ccs=10 pulses=0, watchdog death) - the same no-mark-arm
+    // signature as 742348 / 771804. The step marks give this call its keepalive.
+    if !matches!(
+        option_env!("FULLERENE_USB_UTMI_POSTRUN_READOUT"),
+        Some("usb2-live-arm-steps")
+            | Some("usb2-live-setup-trb-state")
+            | Some("usb2-live-consume-late")
+            | Some("usb2-live-arm-land")
+            | Some("usb2-live-setup-inpage")
+            | Some("usb2-live-data-phase")
+    ) {
+        return;
+    }
+    let _ = step;
+    unsafe { ccs_pulse(300) }
+}
+
 pub(super) unsafe fn prepare_ep0_setup_trb() {
     let kind = if cfg!(fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup) {
         TRB_XBL_EP0_SETUP
@@ -39,17 +120,31 @@ pub(super) unsafe fn prepare_ep0_setup_trb() {
     };
     unsafe {
         let setup = ep0_setup_data_ptr();
+        late_arm_mark(1); // the buffer pointer is chosen
         if setup != ep0_trb_ptr(0).cast::<u8>() {
             core::ptr::write_bytes(setup, 0, 8);
             cache_clean(setup as usize, 8);
         }
+        late_arm_mark(2); // the buffer is zeroed and cache-cleaned
         prepare_trb(0, setup as *const u8, 8, kind);
+        late_arm_mark(3); // the TRB is published
     }
 }
 
 /// Return whether the controller replaced the idle marker with a fresh SETUP.
 pub(super) unsafe fn setup_packet_pending() -> bool {
     unsafe {
+        if EP0_STATE != Ep0State::Setup || !EP0_SETUP_ARMED {
+            return false;
+        }
+        let trb = ep0_trb_ptr(0);
+        cache_invalidate(trb as usize, core::mem::size_of::<Trb>());
+        if !dwc3_setup_trb_complete(
+            read_volatile(addr_of!((*trb).ctrl)),
+            read_volatile(addr_of!((*trb).size)),
+        ) {
+            return false;
+        }
         let setup = ep0_setup_data_ptr();
         cache_invalidate(setup as usize, 8);
         if setup == ep0_trb_ptr(0).cast::<u8>() {
@@ -120,6 +215,8 @@ pub(super) unsafe fn prepare_trb_at(trb: *mut Trb, buffer: *const u8, length: us
 pub(super) unsafe fn start_setup() -> bool {
     trace_event(TRACE_SETUP_QUEUED, 0, 0, 0, 8, unsafe { read(DSTS) });
     unsafe {
+        EP0_STATUS_STARTED = false;
+        EP0_SETUP_PENDING = false;
         if cfg!(any(
             fullerene_aarch64_usb_gadget_handoff_xbl_deferred_setup,
             fullerene_aarch64_usb_gadget_handoff_xbl_between_ep0
@@ -236,7 +333,410 @@ pub(super) unsafe fn post_runstop_event_dma_probe() -> bool {
 /// this never tears the endpoint down on failure: the core rejects Start
 /// Transfer while the link is not ON, and the guard simply retries on the
 /// next poll until the link comes up.
+/// The stage `try_arm_setup()` stopped at, as `SETUP_ARM_FAILURE_STAGE` records it:
+///
+///   0  the arm succeeded
+///   1  refused by the DSTS halt/link gate (the arm was never attempted)
+///   2  the STARTTRANSFER command completed with a non-zero status field
+///   3  the STARTTRANSFER command never retired (the poll ran out)
+///   4  the arm has not been attempted yet (the static's initial value)
+///
+/// This is the one number that says *why* the drive's arm returns false, and it
+/// is already maintained by `try_arm_setup()` - it just has never been read out.
+/// `EP0_STATE` as a 1-based digit for the CCS words: 1 Setup, 2 Data, 3 Status.
+pub(super) unsafe fn ep0_state_digit() -> u32 {
+    unsafe {
+        match EP0_STATE {
+            Ep0State::Setup => 1,
+            Ep0State::Data => 2,
+            Ep0State::Status => 3,
+        }
+    }
+}
+
+pub(super) unsafe fn arm_failure_stage() -> u32 {
+    unsafe { SETUP_ARM_FAILURE_STAGE }
+}
+
+/// Result of the status-only experiment: 0 not attempted, 1 retired, 2 did not retire.
+///
+/// Deliberately a `static` even though statics are duplicated across this project's two
+/// crate roots: the drive's copy both writes and reads it within one boot, so the copy
+/// that matters is the same one throughout. The black box's region base is a different
+/// story and is a constant.
+static mut STATUS_ONLY_RESULT: u32 = 0;
+
+pub(super) fn status_only_result() -> u32 {
+    unsafe { STATUS_ONLY_RESULT }
+}
+
+/// Issue a control *status* stage on EP0 without a data stage and report whether the
+/// command retires.
+///
+/// Why this experiment matters: the flow attempts the data stage first and stops there -
+/// `STARTTRANSFER` for `CONTROL_DATA` is issued and never retires, and the controller
+/// never writes the TRB's status. That single fact has two readings it cannot tell
+/// apart: either the controller refuses *any* command after the setup TRB, or something
+/// is specific to the data stage. A status-only command separates them, because it uses
+/// the same endpoint, the same TRB slot and the same command word, differing only in the
+/// TRB's type field (`DWC3_TRBCTL_CONTROL_STATUS2`, `core.h:872`).
+///
+/// Gated by `usb2-live-status-try`; the normal flow is untouched.
+// Interference worth knowing about, found in review: every probe below prepares its TRB at
+// `ep0_trb_index(0)` - slot 0 - which is the same slot the SETUP TRB is published into and
+// `try_arm_setup()` arms. A probe therefore takes over the armed slot and can revoke EP0's
+// active transfer with `retry_start_transfer`'s ENDTRANSFER, and nothing re-arms it
+// afterwards. These probes are only ever run alone, from a word whose whole purpose is the
+// interference-free production path, so the trade was made deliberately: the alternative was a
+// second TRB slot the controller would have had to be told about. What was missing is this
+// note and the flag below it, so a reader of a probe run is not told the production flow was
+// untouched.
+//
+// (The probe result statics are also shared: `data_then_status()` overwrites `STATUS_ONLY_RESULT`
+// and `DATA_LATE_RESULT` through its callees, so one word's run can clobber another's
+// "not attempted" zero. Only one word runs per boot, which is why this has not bitten.)
+
+/// Results of the late data-then-status sequence: bit 0 set = the data stage retired,
+/// bit 1 set = the status stage that followed retired.
+static mut DATA_THEN_STATUS_RESULT: u32 = 0;
+
+pub(super) fn data_then_status_result() -> u32 {
+    unsafe { DATA_THEN_STATUS_RESULT }
+}
+
+/// Re-issue the data stage late, then issue a status stage, and report both.
+///
+/// Why the status stage is the next suspect: the data stage now retires, the controller
+/// consumes the TRB, and the address it fetches from is verified to hold the descriptor -
+/// yet the host answers EPROTO rather than a timeout, which means it received something
+/// malformed and a control transfer is not complete without its status stage. The
+/// production flow may be issuing that stage at the wrong moment, or not at all after a
+/// data stage that failed on the first attempt.
+pub(super) unsafe fn data_then_status() -> u32 {
+    let data_started = unsafe { retry_data_late() };
+    // Long enough for the controller to move the packet before the status stage is queued;
+    // short enough to stay inside the board's unfed-reset budget.
+    unsafe { super::super::timer::delay_ms(300) };
+    let status_started = unsafe { try_status_only() };
+    let mut result = 0u32;
+    if data_started {
+        result |= 1;
+    }
+    if status_started {
+        result |= 2;
+    }
+    unsafe { DATA_THEN_STATUS_RESULT = result };
+    result
+}
+
+/// Result of the persistent data-stage re-issue loop: 0 not attempted, otherwise the number
+/// of attempts that retired, plus one.
+static mut DATA_PERSIST_RESULT: u32 = 0;
+
+pub(super) fn data_persist_result() -> u32 {
+    unsafe { DATA_PERSIST_RESULT }
+}
+
+/// Re-issue the prepared control data stage until it retires, or the budget runs out.
+///
+/// This is the fix the previous run pointed at. The production flow issues the data stage
+/// as soon as the setup stage completes and the command never retires; re-issuing the very
+/// same TRB 2.5 s later retires. Nothing about the command, the length or the buffer
+/// differs between those two cases - only the moment - so the controller is being asked
+/// before it is ready to move data, and because the gadget cannot read the event ring on
+/// this handoff it never learns that it asked too early. Retrying is what a driver with
+/// working events would not need to do; here it substitutes for the missing signal.
+///
+/// Returns the number of attempts that retired (at least 1 on success).
+pub(super) unsafe fn retry_data_until_retired(attempts: u32, gap_ms: u64) -> u32 {
+    let trb_index = ep0_trb_index(1);
+    let mut retired = 0u32;
+    for _ in 0..attempts {
+        unsafe {
+            // 2000 ms per attempt. The window has to outlast the controller's own latency: a
+            // 400 ms budget reported zero retirements for a command that the same run's single
+            // 2500 ms call saw retire. (This comment said "1200 ms per attempt" while the call
+            // passed 2000 - review caught the drift; the number in the call is the one that was
+            // measured.)
+            if retry_start_transfer(0, ep0_trb_ptr(trb_index), 2_000) {
+                retired += 1;
+                break;
+            }
+        }
+        unsafe { super::super::timer::delay_ms(gap_ms) };
+    }
+    unsafe { DATA_PERSIST_RESULT = retired + 1 };
+    retired
+}
+
+/// Result of the late re-issue of the production data stage: 0 not attempted, 1 retired,
+/// 2 not.
+static mut DATA_LATE_RESULT: u32 = 0;
+
+pub(super) fn data_late_result() -> u32 {
+    unsafe { DATA_LATE_RESULT }
+}
+
+/// Re-issue the control data stage the state machine already prepared, from the drive.
+///
+/// The production flow issues it as soon as the setup stage completes and it never
+/// retires. Three probes that ran *after* it - `usb2-live-status-try`, `-data-zero` and
+/// `-data-alt`, all issued at 2.5 s - all retired, and `-data-alt` was an 18-byte
+/// `CONTROL_DATA`, i.e. the same command type, the same length and the same slot as the
+/// failing production attempt. The common factor among the working three is the moment
+/// they were issued, not their shape. This re-issues the production TRB unchanged at that
+/// later moment, so timing is the only variable left.
+pub(super) unsafe fn retry_data_late() -> bool {
+    let trb_index = ep0_trb_index(1);
+    unsafe {
+        let started = retry_start_transfer(0, ep0_trb_ptr(trb_index), 2500);
+        DATA_LATE_RESULT = if started { 1 } else { 2 };
+        started
+    }
+}
+
+/// The production data TRB's control word: its type nibble and whether HWO is still set.
+///
+/// If the type is not `CONTROL_DATA` the controller is being asked for a different phase; if HWO is
+/// clear the controller has already retired it (or our own revocation cleared it, which is why this
+/// is read beside the type rather than trusted alone).
+/// Returns `(type_nibble, hwo_set)`.
+pub(super) unsafe fn data_trb_ctrl() -> (u32, bool) {
+    let index = ep0_trb_index(1);
+    let trb = ep0_trb_ptr(index);
+    let ctrl = unsafe { core::ptr::read_volatile((trb as *const u32).add(3)) };
+    // Parenthesised: `ctrl & 0x3f0 >> 4` would be `ctrl & 0x3f`, which is a different answer.
+    ((ctrl & 0x3f0) >> 4, ctrl & 1 != 0)
+}
+
+/// The EP0 context size the code last programmed, and the link speed class it read.
+///
+/// Linux starts EP0 at the SuperSpeed default of 512 bytes and issues a DEPCFG MODIFY after Connect
+/// Done when the link is USB2, because a 512-byte EP0 on a high-speed link makes the host's data
+/// transaction a babble - a protocol error with no valid data captured, which is exactly what the
+/// wire shows. This records what was actually programmed, so "the reply is built correctly but never
+/// arrives" can be told apart from "the reply is sent with the wrong packet size".
+///
+/// `(max_packet, speed_class)`: speed_class 1 = high-speed (64 expected), 2 = SuperSpeed (512).
+static mut EP0_CONTEXT: (u16, u32) = (0, 0);
+
+pub(super) fn ep0_context() -> (u16, u32) {
+    unsafe { core::ptr::read(core::ptr::addr_of!(EP0_CONTEXT)) }
+}
+
+/// The production data TRB's own length field, as a class and as a yes/no.
+///
+/// The host's completion carries `len=0` - the *actual* transferred length - while the reply that was
+/// built is 18 bytes. If the TRB's `size` field is zero, the controller is being asked to send
+/// nothing, and a zero-length data stage is a legal short packet: the host would see exactly what the
+/// wire shows. Returns `(size, is_eighteen)`.
+pub(super) unsafe fn data_trb_size() -> (u32, bool) {
+    let index = ep0_trb_index(1);
+    let trb = ep0_trb_ptr(index);
+    let size = unsafe { core::ptr::read_volatile((trb as *const u32).add(2)) };
+    (size, size == 18)
+}
+
+/// What kind of address the production data TRB hands the controller, as two yes/no bits.
+///
+/// The command is accepted and no byte reaches the wire. Of everything in that path, the one thing
+/// the device cannot check with its own counters is whether the buffer address is a physical address
+/// the controller can actually read. A DWC3 that is not doing 64-bit addressing drops the upper
+/// word: the transfer then reads from a wrong (or unmapped) place and fails exactly this silently.
+///
+/// Returns `(fits_in_low_4gib, upper_word_is_zero)`. Both true means the address is a plain 32-bit
+/// physical address and the upper-word question is moot; the pair separates "fine", "needs 64-bit
+/// addressing" and "address looks wrong entirely".
+pub(super) unsafe fn data_trb_address_shape() -> (bool, bool) {
+    let index = ep0_trb_index(1);
+    let trb = ep0_trb_ptr(index);
+    let low = unsafe { core::ptr::read_volatile(trb as *const u32) };
+    let high = unsafe { core::ptr::read_volatile((trb as *const u32).add(1)) };
+    let address = ((high as u64) << 32) | low as u64;
+    (address < 0x1_0000_0000, high == 0)
+}
+
+/// Whether the production data TRB is still owned by the controller (its HWO is set).
+///
+/// A live read of the TRB itself. `DATA_PHASE_TRB_AFTER` is a copy that one timeout path writes, so
+/// a boot where no such timeout happened reads its initial value and reports a TRB nobody has
+/// touched as consumed. The TRB helpers below are private imports of this module, which is why this
+/// accessor lives here rather than in the caller.
+pub(super) unsafe fn data_trb_still_owned() -> bool {
+    let index = ep0_trb_index(1);
+    unsafe { core::ptr::read_volatile(ep0_trb_ptr(index) as *const u32) & super::TRB_HWO != 0 }
+}
+
+/// Rewrite the production data TRB with the bytes it already holds, and issue nothing.
+///
+/// The data stage's TRB stays HWO with TRBSTS 0 while an identical TRB re-issued later is consumed,
+/// so either the controller needs the *command* again, or it is holding a stale view of the TRB and
+/// only needs to be made to look again. Reading the four dwords and writing the same four back
+/// changes no value and issues no command: if that alone retires the TRB, it is the second story.
+pub(super) unsafe fn rewrite_data_trb() -> bool {
+    let index = ep0_trb_index(1);
+    let trb = ep0_trb_ptr(index) as *mut u32;
+    unsafe {
+        // Clean before reading. This reads the TRB back and writes the same values again; if the CPU
+        // held a stale line, the read would fetch that and the write would put it back over what the
+        // controller was given. Cleaning first publishes our own latest values, so what gets written
+        // back is what was issued.
+        cache_clean(trb as usize, core::mem::size_of::<[u32; 4]>());
+        let mut saved = [0u32; 4];
+        for (offset, slot) in saved.iter_mut().enumerate() {
+            *slot = core::ptr::read_volatile(trb.add(offset));
+        }
+        for (offset, value) in saved.iter().enumerate() {
+            core::ptr::write_volatile(trb.add(offset), *value);
+        }
+        // Publish the rewrite to DRAM for the same reason the original write is cleaned.
+        cache_clean(trb as usize, core::mem::size_of::<[u32; 4]>());
+        DATA_REWRITE_DONE = 1;
+        // Give the controller a moment before reading HWO: one that has not looked yet is not the
+        // same as one that refused.
+        let frequency = arch_counter_frequency();
+        let deadline = arch_counter().saturating_add(frequency.saturating_mul(200) / 1000);
+        while arch_counter() < deadline {
+            core::hint::spin_loop();
+        }
+        // The answer is whether the controller now owns the TRB, not whether the write happened. An
+        // unconditional `true` would record "retired" for every run and identify nothing.
+        let hwo = core::ptr::read_volatile(trb as *const u32) & super::TRB_HWO != 0;
+        !hwo
+    }
+}
+
+/// 0 not attempted, 1 the rewrite ran.
+static mut DATA_REWRITE_DONE: u32 = 0;
+
+pub(super) fn data_rewrite_done() -> u32 {
+    unsafe { DATA_REWRITE_DONE }
+}
+
+/// Re-issue the production data TRB exactly once, with no retry window.
+///
+/// `retry_data_late` re-issues it too, but it *retries*: a failed attempt revokes the outstanding
+/// transfer with ENDTRANSFER, and that revocation clears the TRB's HWO by itself. This one calls
+/// Start Transfer once and returns, so if the TRB then reads as consumed, the controller consumed it
+/// and nothing of ours did. That distinction is the whole point: it is the same ambiguity that made
+/// `status-try`'s reading unusable.
+///
+/// The short wait before returning is what makes the caller's HWO reading meaningful - a controller
+/// that has not looked yet is not the same as one that refused.
+pub(super) unsafe fn retry_data_once() -> bool {
+    let trb_index = ep0_trb_index(1);
+    unsafe {
+        // Endpoint 1, not 0: the production data stage is `start_transfer(1, ..)`, and endpoint 1
+        // is a different command block on this controller, so issuing on 0 compared two things at
+        // once - the timing and the endpoint.
+        let started = retry_start_transfer(1, ep0_trb_ptr(trb_index), 0);
+        DATA_GAP_STARTED = if started { 1 } else { 2 };
+        let frequency = arch_counter_frequency();
+        let deadline = arch_counter().saturating_add(frequency.saturating_mul(150) / 1000);
+        while arch_counter() < deadline {
+            core::hint::spin_loop();
+        }
+        started
+    }
+}
+
+/// 0 not attempted, 1 the single attempt was accepted, 2 it was refused.
+static mut DATA_GAP_STARTED: u32 = 0;
+
+pub(super) fn data_gap_started() -> u32 {
+    unsafe { DATA_GAP_STARTED }
+}
+
+/// Result of the alternate-buffer data attempt: 0 not attempted, 1 retired, 2 not.
+static mut DATA_ALT_RESULT: u32 = 0;
+
+pub(super) fn data_alt_result() -> u32 {
+    unsafe { DATA_ALT_RESULT }
+}
+
+/// Issue a control *data* stage of 18 bytes pointing at a known-good DMA address.
+///
+/// The zero-length data stage retired and the 18-byte one does not, so the difference is
+/// the payload: a length and a buffer address. This test holds the length at 18 - the
+/// descriptor's own size, the case that fails - and changes only the buffer, from the
+/// gadget's response buffer to a TRB slot in the same DMA arena that every other
+/// transfer in this driver already uses successfully. Retiring means the response
+/// buffer's address or mapping is the fault; not retiring means any non-zero length is,
+/// and the descriptor buffer is exonerated.
+pub(super) unsafe fn try_data_alt_buffer() -> bool {
+    let trb_index = ep0_trb_index(0);
+    unsafe {
+        prepare_trb(trb_index, ep0_trb_ptr(1).cast::<u8>(), 18, TRB_CONTROL_DATA);
+        let started = retry_start_transfer(0, ep0_trb_ptr(trb_index), 2500);
+        DATA_ALT_RESULT = if started { 1 } else { 2 };
+        started
+    }
+}
+
+/// Result of the zero-length data attempt: 0 not attempted, 1 retired, 2 not.
+static mut DATA_ZERO_RESULT: u32 = 0;
+
+pub(super) fn data_zero_result() -> u32 {
+    unsafe { DATA_ZERO_RESULT }
+}
+
+/// Issue a control *data* stage with length zero and report whether it retires.
+///
+/// The sequence of findings this separates: the setup TRB completes; a `CONTROL_STATUS2`
+/// command issued *after* a failed data attempt retires, so the controller is not wedged
+/// and the outstanding data command was rejected rather than pending; and the data
+/// command's status is 1, `DEPEVT_TRANSFER_NO_RESOURCE` (`core.h:1456`). No Resource for a
+/// control data stage with an 18-byte descriptor in it, while a zero-length status stage
+/// is accepted, points at the transfer *length* or the buffer address rather than at
+/// `CONTROL_DATA` as a command type. A zero-length data stage decides which.
+pub(super) unsafe fn try_data_zero() -> bool {
+    let trb_index = ep0_trb_index(0);
+    unsafe {
+        prepare_trb(
+            trb_index,
+            ep0_trb_ptr(trb_index).cast::<u8>(),
+            0,
+            TRB_CONTROL_DATA,
+        );
+        let started = retry_start_transfer(0, ep0_trb_ptr(trb_index), 2500);
+        DATA_ZERO_RESULT = if started { 1 } else { 2 };
+        started
+    }
+}
+
+pub(super) unsafe fn try_status_only() -> bool {
+    let trb_index = ep0_trb_index(0);
+    let kind = if cfg!(fullerene_aarch64_usb_abl_trb_flags) {
+        TRB_CONTROL_STATUS3
+    } else {
+        TRB_CONTROL_STATUS2
+    };
+    unsafe {
+        prepare_trb(trb_index, ep0_trb_ptr(trb_index).cast::<u8>(), 0, kind);
+        let started = retry_start_transfer(0, ep0_trb_ptr(trb_index), 2500);
+        STATUS_ONLY_RESULT = if started { 1 } else { 2 };
+        started
+    }
+}
+
+/// How many times this boot successfully armed EP0's setup TRB.
+///
+/// The drive arms EP0 once per *consumed* SETUP, so this counts deliveries. It is the only delivery
+/// witness that does not depend on the setup buffer's *contents*: the host repeats the same
+/// GET_DESCRIPTOR on every attempt (confirmed in the wire capture - all 24 records carry
+/// `bm=0x80 bReq=0x06 wValue=0x0100`), so a buffer that "never changes" is not evidence of silence.
+/// A count that stays at one while the host re-tries tens of times means the controller really did
+/// stop delivering.
+static mut ARM_ROUNDS: u32 = 0;
+
+pub(super) fn arm_rounds() -> u32 {
+    unsafe { core::ptr::read(core::ptr::addr_of!(ARM_ROUNDS)) }
+}
+
 pub(super) unsafe fn try_arm_setup() -> bool {
+    // Black box: arming EP0 is the last software step before the host can see
+    // anything, so its entry and its result are both worth a record.
+    crate::blackbox::record(crate::blackbox::CODE_USB_EP0_ARM, 0, 0, 0);
     unsafe {
         if EP0_SETUP_ARMED || !ENDPOINTS_READY || EP0_STATE != Ep0State::Setup {
             return EP0_SETUP_ARMED;
@@ -266,8 +766,15 @@ pub(super) unsafe fn try_arm_setup() -> bool {
         // report a stale HALT bit while the host has already reached the
         // attach boundary; let the command result, rather than that status
         // read, decide whether the EP0 SETUP TRB can be armed.
+        // Not instrumented here in this revision. The measured 2026-09-29
+        // result for this function is in the evidence ledger: with the arm
+        // window enabled the bracket chain reached the DSTS gate and stopped
+        // before the SETUP TRB was prepared. Re-add marks here, renumbered into
+        // the chain documented in `usb/poll.rs`, to bisect that call again.
         prepare_ep0_setup_trb();
-        if start_transfer(0, ep0_trb_ptr(0)) {
+        let started = start_transfer(0, ep0_trb_ptr(0));
+        late_arm_mark(4); // the STARTTRANSFER command path returned
+        if started {
             SETUP_ARM_FAILURE_STAGE = 0;
             EP0_SETUP_ARMED = true;
             PENDING_SETUP_ARM = false;
@@ -280,6 +787,7 @@ pub(super) unsafe fn try_arm_setup() -> bool {
                 EP0_SETUP_ARMED = true;
                 PENDING_SETUP_ARM = false;
                 trace_event(TRACE_SETUP_QUEUED, 0x5254_5259, 0, 0, 0, read(DSTS)); // "RTRY"
+                ARM_ROUNDS = ARM_ROUNDS.saturating_add(1);
                 return true;
             }
             // Fast-fail ("No resource" completes immediately). The host's
@@ -432,6 +940,9 @@ pub(super) unsafe fn reset_gsi_channels() {
 /// which is indistinguishable from a dead gadget to the host.
 pub(super) unsafe fn restart_control_after_reset() {
     unsafe {
+        EP0_STATUS_STARTED = false;
+        EP0_SETUP_PENDING = false;
+        EP0_POLLED_SETUP_EVENT = false;
         // qpr1 leaves GCTL.RAMCLKSEL at the reset value after the host's bus
         // USB reset; reapply_ramclksel() is a disabled-by-default legacy A/B.
         reapply_ramclksel();
@@ -595,6 +1106,12 @@ pub(super) unsafe fn restart_control_after_reset() {
                     // and let the ordinary post-reset arm retry at link ON.
                     let speed = read(DSTS) & DSTS_CONNECTSPD_MASK;
                     let max_packet = if speed == DSTS_SUPERSPEED { 512 } else { 64 };
+                    unsafe {
+                        EP0_CONTEXT = (
+                            max_packet as u16,
+                            if speed == DSTS_SUPERSPEED { 2 } else { 1 },
+                        );
+                    }
                     write(DALEPENA, 0);
                     let rebuilt = send_ep_command(0, DEPCMD_DEPSTARTCFG, 0, 0, 0)
                         && configure_endpoint(0, max_packet, false)
@@ -676,6 +1193,12 @@ pub(super) unsafe fn restart_control_after_reset() {
         let mut dcfg = read(DCFG) & !DCFG_DEVADDR_MASK;
         let speed = read(DSTS) & DSTS_CONNECTSPD_MASK;
         let max_packet = if speed == DSTS_SUPERSPEED { 512 } else { 64 };
+        unsafe {
+            EP0_CONTEXT = (
+                max_packet as u16,
+                if speed == DSTS_SUPERSPEED { 2 } else { 1 },
+            );
+        }
         dcfg &= !DCFG_SPEED_MASK;
         dcfg |= if speed == DSTS_SUPERSPEED {
             DCFG_SUPERSPEED
@@ -748,8 +1271,8 @@ pub(super) unsafe fn restart_control_after_reset() {
 }
 
 /// Reflect gadget-core state into the two pieces of DWC3 device state that
-/// are committed only after a successful control status stage.  Linux does
-/// not apply SET_ADDRESS or SET_CONFIGURATION at SETUP reception time.
+/// are committed in software after a successful control status stage. DCFG
+/// is also written at SET_ADDRESS reception, as required by DWC3.
 unsafe fn sync_gadget_state() {
     unsafe {
         let address = gadget_ref().address() as u32;
@@ -819,6 +1342,9 @@ unsafe fn sync_gadget_state() {
 }
 
 pub(super) unsafe fn start_status(endpoint: usize) -> bool {
+    if unsafe { EP0_STATUS_STARTED } {
+        return true;
+    }
     let kind = if unsafe { CONTROL_HAS_DATA } {
         TRB_CONTROL_STATUS3
     } else {
@@ -833,18 +1359,29 @@ pub(super) unsafe fn start_status(endpoint: usize) -> bool {
         // Same flaky Start Transfer window as the data phase: retry the
         // command instead of failing the status stage (SET_ADDRESS and
         // SET_CONFIGURATION become visible only after this ZLP completes).
-        retry_start_transfer(endpoint, ep0_trb_ptr(trb_index), 2500)
+        let started = retry_start_transfer(endpoint, ep0_trb_ptr(trb_index), 2500);
+        EP0_STATUS_STARTED = started;
+        started
     }
 }
 
-unsafe fn stall_control(endpoint: usize) {
+unsafe fn stall_control(_endpoint: usize) {
     // Linux's gadget core responds to an unsupported control request with a
     // real EP0 STALL. Leaving the endpoint idle is not equivalent: hosts may
     // keep waiting for the missing handshake and never issue the next SETUP.
-    let _ = unsafe { send_ep_command(endpoint, DEPCMD_SETSTALL, 0, 0, 0) };
+    // DWC3's control pipe is stalled on physical EP0 regardless of direction
+    // (Linux dwc3_ep0_stall_and_restart()).
+    let _ = unsafe { send_ep_command(0, DEPCMD_SETSTALL, 0, 0, 0) };
     unsafe {
+        gadget_mut().abort_control();
         EP0_STATE = Ep0State::Setup;
         DATA_PHASE_PENDING_START = false;
+        EP0_STATUS_STARTED = false;
+        EP0_SETUP_PENDING = false;
+        EP0_SETUP_ARMED = false;
+        if ENDPOINTS_READY {
+            let _ = rearm_setup();
+        }
     }
 }
 
@@ -893,11 +1430,45 @@ pub(super) unsafe fn poll_setup_buffer() -> bool {
         let fresh = setup_packet_pending();
         bc9!(19); // the eight-byte DRAM probe returned
         if fresh {
+            consume_step_mark(1); // the SETUP landed in the buffer we poll
             trace_marker(TRACE_SETUP_RECEIVED, 0x5345_5450); // "SETP"
-            handle_setup();
+            // Retire software ownership through the ordinary completion
+            // path before the shared TRB is reused for the response.
+            process_event((1 << 6) | (0x8 << 12));
+            consume_step_mark(2); // the SETUP handler returned
+            // The event ring can lag the TRB writeback. Consume its matching
+            // OUT completion once without advancing the new DATA/STATUS stage.
+            EP0_POLLED_SETUP_EVENT = true;
         }
         fresh
     }
+}
+
+/// The SETUP packet as software would read it, for the CCS words.
+///
+/// `usb2-live-observe` shows EP0 armed but the response path never reaching the
+/// Data state, which means the request either never arrives in this buffer or
+/// arrives and is not handled. This is the direct check: if these eight bytes are
+/// non-zero and shaped like a GET_DESCRIPTOR, the controller *did* DMA the packet
+/// here and the fault is downstream; if they are all zero, the packet never came.
+/// The armed SETUP TRB's control and size words, as the completion test reads them.
+///
+/// `dwc3_setup_trb_complete()` accepts a packet only when all four of its
+/// conditions hold; publishing them one per field says which one is shutting the
+/// door, instead of just "not fresh".
+pub(super) unsafe fn setup_trb_words() -> (u32, u32) {
+    unsafe {
+        let trb = ep0_trb_ptr(0);
+        cache_invalidate(trb as usize, core::mem::size_of::<Trb>());
+        (
+            core::ptr::read_volatile(core::ptr::addr_of!((*trb).ctrl)),
+            core::ptr::read_volatile(core::ptr::addr_of!((*trb).size)),
+        )
+    }
+}
+
+pub(super) unsafe fn setup_bytes() -> [u8; 8] {
+    unsafe { setup_request() }
 }
 
 unsafe fn setup_request() -> [u8; 8] {
@@ -910,8 +1481,271 @@ unsafe fn setup_request() -> [u8; 8] {
     packet
 }
 
+/// Advance the control transfer's data -> status phases with no event ring.
+///
+/// Both remaining transitions are event-driven in the ordinary path:
+///
+///   * `XferComplete(CONTROL_DATA)` is what moves `Ep0State::Data` to
+///     `Ep0State::Status` (`process_event`, the `Ep0State::Data` branch);
+///   * `XferNotReady(CONTROL_STATUS)` (`status == 2`) is what publishes the
+///     status TRB through `start_status()`.
+///
+/// Measured 2026-09-29 with the polling owner driven from inside the handoff:
+/// the device *does* answer the host (the host leaves the descriptor stage and
+/// its errors become prompt `-71` instead of 5 s timeouts, and it attempts
+/// SET_ADDRESS), but the event ring delivers nothing on this handoff - the note
+/// in `poll_setup_buffer()` says `GEVNTCOUNT0` stays 0, and a run that drained
+/// the ring from the drive loop produced the same host errors. So neither
+/// transition happens by itself and the host's control transfer never receives
+/// its status handshake.
+///
+/// This performs exactly those two transitions, in that order, using the same
+/// handlers the events would have reached. The data transition is gated on the
+/// core's own ownership bit: a retired TRB (`HWO` clear) is the only proof
+/// available without the event that the data actually went out.
+static mut STATUS_ATTEMPT_COOLDOWN: u32 = 0;
+static mut STATUS_START_REPORTED: bool = false;
+
+pub(super) unsafe fn service_control_eventlessly() {
+    unsafe {
+        if EP0_STATE == Ep0State::Data && !DATA_PHASE_PENDING_START {
+            let trb_index = ep0_trb_index(1);
+            let trb = ep0_trb_ptr(trb_index);
+            cache_invalidate(trb as usize, core::mem::size_of::<Trb>());
+            let ctrl = core::ptr::read_volatile(core::ptr::addr_of!((*trb).ctrl));
+            if ctrl & TRB_HWO == 0 {
+                process_event(endpoint_event(1, 1, 0));
+            }
+        }
+        if EP0_STATE == Ep0State::Status && !EP0_STATUS_STARTED {
+            // RATE LIMIT. `start_status()` retries its STARTTRANSFER up to 2500
+            // times, so attempting it on every pass made the drive loop crawl
+            // (three runs reached fewer than 200k passes in the whole window,
+            // while the same loop with only the buffer poll reached 250k+).
+            // One attempt per window is enough to answer the question, and it
+            // keeps the buffer poll - the thing that can answer the host -
+            // running.
+            if STATUS_ATTEMPT_COOLDOWN == 0 {
+                STATUS_ATTEMPT_COOLDOWN = 20_000;
+                let endpoint = if CONTROL_HAS_DATA && CONTROL_IN { 0 } else { 1 };
+                let started = start_status(endpoint);
+                if !STATUS_START_REPORTED {
+                    STATUS_START_REPORTED = true;
+                    // ONE WORD, ONE PREDICATE: 1 pulse = the core accepted the
+                    // status STARTTRANSFER, 2 pulses = it rejected it. Total
+                    // pulses in the run = 2 (drive entry) + this bucket.
+                    unsafe { ccs_pulse(300) };
+                    if !started {
+                        unsafe { ccs_pulse(300) };
+                    }
+                }
+                if !started {
+                    stall_control(endpoint);
+                }
+            } else {
+                STATUS_ATTEMPT_COOLDOWN -= 1;
+            }
+        }
+    }
+}
+
+/// Is the armed SETUP TRB still owned by the core?
+///
+/// The arm publishes TRB 0 with HWO set; the core clears HWO when it retires that
+/// TRB, and it only retires it after actually receiving a SETUP. So this one bit
+/// separates two very different failures:
+///
+///   retired (HWO clear)  the host's request DID reach the endpoint. The bytes
+///                        then went to whatever buffer the core was told to use,
+///                        which is where a software/core pointer mismatch would
+///                        show up (`poll_setup_buffer()` sees nothing).
+///   still owned          the request never reached the endpoint at all, so the
+///                        fault is in the link/EP0 handshake, not in the buffers.
+pub(super) unsafe fn setup_trb_retired() -> bool {
+    unsafe {
+        let trb = ep0_trb_ptr(0);
+        cache_invalidate(trb as usize, core::mem::size_of::<Trb>());
+        let ctrl = core::ptr::read_volatile(core::ptr::addr_of!((*trb).ctrl));
+        ctrl & TRB_HWO == 0
+    }
+}
+
+/// Is EP0's OUT SETUP TRB armed right now?
+///
+/// A SETUP can only land in the buffer this code polls while that TRB is armed,
+/// and the arming is `try_arm_setup()`'s job - deferred in this profile and, in
+/// the drive-first builds, normally reached only by the in-handoff arm window
+/// that the drive now runs before. So this bit says whether the host's request
+/// has anywhere to land at all, which the intermittent consumption in the
+/// 2026-09-29 runs points at.
+pub(super) fn ep0_setup_armed() -> bool {
+    unsafe { EP0_SETUP_ARMED }
+}
+
+/// Did the immediate Android-style data-phase STARTTRANSFER get rejected?
+///
+/// `handle_setup()`'s `DataIn` path arms the response TRB and calls
+/// `retry_start_transfer(1, ...)` right away; when that is refused it records
+/// `DATA_PHASE_PENDING_START = true` and leaves the NRDY event to retry - an
+/// event this handoff never delivers. So this flag is the difference between
+/// "the response is on the wire" and "the response was never started and
+/// nothing will start it".
+pub(super) fn data_phase_start_rejected() -> bool {
+    unsafe { DATA_PHASE_PENDING_START }
+}
+
+/// State of the control DATA TRB, as the only ownership evidence there is
+/// without the event ring: the core clears HWO when it has retired the TRB.
+///
+///   0 = no control data phase in flight (`EP0_STATE` is not `Data`)
+///   1 = the core still owns the DATA TRB (HWO set - the transfer has not been
+///       retired, so the host cannot have completed its data stage)
+///   2 = the core retired it (HWO clear)
+///
+/// This is the reading that separates "the response went out and only the
+/// status handshake is missing" from "the data phase never completed, so the
+/// core is NAKing or retransmitting while the host reports `-71`".
+pub(super) unsafe fn control_data_trb_state() -> u8 {
+    unsafe {
+        if EP0_STATE != Ep0State::Data {
+            return 0;
+        }
+        let trb_index = ep0_trb_index(1);
+        let trb = ep0_trb_ptr(trb_index);
+        cache_invalidate(trb as usize, core::mem::size_of::<Trb>());
+        let ctrl = core::ptr::read_volatile(core::ptr::addr_of!((*trb).ctrl));
+        if ctrl & TRB_HWO != 0 { 1 } else { 2 }
+    }
+}
+
+/// What the gadget answered for the last control SETUP: `handle_setup()`'s
+/// `LAST_CONTROL_ACTION` (1 DataIn, 2 StatusIn, 3 StatusOut, 4 SetHalt,
+/// 5 ClearHalt, 6 Setup, 7 Stall, 0 = never set).
+///
+/// Exposed so the polling owner can publish it without reaching into this
+/// module's statics: on this handoff the host rejects the device's EP0 answer
+/// (`-71`), and the first question is whether a response was even built.
+pub(super) fn last_control_action() -> u8 {
+    unsafe { LAST_CONTROL_ACTION }
+}
+
+/// Fine marks for the handler word (`usb2-live-handler-steps`).
+///
+/// The response path is the last place that has not been measured with the arm in
+/// place, and one mark is ~2.2 s here, so this word publishes exactly two:
+///
+///   mark 1  `handle_setup()` was entered - the SETUP really did land in the
+///           buffer this code polls, which is what the arm-at-entry runs imply but
+///           have not shown directly
+///   mark 2  `GadgetDriver::on_setup()` returned - the response was built
+///
+/// mark 1 alone puts the stop between them.
+fn handler_step_mark(step: u32) {
+    if option_env!("FULLERENE_USB_UTMI_POSTRUN_READOUT") != Some("usb2-live-handler-steps") {
+        return;
+    }
+    let _ = step;
+    unsafe { ccs_pulse(300) };
+}
+
+/// Milliseconds since the pull-up was published, or `None` before it went out.
+///
+/// This is the shared clock: the host's timeline starts when it sees that same pull-up, so a device
+/// record stamped with this can be laid directly against a host capture and against the board's own
+/// 5.9 s fail-safe.
+pub fn milliseconds_since_connect() -> Option<u32> {
+    // The epoch is the *pull-up*, not the Connect Done event this used to measure from: the pull-up
+    // is the moment the host can see us and therefore the moment its own clock starts. On this unit
+    // the two are tens of seconds apart, which is the whole difference between a device record and
+    // the host capture it is supposed to be compared with.
+    super::control::ms_since_pullup()
+}
+
+/// Set when the host asserts DTR on the CDC-ACM port, i.e. it has opened `/dev/ttyACM0`. The
+/// durable log is sent when this goes from clear to set: a reader that is not there yet is a reader
+/// that would lose the bytes.
+static mut CDC_DTR: bool = false;
+
+/// Whether the host has opened the port. `false` until a `SET_CONTROL_LINE_STATE` says otherwise.
+pub fn cdc_host_has_port_open() -> bool {
+    unsafe { CDC_DTR }
+}
+
+/// Answer a CDC-ACM class request, if this packet is one.
+///
+/// Handled next to the trace request and for the same reason: a function's class requests must
+/// answer without being able to disturb the address/configuration state machine, because the host
+/// is mid-enumeration when they arrive.
+///
+/// `SET_LINE_CODING` is deliberately *not* answered here. It carries a seven-byte host-to-device
+/// data stage, and this codebase has no path that arms an OUT data stage for EP0 yet; returning
+/// "accepted" without consuming those bytes would desynchronise the control transfer, and a stall is
+/// at least an honest failure. Until that path exists a host that sends it will see its `open()`
+/// fail, which is the gap that must close before this channel carries anything.
+fn cdc_class_action(packet: &[u8; 8], response: &mut [u8]) -> Option<ControlAction> {
+    match crate::cdc_acm::handle(packet, response) {
+        crate::cdc_acm::Action::DataIn(length) => Some(ControlAction::DataIn(length)),
+        crate::cdc_acm::Action::Unsupported => Some(ControlAction::Stall),
+        crate::cdc_acm::Action::Dtr(dtr) => {
+            unsafe { CDC_DTR = dtr };
+            Some(ControlAction::StatusIn)
+        }
+        crate::cdc_acm::Action::NotOurs => None,
+    }
+}
+
+/// How many setup packets this boot delivered to the handler.
+///
+/// The host re-tries its first control transfer tens of times per run (the capture shows 26 to 54
+/// URBs to the unconfigured device), and every device-side word so far has been consistent with the
+/// controller delivering only the *first* of them: the setup arrives, the reply is built correctly,
+/// and no later phase ever starts. That is what a DWC3 whose EP0 state machine is still waiting for
+/// the setup's completion to be acknowledged looks like - it will not move to the data phase, so the
+/// data phase's own command never completes and nothing is transmitted.
+static mut SETUP_COUNT: u32 = 0;
+
+pub(super) fn setup_count() -> u32 {
+    unsafe { core::ptr::read(core::ptr::addr_of!(SETUP_COUNT)) }
+}
+
+/// The first setup packet this boot delivered, as `(bmRequestType, bRequest)`.
+///
+/// The wire says the host gets no answer at all, and every device-side counter that claimed otherwise
+/// was reading something ambiguous. This answers one question with the one thing the device cannot
+/// fake: did the eight bytes the controller handed us actually contain the request the host sent
+/// (bmRequestType 0x80, bRequest 0x06 for the first GET_DESCRIPTOR, or 0x00/0x05 for SET_ADDRESS)?
+/// If the buffer holds something else, every reply built from it is the wrong reply.
+static mut FIRST_SETUP_BYTES: Option<(u8, u8)> = None;
+
+/// `(bmRequestType, bRequest)` of the first setup this boot, or `None` if none arrived.
+pub(super) fn first_setup_bytes() -> Option<(u8, u8)> {
+    // A copy, for the same reason: `unsafe { FIRST_SETUP_BYTES }` on an `Option<(u8, u8)>` copies.
+    unsafe { core::ptr::read(core::ptr::addr_of!(FIRST_SETUP_BYTES)) }
+}
+
 pub(super) unsafe fn handle_setup() {
+    handler_step_mark(1); // the handler was entered (the SETUP landed)
+    // The code the timeline word asks for. It had no writer at all, so that field read as zero for
+    // every boot: a stage that never happened and a stage that always happened at t=0 looked alike.
+    crate::blackbox::record(crate::blackbox::CODE_USB_EP0_SETUP_DONE, 0, 0, 0);
     let packet = unsafe { setup_request() };
+    unsafe {
+        // The one thing about the host's request that the device cannot fake: the bytes the
+        // controller handed us. Every reply is built from these. Read as a copy: a `is_none()` call
+        // on a `static mut` is a shared reference to it, which the toolchain rejects outright.
+        if matches!(
+            core::ptr::read(core::ptr::addr_of!(FIRST_SETUP_BYTES)),
+            None
+        ) {
+            FIRST_SETUP_BYTES = Some((packet[0], packet[1]));
+        }
+        SETUP_COUNT = SETUP_COUNT.saturating_add(1);
+    }
+    unsafe {
+        EP0_STATUS_STARTED = false;
+        EP0_SETUP_PENDING = false;
+        DATA_PHASE_PENDING_START = false;
+    }
     // HANDLE-SETUP BREADCRUMBS (level 8). `poll_setup_buffer()` is DRAM-only and cannot block, yet
     // it never returns after `bc3!(1)`. That leaves `handle_setup()` - reached only when the SETUP
     // buffer holds non-zero bytes, which means the host's SETUP really did arrive - and its last
@@ -941,11 +1775,9 @@ pub(super) unsafe fn handle_setup() {
         SIGNAL_SETUP_PACKET_RECEIVED = true;
     }
     bc8!(9); // setup_request() + the DRAM-only packet parse returned
-    // Zero the DMA buffer after latching the packet: a later non-zero
-    // buffer then proves the core delivered a NEW SETUP packet, even while
-    // the software state machine was still in the Data/Status phase (the
-    // host aborts in-flight control transfers with a new SETUP - Linux
-    // handles this via its setup_packet_pending logic).
+    // Restore the idle marker after copying the eight bytes. Buffer contents
+    // alone never establish ownership: polling also requires a retired SETUP
+    // TRB, and DATA/STATUS interruption comes from TRBSTS_SETUP_PENDING.
     unsafe { clear_setup_packet() };
     let request_type = packet[0];
     let request = packet[1];
@@ -983,9 +1815,17 @@ pub(super) unsafe fn handle_setup() {
             // Keep trace reads outside the gadget function callback: this is
             // a diagnostic transport over the same EP0 path and must not
             // alter address/configuration state.
-            fill_trace_control_response(response, requested_length, value)
+            let action = fill_trace_control_response(response, requested_length, value)
                 .map(ControlAction::DataIn)
-                .unwrap_or(ControlAction::Stall)
+                .unwrap_or(ControlAction::Stall);
+            if matches!(action, ControlAction::DataIn(_)) {
+                gadget_mut().begin_external_data_in();
+            }
+            action
+        } else if let Some(action) = cdc_class_action(&packet, response) {
+            // A CDC-ACM class request. It answers from a pure function of the packet, so it cannot
+            // disturb the address/configuration state machine the host is mid-way through.
+            action
         } else {
             // Keep the trace transport in the ordinary EP0 path: a host request
             // for string descriptor 3 can observe the retained cursor even when
@@ -994,6 +1834,7 @@ pub(super) unsafe fn handle_setup() {
             GadgetDriver::on_setup(gadget_mut(), packet, response)
         }
     };
+    handler_step_mark(2); // the response callback returned
     // Latch which action the callback returned: the response-phase words all read their
     bc8!(11); // GadgetDriver::on_setup() returned
     // initial values when no reply is built, so this is the one remaining unknown.
@@ -1047,13 +1888,63 @@ pub(super) unsafe fn handle_setup() {
             // Keep the NRDY path only as recovery if this initial command is
             // rejected while the link is still settling.
             DATA_PHASE_PENDING_LEN = length;
-            let started = retry_start_transfer(1, ep0_trb_ptr(trb_index), 2500);
+            if option_env!("FULLERENE_USB_UTMI_POSTRUN_READOUT") == Some("usb2-live-ack-event") {
+                // ACKNOWLEDGE WITHOUT READING.
+                //
+                // The ledger records that reading GEVNTCOUNT0 never returns (0xc40c is
+                // the right address - its neighbours 0xc400 and 0xc408 read fine in the
+                // same run, and GCTL says clock gating is disabled), so the event ring
+                // can never be acknowledged the ordinary way. The documented
+                // acknowledgement is a *write* of the consumed byte count - Linux
+                // writes back what it processed in `dwc3_process_event_buf()`. One
+                // event entry is 4 bytes.
+                //
+                // Hypothesis under test: EP0's completion is still unacknowledged, and
+                // that is what stops the data phase's STARTTRANSFER from retiring. If
+                // so, this write unblocks it and `DATA_PHASE_LAST_COMMAND` stops
+                // carrying the timeout marker.
+                unsafe { write(GEVNTCOUNT0, 4) };
+            }
+            unsafe {
+                DATA_PHASE_SNAPSHOT = [
+                    read(DCTL),
+                    read(DSTS),
+                    EP0_SETUP_ARMED as u32,
+                    EP0_RESOURCE_INDEX[0] as u32,
+                    EP0_RESOURCE_INDEX[1] as u32,
+                    read(dep_reg(0, 0x0c)),
+                    read(dep_reg(1, 0x0c)),
+                ];
+            }
+            // SINGLE ATTEMPT, behind a word. `retry_start_transfer(..., 2500)` issues
+            // STARTTRANSFER up to 2500 times when the command does not retire. Linux
+            // never re-issues a stalled EP0 command like that - `dwc3_ep0_start_trans()`
+            // sends it once and returns. Re-issuing on top of a command whose CMDACT is
+            // still set is a classic way to leave a DWC3 command engine wedged, and a
+            // permanently wedged engine would explain why every other explanation we
+            // have tested changes nothing. Same readout as `usb2-live-data-cmd`, so the
+            // timeout bit is the verdict.
+            DATA_PHASE_TRB_PTR = ep0_trb_ptr(trb_index) as usize;
+            let single_try =
+                option_env!("FULLERENE_USB_UTMI_POSTRUN_READOUT") == Some("usb2-live-single-try");
+            let started = if single_try {
+                start_transfer(1, ep0_trb_ptr(trb_index))
+            } else {
+                retry_start_transfer(1, ep0_trb_ptr(trb_index), 2500)
+            };
             DATA_PHASE_PENDING_START = !started;
             if started {
                 note_probe_ep0_progress();
             }
         },
         ControlAction::StatusIn => unsafe {
+            if request_type == 0 && request == 5 {
+                // DWC3 latches the new address for the end of this transfer.
+                // Match Linux dwc3_ep0_set_address(): program DCFG before
+                // queuing STATUS, while the protocol commits after completion.
+                let dcfg = read(DCFG) & !DCFG_DEVADDR_MASK;
+                write(DCFG, dcfg | ((value as u32) << 3));
+            }
             EP0_STATE = Ep0State::Status;
             // The status phase suffers the same XferNotReady boundary as the
             // data phase: an immediate start_status(1) retires cleanly and is
@@ -1108,6 +1999,9 @@ pub(super) unsafe fn process_event(raw: u32) {
                     DATA_RESOURCE_INDEX = [0; 2];
                     EP0_RESOURCE_INDEX = [0; 2];
                     EP0_SETUP_ARMED = false;
+                    EP0_STATUS_STARTED = false;
+                    EP0_SETUP_PENDING = false;
+                    EP0_POLLED_SETUP_EVENT = false;
                     EP0_STATE = Ep0State::Setup;
                     CONTROL_IN = false;
                     CONTROL_HAS_DATA = false;
@@ -1204,11 +2098,20 @@ pub(super) unsafe fn process_event(raw: u32) {
                 }
                 unsafe {
                     CONNECT_TICK = arch_counter();
+                    // From here on every durable record carries the time since this moment, which is
+                    // the moment the host started its clock too.
+                    crate::blackbox::install_clock(milliseconds_since_connect);
                     PENDING_SETUP_ARM = true;
                 }
                 // Linux's DWC3 gadget driver starts with the SuperSpeed EP0
                 // size and modifies it after Connect Done.
                 let max_packet = if speed == DSTS_SUPERSPEED { 512 } else { 64 };
+                unsafe {
+                    EP0_CONTEXT = (
+                        max_packet as u16,
+                        if speed == DSTS_SUPERSPEED { 2 } else { 1 },
+                    );
+                }
                 unsafe {
                     let first_connect = !ENDPOINTS_READY;
                     // A post-reset Connect Done (first_connect false) must not
@@ -1324,35 +2227,46 @@ pub(super) unsafe fn process_event(raw: u32) {
             unsafe { complete_bulk_transfer(endpoint, status, raw) };
             return;
         }
-        // Linux's dwc3_ep0_xfer_complete() does NOT look at the event status
-        // at all: XferComplete status bits on EP0 carry LST/IOC-style flags
-        // (our SETUP TRB sets LST, so a healthy completion reports 0x8), and
-        // the dispatch is purely by ep0state. Routing non-zero statuses into
-        // the recovery path would eat every healthy SETUP completion.
-        unsafe {
-            EP0_RESOURCE_INDEX[endpoint] = 0;
-            // The previously armed SETUP/DATA/STATUS transfer is consumed;
-            // the poll-loop guard re-arms the SETUP TRB once EP0 returns to
-            // the Setup state.
-            EP0_SETUP_ARMED = false;
-            if EP0_STATE == Ep0State::Setup {
-                // EP0 XferComplete status 0x8 is the normal LST indication,
-                // not an error. The request carries the same successful
-                // setup completion in the XBL path.
-                complete_xbl_setup_request(false);
-            }
-            // A freshly DMAed SETUP packet overrides any in-flight phase:
-            // hosts abort stalled control transfers by sending a new SETUP,
-            // and the completion event for the OLD transfer carries it.
-            // Linux recovers via setup_packet_pending; without this the new
-            // SETUP is dispatched into the stale Data/Status handler and the
-            // request is silently lost (the mid-enumeration death).
-            let fresh_setup = setup_packet_pending();
-            if fresh_setup {
-                EP0_STATE = Ep0State::Setup;
-                handle_setup();
-                return;
-            }
+        if endpoint == 0 && EP0_POLLED_SETUP_EVENT {
+            EP0_POLLED_SETUP_EVENT = false;
+            return;
+        }
+        // Event status contains LST/IOC flags, not the transfer result. The
+        // result lives in the retired TRB's size word (Linux ep0.c).
+        let trb = ep0_trb_ptr(ep0_trb_index(endpoint));
+        cache_invalidate(trb as usize, core::mem::size_of::<Trb>());
+        let trb_control = read_volatile(addr_of!((*trb).ctrl));
+        let trb_size = read_volatile(addr_of!((*trb).size));
+        let trb_status = trb_size >> 28;
+        trace_event(
+            TRACE_TRANSFER_COMPLETE,
+            0x5452_4243, // "TRBC": raw retirement evidence, before TRB reuse
+            endpoint as u32,
+            trb_control,
+            trb_size,
+            raw,
+        );
+        let expected_endpoint = match EP0_STATE {
+            Ep0State::Setup => 0,
+            Ep0State::Data => usize::from(CONTROL_IN),
+            Ep0State::Status => usize::from(!(CONTROL_HAS_DATA && CONTROL_IN)),
+        };
+        if endpoint != expected_endpoint || trb_control & TRB_HWO != 0 {
+            return;
+        }
+        // A real SETUP XferComplete is authoritative, as in Linux. The
+        // stricter residual/type test is only for eventless buffer polling.
+        EP0_RESOURCE_INDEX[endpoint] = 0;
+        EP0_SETUP_ARMED = false;
+        if EP0_STATE == Ep0State::Setup {
+            complete_xbl_setup_request(false);
+        } else if trb_status == 2 {
+            // A new SETUP interrupted this request. DWC3 requires the old
+            // STATUS phase to retire before another CONTROL_SETUP is posted.
+            EP0_SETUP_PENDING = true;
+        } else if trb_status != 0 {
+            recover_control_transfer(endpoint, trb_status, raw);
+            return;
         }
         trace_event(
             TRACE_TRANSFER_COMPLETE,
@@ -1366,21 +2280,25 @@ pub(super) unsafe fn process_event(raw: u32) {
             match EP0_STATE {
                 Ep0State::Setup => handle_setup(),
                 Ep0State::Data if endpoint == 0 || endpoint == 1 => {
-                    let action = GadgetDriver::on_transfer_complete(gadget_mut());
-                    EP0_STATE = Ep0State::Status;
-                    match action {
-                        ControlAction::StatusOut => {
-                            if !start_status(0) {
-                                stall_control(0);
-                            }
+                    if !EP0_SETUP_PENDING {
+                        let action = GadgetDriver::on_transfer_complete(gadget_mut());
+                        if !matches!(action, ControlAction::StatusOut | ControlAction::StatusIn) {
+                            stall_control(endpoint);
+                            return;
                         }
-                        ControlAction::StatusIn => {
-                            if !start_status(1) {
-                                stall_control(1);
-                            }
-                        }
-                        _ => stall_control(if CONTROL_IN { 1 } else { 0 }),
                     }
+                    DATA_PHASE_PENDING_START = false;
+                    EP0_STATE = Ep0State::Status;
+                    // STATUS is on-demand: only XferNotReady(CONTROL_STATUS)
+                    // may publish its TRB, including SETUP_PENDING recovery.
+                }
+                Ep0State::Status if EP0_SETUP_PENDING => {
+                    gadget_mut().abort_control();
+                    let dcfg = read(DCFG) & !DCFG_DEVADDR_MASK;
+                    write(DCFG, dcfg | ((gadget_ref().address() as u32) << 3));
+                    EP0_STATE = Ep0State::Setup;
+                    EP0_STATUS_STARTED = false;
+                    rearm_setup();
                 }
                 Ep0State::Status => match GadgetDriver::on_transfer_complete(gadget_mut()) {
                     ControlAction::Setup => {
@@ -1389,7 +2307,7 @@ pub(super) unsafe fn process_event(raw: u32) {
                         rearm_setup();
                     }
                     ControlAction::SetHalt(address) => {
-                        let endpoint = (address & 0x7f) as usize;
+                        let endpoint = dwc3_endpoint_number(address);
                         if send_ep_command(endpoint, DEPCMD_SETSTALL, 0, 0, 0)
                             && udc_mut().set_halt(address, true)
                         {
@@ -1401,7 +2319,7 @@ pub(super) unsafe fn process_event(raw: u32) {
                         }
                     }
                     ControlAction::ClearHalt(address) => {
-                        let endpoint = (address & 0x7f) as usize;
+                        let endpoint = dwc3_endpoint_number(address);
                         if send_ep_command(endpoint, DEPCMD_CLEARSTALL, 0, 0, 0)
                             && udc_mut().set_halt(address, false)
                         {
@@ -1495,7 +2413,12 @@ unsafe fn recover_control_transfer(endpoint: usize, status: u32, raw: u32) {
         let _ = end_transfer(endpoint);
         EP0_RESOURCE_INDEX[endpoint] = 0;
     }
+    gadget_mut().abort_control();
     EP0_STATE = Ep0State::Setup;
+    EP0_SETUP_ARMED = false;
+    EP0_STATUS_STARTED = false;
+    EP0_SETUP_PENDING = false;
+    DATA_PHASE_PENDING_START = false;
     CONTROL_IN = false;
     CONTROL_HAS_DATA = false;
     if ENDPOINTS_READY {
