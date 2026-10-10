@@ -2454,3 +2454,30 @@ ANE fastboot window was visible but ADB failed and the engine only waited for a
 loader. The v261 engine is currently running as process `proc_be7d6f0dad8a`;
 v261 has not yet been flashed because the current v260 boot has not produced a
 loader window after the 13:06:58 clean enumeration.
+
+### v280 recipe byte-exact + the production-path poison (2026-10-10 evening)
+
+The preserved known-good artifact `fullerene-ane-v280-revert.img` is now fully
+reproduced byte-for-byte (0 diffs over the inner Image):
+
+- source `7e738b30` + `FULLERENE_ANE_SKIP_DESKTOP=1 FULLERENE_ANE_PUMP_LATE=1`
+  `FULLERENE_ANE_HISTORICAL_USB_SEQUENCE=1 FULLERENE_ANE_MARKS_UART_ONLY=1`
+  `FULLERENE_ANE_NO_PUTC_WD_TEND=1` (no ARM_MS_1, no PUMP_WINDOW).
+
+Under HIST the boot thread never enters the predesktop config wait or the
+enumeration watchdog window: attach -> service -> (no desktop) ->
+`usb_reenumerate()` (the designed second D+ edge) -> service -> launchd, then
+parks on the reenumerate DCTL read (PC 0x1C201B4/B8 = the DCTL load inside
+`usb_reenumerate`, normal) while the timer-IRQ pump answers everything. The
+park is not a stall to fix; it is the proven shape.
+
+Every 2026-10-10 build WITHOUT HIST died -110/-71 -> LK in 40 s-3 min
+(v287b, v288 HEAD-pure, v289 PUMP_LATE, v290 HEAD+SKIP_DESKTOP with the 5 s
+wall, v291 quiescence re-arm, v292/v293/v294/v295 source bisect points,
+v296 7e7 without HIST). The regression is the production boot path itself
+(predesktop wait + enumeration watchdog), not any single commit's code.
+v297 (HEAD + the proven recipe) enumerates (one stable-garbled draw, LK via
+the tick cap ~28 min); v280 control re-flashed and verified green (full
+enumeration, getvar served, CNXN ring 2096 at 19:34). Next: port the proven
+HIST shape into the production (desktop-on) path instead of re-enabling
+SKIP_DESKTOP.

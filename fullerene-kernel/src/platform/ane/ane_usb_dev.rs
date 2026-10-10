@@ -655,6 +655,14 @@ fn handle_setup(log: fn(&str, u64)) {
             };
             let n = core::cmp::min(wlength as usize, desc.len());
             ep0_send(&desc[..n]);
+            if dtype == 3 && n > 0 {
+                // v300: self-heal counter. The host reads at least the langid
+                // and the product string on every clean enumeration. Count
+                // served string transfers so the watchdog can tell a garbled
+                // boot (config-1 reached but strings never served) from a
+                // healthy one, and cycle D+ on a garbled boot.
+                STRINGS_SERVED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            }
         }
         0x05 => {
             // SET_ADDRESS
@@ -945,6 +953,18 @@ pub static SETUP_SEEN: core::sync::atomic::AtomicU32 = core::sync::atomic::Atomi
 
 pub fn setups_seen() -> u32 {
     SETUP_SEEN.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// v300: string-descriptor transfers served this boot. A clean enumeration
+/// always reads the langid + product strings; a garbled boot reaches
+/// config-1 with zero served strings (the one-behind state mangles exactly
+/// the string stage). The watchdog uses this to auto-cycle D+ on a garbled
+/// boot - the host never speaks to it again otherwise.
+pub static STRINGS_SERVED: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
+pub fn strings_served() -> u32 {
+    STRINGS_SERVED.load(core::sync::atomic::Ordering::Relaxed)
 }
 
 /// v199: whether the host completed SET_CONFIGURATION for this boot.

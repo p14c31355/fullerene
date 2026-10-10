@@ -745,3 +745,54 @@ path entirely and removes the starvation mechanism instead of tuning around
 it. Unverified on this handoff: whether the loader's GIC routing delivers the
 DWC2 SPI to the kernel at all (the v1-era record says the controller IRQ was
 never wired).
+
+## 2026-10-11 04:00-05:35 - garbled-boot self-heal and the stock fallback
+
+Two facts came out of the night of 10/11 and both got code.
+
+### The garbled boot is a distinct failure, not "config never completed"
+
+v297/v300 reach SET_CONFIGURATION and the host still logs a mangled identity:
+
+    Product: Љ
+    Manufacturer: ANE fastboot      <- shifted one field
+    SerialNumber: Fullerene
+
+The one-behind EP0 state corrupts exactly the string-descriptor stage, so the
+host latches a device identity that is not ours. The enumeration watchdog only
+watches for "config-1 never arrived", so it never fires again and the boot sits
+wedged until the tick cap (~28 min), with no host traffic to recover it.
+
+v300 moved the D+ re-enumerate edge before `desktop::bring_up()` (the v280
+proof order). Result on hardware: still garbled, and it wedged the same way.
+The order was not the cause.
+
+### v301: a self-heal for the garbled identity
+
+- `platform/ane/ane_usb_dev.rs` counts served string descriptors
+  (`STRINGS_SERVED`, incremented in the GET_DESCRIPTOR string path). A clean
+  enumeration always reads langid + product; a garbled one serves none.
+- `arch/aarch64/exceptions.rs` adds a garble detector beside the enumeration
+  watchdog: if the boot claims configured and `strings_served() == 0` after the
+  reconnect wait, cycle D+ and re-enumerate. Bounded by the same RETRIES budget;
+  on exhaustion it panics so LK comes back and the auto-flasher can retry.
+
+This closes the gap the previous watchdog left: it now covers "reached config-1
+but the host got a wrong identity", not just "config-1 never arrived".
+
+### Recovery path (verified)
+
+Genuine stock kernel: `~/dev/p20-root/firmware/kernel_stock.bin`
+(25,165,824 B, `ANDROID!` header, 8.0.0.151). Flash with
+`fastboot flash kernel` + `reboot`. Confirmed 2026-10-11 05:35:20: the handset
+re-enumerates as `12d1:107e` Product `ANE-LX2J` / Mfr `HUAWEI` - a normal phone
+again, USB free to unplug.
+
+### Open at the boundary
+
+- v301 is built (`artifacts/fullerene-ane-v301-garble-selfheal.img`) but NOT
+  yet flashed - the device was returned to stock for a break.
+- The production path (desktop ON) still does not hold a clean enumeration;
+  v300 showed reordering alone is insufficient. Next: verify whether the
+  self-heal recovers the desktop path, or whether the panel flush during
+  `bring_up()` is what starves EP0.

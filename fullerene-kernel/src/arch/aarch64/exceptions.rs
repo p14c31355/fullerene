@@ -851,12 +851,27 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                 static S0: AtomicU32 = AtomicU32::new(0); // beats at attach/retry
                 static WAIT_LOGGED: core::sync::atomic::AtomicBool =
                     core::sync::atomic::AtomicBool::new(false);
+                // v287: fresh-SETUP immunity. The reconnect draws D+ down; if
+                // the host is mid-enumeration that KILLS its live attempts
+                // (measured 15:2x: -71 on every draw, boot dead in ~40 s).
+                // Track the beat of the last SETUP-seen delta; while one is
+                // younger than the reconnect interval, the watchdog stands
+                // down (the boot thread's predesktop wait owns the exchange).
+                static LAST_SETUPS: AtomicU32 = AtomicU32::new(0);
+                static LAST_SETUPS_BEAT: AtomicU32 = AtomicU32::new(0);
+                let setups_now = super::platform::ane_usb_dev::setups_seen();
+                if setups_now != LAST_SETUPS.swap(setups_now, Ordering::Relaxed) {
+                    LAST_SETUPS_BEAT.store(beats, Ordering::Relaxed);
+                }
+                let host_talking = beats.wrapping_sub(LAST_SETUPS_BEAT.load(Ordering::Relaxed))
+                    <= reconnect_wait_beats;
                 let watchdog_applies = super::platform::ane_usb_dev::usb_attached()
                     && !super::platform::ane_usb_dev::usb_config_was_1()
                     // v285: honor the boot thread's closed duty window - it
                     // explicitly said the handoff is over, so do not wait
                     // for enumeration on its behalf.
-                    && super::platform::ane::usb_pump_on();
+                    && super::platform::ane::usb_pump_on()
+                    && !host_talking;
                 if watchdog_applies {
                     if S0.load(Ordering::Relaxed) == 0 {
                         S0.store(beats, Ordering::Relaxed);
@@ -881,6 +896,46 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                         RC_T0.store(beats, Ordering::Relaxed);
                         RC_STATE.store(1, Ordering::Relaxed);
                         crate::blackbox::text_puts("WD: RECONNECT\n");
+                        super::platform::ane_usb_dev::usb_reconnect_begin();
+                    }
+                }
+                // v300: garbled-enumeration self-heal. A boot can reach
+                // config-1 with a MANGLED string stage (the one-behind EP0
+                // state corrupts exactly the string reads: the host logs
+                // Product "Љ", Manufacturer "ANE fastboot", Serial
+                // "Fullerene"). config-1 latched, so the enumeration
+                // watchdog above never fires again - and the host never
+                // talks to that garbled identity, leaving the boot wedged
+                // until the tick cap. If the boot claims configured but no
+                // string transfer was EVER served, cycle D+ (bounded by the
+                // same RETRIES budget). A clean enumeration always reads
+                // langid+product strings first, so this cannot false-fire
+                // on a healthy link mid-conversation.
+                //
+                // PREMISE TO VERIFY ON HARDWARE: that the garbled boot
+                // leaves this counter at zero. The host-side log names
+                // several string indices, so if the corruption is at the
+                // transfer level (not the request level) the count may be
+                // non-zero and this detector will not fire. First test after
+                // flashing: does "WD: GARBLE RECONNECT" appear (or not) on a
+                // garbled boot, versus a healthy one.
+                static GARBLE_RETRIES: AtomicU32 = AtomicU32::new(0);
+                static GARBLE_T0: AtomicU32 = AtomicU32::new(0);
+                if super::platform::ane_usb_dev::usb_config_was_1()
+                    && super::platform::ane_usb_dev::strings_served() == 0
+                {
+                    let g0 = GARBLE_T0.load(Ordering::Relaxed);
+                    if g0 == 0 {
+                        GARBLE_T0.store(beats, Ordering::Relaxed);
+                    } else if beats.wrapping_sub(g0) > reconnect_wait_beats {
+                        let g = GARBLE_RETRIES.load(Ordering::Relaxed);
+                        if g >= reconnect_max {
+                            crate::blackbox::text_puts("WD: GARBLE STUCK\n");
+                            panic!("watchdog: garbled enumeration never recovered");
+                        }
+                        GARBLE_RETRIES.store(g + 1, Ordering::Relaxed);
+                        GARBLE_T0.store(beats, Ordering::Relaxed);
+                        crate::blackbox::text_puts("WD: GARBLE RECONNECT\n");
                         super::platform::ane_usb_dev::usb_reconnect_begin();
                     }
                 }

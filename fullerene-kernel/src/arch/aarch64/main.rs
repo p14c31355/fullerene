@@ -1228,44 +1228,21 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         // v229: the desktop (solvent + lattice) takes the canvas before the
         // user task starts. The launchd's VFS work can park for good; the
         // desktop paint makes the screen carry the result either way.
+        //
+        // v298: the v283-v297 production path (predesktop config wait +
+        // enumeration watchdog) killed every unattended boot: the host's
+        // first draw runs -110/-71 retries for 20-90 s, the bounded wait
+        // abandoned EP0 mid-dance, the watchdog's reconnect tore D+ down
+        // under the live host session, and the boot panicked to the loader.
+        // The byte-exact v280 reproduction (see BUG_JOURNAL) proved the
+        // reliable shape: NO predesktop wait, NO enumeration watchdog —
+        // the historical flow attach -> service -> desktop ->
+        // usb_reenumerate() -> service -> launchd, where the reenumerate
+        // D+ drop/raise is the DESIGNED second enumeration edge and the
+        // boot thread parks on its slow DCTL read while the timer-IRQ pump
+        // answers the host. Restore that flow for the production path and
+        // keep the HISTORICAL gate as the same-sequence alias.
         #[cfg(fullerene_aarch64_ane)]
-        if option_env!("FULLERENE_ANE_HISTORICAL_USB_SEQUENCE") != Some("1") {
-            // ENUMDONE only signals that the bus reset completed; descriptor
-            // reads and SET_CONFIGURATION(1) still follow it. Do not let the
-            // renderer monopolize the boot thread during those EP0 requests.
-            // The timer IRQ keeps servicing USB and bounds failed attempts via
-            // its reconnect budget, ultimately returning to the loader.
-            //
-            // v283: bound the wait. The wait exists so the predesktop config
-            // handshake finishes before the renderer claims the canvas, but
-            // with no host on the other end (unattended boots) it spins
-            // forever and the watchdog files BOOT PROGRESS STALLED - the
-            // probe trail's WD lines. 5 s is far beyond every observed
-            // handoff, so timing out here changes nothing for a hosted boot
-            // and lets an unattended one proceed to the desktop.
-            {
-                let t0 = super::timer::uptime_us();
-                while !platform::ane_usb_dev::usb_config_was_1() {
-                    platform::ane_usb_dev::service(ane_log);
-                    if super::timer::uptime_us().wrapping_sub(t0) > 5_000_000 {
-                        ane_log("usb: predesktop-wait timeout", 0);
-                        break;
-                    }
-                    core::hint::spin_loop();
-                }
-            }
-            platform::ane_usb_dev::service(ane_log);
-            ane_log(
-                "usb: predesktop-config=",
-                platform::ane_usb_dev::usb_config_was_1() as u64,
-            );
-            if platform::ane_usb_dev::usb_enumerated() {
-                ane_log(
-                    "usb: dctl-predesktop=",
-                    platform::ane_usb_dev::dctl_snapshot() as u64,
-                );
-            }
-        }
         // v277: close the responder's duty window. The handoff is behind us,
         // so from here the timer IRQ stops touching DWC2 and the boot thread
         // owns the CPU for the storage probe, the desktop and the launchd -
@@ -1286,18 +1263,28 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
             platform::ane::usb_pump_window(false);
         }
         #[cfg(fullerene_aarch64_ane)]
-        if option_env!("FULLERENE_ANE_SKIP_DESKTOP") != Some("1") {
-            desktop::bring_up();
-        }
-        #[cfg(fullerene_aarch64_ane)]
         {
-            // Restore the historical no-desktop boot sequence in a
-            // diagnostic build, without changing the default boot path.
+            // v300: reorder the production flow around the proven v280 shape.
+            // v297 measured: with the desktop ON, the post-DESKTOP
+            // reenumerate always lands mid-enumeration of the host's second
+            // draw and the garbled-string state sticks for the whole boot.
+            // The v280 sequence raises the second edge BEFORE the long CPU
+            // work, so the fresh enumeration is answered by the timer pump
+            // while nothing else runs. Do the same here: reenumerate FIRST,
+            // then hand the canvas to the desktop renderer. The
+            // HISTORICAL_NO_RECONNECT / FORCE_POST_RECONNECT knobs keep
+            // their A/B roles.
             if (option_env!("FULLERENE_ANE_HISTORICAL_USB_SEQUENCE") == Some("1")
                 && option_env!("FULLERENE_ANE_HISTORICAL_NO_RECONNECT") != Some("1"))
                 || option_env!("FULLERENE_ANE_FORCE_POST_RECONNECT") == Some("1")
+                || (option_env!("FULLERENE_ANE_HISTORICAL_USB_SEQUENCE").is_none()
+                    && option_env!("FULLERENE_ANE_NO_POST_RECONNECT").is_none())
             {
                 platform::ane::usb_reenumerate();
+            }
+            platform::ane_usb_dev::service(ane_log);
+            if option_env!("FULLERENE_ANE_SKIP_DESKTOP") != Some("1") {
+                desktop::bring_up();
             }
             platform::ane_usb_dev::service(ane_log);
             if platform::ane_usb_dev::usb_enumerated() {
