@@ -919,13 +919,34 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                 // non-zero and this detector will not fire. First test after
                 // flashing: does "WD: GARBLE RECONNECT" appear (or not) on a
                 // garbled boot, versus a healthy one.
+                //
+                // v305 CORRECTION (measured 2026-10-13): the premise is FALSE.
+                // The one-behind corruption ROTATES strings between slots -
+                // the host still receives (wrong) string data, so
+                // STRINGS_SERVED counts up and this branch never fired on a
+                // garbled boot. The measured host signature of a garbled
+                // enumeration is instead: strings served AND config-1
+                // REACHED, but the identity the host latched is wrong
+                // (rotated), so the host never OPENS a fastboot conversation
+                // (no EP1 traffic, no getvar) yet the responder sees zero
+                // subsequent SETUP traffic. The corrected detector: strings
+                // served + config-1, and NO new SETUP for the full
+                // reconnect wait = the host stopped talking to us, cycle D+.
+                // (A healthy parked boot also goes quiet, but it is already
+                // covered by the enumeration watchdog; this branch only adds
+                // the post-config quiet case.)
                 static GARBLE_RETRIES: AtomicU32 = AtomicU32::new(0);
                 static GARBLE_T0: AtomicU32 = AtomicU32::new(0);
+                static LAST_SETUP_COUNT: AtomicU32 = AtomicU32::new(0);
                 if super::platform::ane_usb_dev::usb_config_was_1()
-                    && super::platform::ane_usb_dev::strings_served() == 0
+                    && super::platform::ane_usb_dev::strings_served() > 0
                 {
+                    // v305: snapshot the SETUP counter each check pass.
+                    let now_setups = super::platform::ane_usb_dev::setups_seen();
+                    let prev = LAST_SETUP_COUNT.swap(now_setups, Ordering::Relaxed);
+                    let quiet = now_setups == prev;
                     let g0 = GARBLE_T0.load(Ordering::Relaxed);
-                    if g0 == 0 {
+                    if g0 == 0 || !quiet {
                         GARBLE_T0.store(beats, Ordering::Relaxed);
                     } else if beats.wrapping_sub(g0) > reconnect_wait_beats {
                         let g = GARBLE_RETRIES.load(Ordering::Relaxed);
