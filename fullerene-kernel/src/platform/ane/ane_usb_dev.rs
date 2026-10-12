@@ -717,6 +717,7 @@ fn handle_setup(log: fn(&str, u64)) {
         0x05 => {
             // SET_ADDRESS
             let addr = (wvalue as u32) & 0x7f;
+            ADDRESS_SEEN.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
             wr(DCFG, (rd(DCFG) & !DCFG_DEVADDR_MASK) | (addr << 4));
             ep0_zlp_in();
         }
@@ -1010,6 +1011,27 @@ pub fn setups_seen() -> u32 {
 /// config-1 with zero served strings (the one-behind state mangles exactly
 /// the string stage). The watchdog uses this to auto-cycle D+ on a garbled
 /// boot - the host never speaks to it again otherwise.
+/// v302: the host has PROVEN the enumeration reached (and survived) the
+/// string stage. The garble detector's old premise (`strings_served()==0`
+/// on a garbled boot) is false on real hardware - the corruption rotates
+/// strings between slots, it does not drop them, so the counter counts up
+/// on garbled boots too and the detector never fired. This flag is the
+/// corrected premise: set when SET_ADDRESS arrives (the one request that
+/// only a healthy descriptor exchange precedes) and NEVER on a garbled
+/// boot - the rotation makes the host's next GET_DESCRIPTOR(String) read a
+/// stale payload, and a host that sees a mangled identity never proceeds
+/// to SET_CONFIGURATION... except the measured garbled boots DID reach
+/// config-1. So the honest invariant is weaker: SET_ADDRESS seen implies
+/// EP0 sequencing works at all; the watchdog then only guards the
+/// `strings_served()==0` case, which remains real for the pre-string
+/// deaths (config-1 via host cache). Kept as a marker for the FB line.
+pub static ADDRESS_SEEN: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
+pub fn address_seen() -> u32 {
+    ADDRESS_SEEN.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 pub static STRINGS_SERVED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 pub fn strings_served() -> u32 {
