@@ -604,6 +604,11 @@ fn ep0_flush_tx_fifo() {
 fn ep0_send(data: &[u8]) {
     let n = data.len();
     unsafe {
+        // v304 A/B VERDICT: skipping the flush while TRANSACTION_BUSY killed
+        // the boot outright (attach with ERR110-only responses, never
+        // answered; recovered via the LK window). The unconditional flush is
+        // the proven shape - keep it, and record the failed variant here so
+        // it is not retried.
         TRANSACTION_BUSY = true;
         IN_WAS_DATA = n > 0;
     }
