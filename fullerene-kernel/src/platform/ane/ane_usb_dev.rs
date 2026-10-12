@@ -442,6 +442,12 @@ static mut EP1_TX_IDX: u32 = 0;
 /// class was live on this boot.
 static mut DBG_EPENA_STUCK: u32 = 0;
 
+/// v302: how many times the EP0 TX FIFO flush ran (DBG_FFLUSH_STUCK = the
+/// flush self-clear never completed). The RUN counter rising while STRINGS
+/// come back clean on the host is the proof the flush fixes the one-behind.
+static mut DBG_FFLUSH_RUN: u32 = 0;
+static mut DBG_FFLUSH_STUCK: u32 = 0;
+
 /// A live snapshot of the fastboot responder, for the on-screen strip.
 pub struct FbDiag {
     pub dptxfsiz1: u32,
@@ -462,6 +468,10 @@ pub struct FbDiag {
     pub cmd_head: u64,
     pub gintsts: u32,
     pub epint: u32,
+    /// v302: EP0 TX FIFO flush counter / stuck counter (the one-behind fix).
+    pub fflush: u32,
+    /// v302: served strings + (stale-size class evidence) epena-stuck count.
+    pub strs: u32,
 }
 
 /// Take the snapshot (plain register reads; safe every loop pass).
@@ -487,6 +497,9 @@ pub fn diag() -> FbDiag {
             cmd_head: core::ptr::addr_of!(DBG_CMD_HEAD).read(),
             gintsts: rd(GINTSTS),
             epint: (rd(DIEPINT1) << 16) | (rd(DOEPINT1) & 0xffff),
+            fflush: (core::ptr::addr_of!(DBG_FFLUSH_RUN).read() & 0xffff)
+                | (core::ptr::addr_of!(DBG_FFLUSH_STUCK).read() << 16),
+            strs: strings_served() | (core::ptr::addr_of!(DBG_EPENA_STUCK).read() << 16),
         }
     }
 }
@@ -550,6 +563,40 @@ fn ep0_status_out() {
     );
 }
 
+/// v302: flush the EP0 TX FIFO. The vendor driver flushes an endpoint's TX
+/// FIFO when its transfer is torn down (gadget.c:1990
+/// `s3c_hsotg_txfifo_flush(hsotg, hs_ep->fifo_index)` inside the EPDISBLD
+/// branch) - and our EP0 never does. A response that was armed but never
+/// fully sent (the host's early status stage, a bus reset mid-answer, an
+/// aborted control transfer) leaves stale packets in the FIFO, and the next
+/// EPENA then transmits the OLD response first: the one-behind rotation
+/// measured on hardware (str1 -> serial, str2 -> manufacturer, dev-desc ->
+/// langid; GET_STATUS/LANG always EOVERFLOW because a stale 18/20-byte
+/// payload follows the short packet).
+///
+/// Wait for AHB idle first (the flush is ignored while the bus is busy),
+/// then flush EP0's FIFO ONLY (TXFNUM=0). Flushing all numbers here would
+/// also drain EP1's bulk FIFO mid-command - the shared-window reads of
+/// EPFIFO1 would then race the command stream.
+fn ep0_flush_tx_fifo() {
+    let mut spins = 0u32;
+    while (rd(GRSTCTL) & GRSTCTL_AHBIDLE) == 0 && spins < 0x4000 {
+        spins += 1;
+    }
+    // TXFNUM(0) = EP0's non-periodic TX FIFO (hw.h GRSTCTL_TXFNUM_SHIFT=6).
+    wr(GRSTCTL, (0 << 6) | GRSTCTL_TXFFLSH);
+    let mut s2 = 0u32;
+    while (rd(GRSTCTL) & GRSTCTL_TXFFLSH) != 0 && s2 < 0x4000 {
+        s2 += 1;
+    }
+    unsafe {
+        if s2 >= 0x4000 {
+            DBG_FFLUSH_STUCK = DBG_FFLUSH_STUCK.wrapping_add(1);
+        }
+        DBG_FFLUSH_RUN = DBG_FFLUSH_RUN.wrapping_add(1);
+    }
+}
+
 /// Queue an IN data phase on EP0, then push the bytes into the FIFO.
 ///
 /// Order matters (gadget.c `s3c_hsotg_write_fifo`): the transfer size and
@@ -560,6 +607,9 @@ fn ep0_send(data: &[u8]) {
         TRANSACTION_BUSY = true;
         IN_WAS_DATA = n > 0;
     }
+    // v302: drain any stale response from the EP0 TX FIFO BEFORE arming the
+    // new one (see ep0_flush_tx_fifo - the one-behind root cause).
+    ep0_flush_tx_fifo();
     // v206: never write TSIZ while a transfer is still armed. While EPENA
     // reads 1 the core ignores TSIZ/EPENA writes - the new xfersize is
     // silently dropped and the OLD size drives the packet (stale-size
