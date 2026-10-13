@@ -1083,13 +1083,18 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
             platform::common::pmic::pmic_rd(0x18B) as u64,
             core::sync::atomic::Ordering::Relaxed,
         );
-        platform::ane_fb::paint_hex_at(
-            17,
-            300,
-            b"RST",
-            platform::common::pmic::pmic_rd(0x18B) as u64,
-        );
-        platform::ane_fb::flush_panel();
+        // v331j: the panel is the user UI - the RST reason paints only in
+        // the marks-panel bench builds (the ring carries it otherwise).
+        #[cfg(all(fullerene_aarch64_ane, fullerene_ane_marks_panel))]
+        {
+            platform::ane_fb::paint_hex_at(
+                17,
+                300,
+                b"RST",
+                platform::common::pmic::pmic_rd(0x18B) as u64,
+            );
+            platform::ane_fb::flush_panel();
+        }
         let usb = platform::ane::usb_bringup();
         uart::put_hex("usb: abb=", usb.abb as u64);
         uart::put_hex(" ppll0=", usb.ppll0.0 as u64);
