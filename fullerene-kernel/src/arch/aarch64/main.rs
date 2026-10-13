@@ -1274,21 +1274,6 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
             // then hand the canvas to the desktop renderer. The
             // HISTORICAL_NO_RECONNECT / FORCE_POST_RECONNECT knobs keep
             // their A/B roles.
-            // v317: the reenumerate moves AFTER the desktop. The v306-v316
-            // boots all parked the boot thread forever on the reenumerate's
-            // DCTL write (the write to a mid-conversation core never
-            // retires - v311 proved the spin size is irrelevant). The park
-            // sits between the storage probe and the desktop, so the
-            // desktop never ran on any of those boots. Order now:
-            //   attach -> storage -> desktop(ON SCREEN) -> reenumerate ->
-            //   service -> launchd. A stalled reenumerate write at the new
-            //   position costs nothing the goal needs: the canvas already
-            //   carries the desktop and the pump keeps USB alive.
-            platform::ane_usb_dev::service(ane_log);
-            if option_env!("FULLERENE_ANE_SKIP_DESKTOP") != Some("1") {
-                desktop::bring_up();
-            }
-            platform::ane_usb_dev::service(ane_log);
             if (option_env!("FULLERENE_ANE_HISTORICAL_USB_SEQUENCE") == Some("1")
                 && option_env!("FULLERENE_ANE_HISTORICAL_NO_RECONNECT") != Some("1"))
                 || option_env!("FULLERENE_ANE_FORCE_POST_RECONNECT") == Some("1")
@@ -1296,6 +1281,10 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                     && option_env!("FULLERENE_ANE_NO_POST_RECONNECT").is_none())
             {
                 platform::ane::usb_reenumerate();
+            }
+            platform::ane_usb_dev::service(ane_log);
+            if option_env!("FULLERENE_ANE_SKIP_DESKTOP") != Some("1") {
+                desktop::bring_up();
             }
             platform::ane_usb_dev::service(ane_log);
             if platform::ane_usb_dev::usb_enumerated() {
