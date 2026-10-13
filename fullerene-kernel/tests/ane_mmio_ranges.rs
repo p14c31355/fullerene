@@ -25,6 +25,10 @@ pub(crate) fn ane_conversations() -> u32 {
     0
 }
 
+pub(crate) fn ane_uptime_us() -> u64 {
+    0
+}
+
 #[path = "../src/blackbox.rs"]
 mod blackbox;
 

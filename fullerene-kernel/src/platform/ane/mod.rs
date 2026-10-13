@@ -757,24 +757,30 @@ pub fn usb_reenumerate() {
     // EP1 (no new conversation for 10 s), bounded at 60 s; if the host
     // never goes quiet, SKIP the cycle - the boot continues to the desktop
     // on the existing enumeration instead of parking forever.
-    // ~10 ms spin chunks (0x1900 iterations measured ~microseconds on this
-    // core; 4000 chunks x 0x1900 keeps the loop CPU-only - the pump runs in
-    // IRQ context and advances EP1_CONVERSATIONS, which this loop reads).
+    // v320 fix: the wall-clock cost of usb_spin on this bus is ~100x the
+    // estimate (the v313 park measured 0x190_0000 iters = 24+ min), so the
+    // chunk-count cap meant HOURS. Bound by uptime_us instead: poll the
+    // conversation counter every 0x190 iterations, give the host 60 s of
+    // wall time to go quiet, then proceed (or skip if never quiet).
+    let t0 = crate::ane_uptime_us();
+    let quiet_target = 10_000_000u64; // 10 s of no new conversation
+    let hard_cap = 60_000_000u64; // 60 s total
     let mut last = crate::ane_conversations();
-    let mut quiet_chunks = 0u32;
-    let mut chunks = 0u32;
-    while chunks < 6000 {
-        usb_spin(0x1900);
-        chunks += 1;
+    let mut last_change = t0;
+    loop {
+        usb_spin(0x190);
+        let now = crate::ane_uptime_us();
         let served = crate::ane_conversations();
         if served != last {
             last = served;
-            quiet_chunks = 0;
-        } else {
-            quiet_chunks += 1;
-            if quiet_chunks >= 1000 {
-                break; // ~10 s without a new conversation
-            }
+            last_change = now;
+        }
+        if now.saturating_sub(last_change) >= quiet_target {
+            break; // 10 s quiet - the core is idle, the write will retire
+        }
+        if now.saturating_sub(t0) >= hard_cap {
+            crate::blackbox::text_puts("UD: REENUM SKIP\n");
+            return; // host never quiet - keep the existing enumeration
         }
     }
     crate::blackbox::text_puts("UD: REENUM GO\n");

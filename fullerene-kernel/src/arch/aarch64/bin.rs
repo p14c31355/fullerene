@@ -33,3 +33,7 @@ pub(crate) fn ane_park_desktop() {
 pub(crate) fn ane_conversations() -> u32 {
     runtime::platform::ane_usb_dev::conversations_served()
 }
+
+pub(crate) fn ane_uptime_us() -> u64 {
+    runtime::timer::uptime_us()
+}
