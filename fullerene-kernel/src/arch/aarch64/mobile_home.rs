@@ -4,12 +4,17 @@
 //! in the glyph-mapping path that froze the desktop render.
 //!
 //! Layout (all coordinates derived from the canvas dims):
-//!   - status bar: the top 64 px band
-//!   - app grid: 4 columns x 5 rows of rounded tiles
-//!   - dock: the bottom 200 px band with 4 tiles
+//!   - status bar: a notch-clearing top band (the ANE-LX2J panel has a
+//!     wide U notch ~80 px deep, centered ~330 px - the status bar sits
+//!     BELOW it and paints only the notch sides)
+//!   - app grid: 4 columns x N rows of rounded tiles
+//!   - dock: the bottom band with 4 tiles
 //!
 //! This is the first backend of the reusable mobile shell: every constant
 //! derives from the canvas size, so other ARM64 phones reuse it as-is.
+//! The notch geometry comes from the panel descriptor (the boe_otm1911a
+//! 5.84" 1080x2280), expressed as fractions of the width/height so other
+//! panels substitute their own.
 
 use core::sync::atomic::Ordering;
 
@@ -114,11 +119,26 @@ pub fn render_home() {
     // Background.
     fill_rect(fb, width, height, 0, 0, width, height, bg);
 
-    // Status bar (top band).
-    fill_rect(fb, width, height, 0, 0, width, 64, bar);
+    // v331i: the notch geometry. The ANE-LX2J (boe_otm1911a 5.84")
+    // carries a wide U notch: ~330 px wide, ~80 px deep, centered. The
+    // reusable shell expresses it in fractions of the panel so other
+    // phones substitute their own descriptor values.
+    let notch_w = width * 330 / 1080; // ~330 px at 1080
+    let notch_h = height * 80 / 2280; // ~80 px at 2280
+    let notch_l = (width - notch_w) / 2;
+    let notch_r = notch_l + notch_w;
 
-    // App grid: 4 cols x 5 rows of tiles between the bars.
-    let grid_top = 96u32;
+    // Status bar: the full-width band behind the notch row (the panel
+    // under the notch shows the wallpaper - the UI paints AROUND it).
+    let bar_h = notch_h.max(56);
+    fill_rect(fb, width, height, 0, 0, width, bar_h, bar);
+    // Re-expose the notch cutout (paint the background back over the
+    // notch rectangle - the cutout is a hardware mask, but the canvas
+    // must not imply content the panel cannot show).
+    fill_rect(fb, width, height, notch_l, 0, notch_w, notch_h, bg);
+
+    // App grid: 4 cols x N rows of tiles between the bars.
+    let grid_top = bar_h + 40;
     let margin = 40u32;
     let gap = 28u32;
     let cols = 4u32;
@@ -151,6 +171,16 @@ pub fn render_home() {
         fill_tile(fb, width, height, x, y, dock_tile, dock_tile, 28, accent);
     }
 
-    // A thin accent line under the status bar.
-    fill_rect(fb, width, height, 0, 64, width, 4, accent);
+    // A thin accent line under the status bar (skipping the notch span).
+    fill_rect(fb, width, height, 0, bar_h, notch_l, 4, accent);
+    fill_rect(
+        fb,
+        width,
+        height,
+        notch_r,
+        bar_h,
+        width - notch_r,
+        4,
+        accent,
+    );
 }
