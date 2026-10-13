@@ -2637,10 +2637,6 @@ fn ep0_state_line() {
 /// loop's polling cadence (the wait loop already wakes on the timer IRQ).
 pub fn service(log: fn(&str, u64)) {
     use core::sync::atomic::{AtomicBool, Ordering};
-    // v310: advance the reenumerate state machine every pass (beat-gated,
-    // non-blocking - see ane::usb_reenumerate).
-    #[cfg(fullerene_aarch64_ane)]
-    super::ane::usb_reenum_tick();
     // Reentrancy guard (v158): the timer-IRQ pump now runs every ~16 ms, so
     // it can fire while the boot thread is inside its own service() call.
     // The pass is a state machine over shared endpoint arming, so a nested

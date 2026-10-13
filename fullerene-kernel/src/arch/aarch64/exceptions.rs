@@ -190,9 +190,8 @@ static ANE_TICKN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32:
 /// Timer ticks served so far. ANE panel instruments use this both to prove
 /// tick liveness and to stamp the pre-ERET moment (compare with the frozen
 /// S marks to see which tick the world stopped on).
-/// v310: `pub` - the ane platform's beat-gated reenumerate FSM reads it.
 #[cfg(fullerene_aarch64_ane)]
-pub fn tick_count() -> u32 {
+pub(crate) fn tick_count() -> u32 {
     ANE_TICKN.load(core::sync::atomic::Ordering::Relaxed)
 }
 

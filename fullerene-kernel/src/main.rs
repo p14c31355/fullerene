@@ -222,11 +222,6 @@ pub use heap::MEMORY_MAP;
 mod aarch64_runtime;
 #[cfg(target_arch = "aarch64")]
 pub(crate) use aarch64_runtime::timer;
-// v310: the ane platform's beat-gated reenumerate FSM reads the tick count.
-#[cfg(target_arch = "aarch64")]
-pub(crate) fn ane_tick_count() -> u32 {
-    aarch64_runtime::exceptions::tick_count()
-}
 
 // The black box is architecture-independent: it only needs volatile accesses,
 // an explicit cache clean on aarch64 and a region the caller has verified. The

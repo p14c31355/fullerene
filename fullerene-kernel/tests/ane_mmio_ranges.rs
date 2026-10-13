@@ -14,12 +14,6 @@ mod common;
 #[path = "../src/platform/ane/mod.rs"]
 mod ane;
 
-// v310: the reenumerate FSM calls `crate::ane_tick_count()` (the beat
-// source). Host tests have no real timer; a stub keeps the module compiling.
-pub(crate) fn ane_tick_count() -> u32 {
-    0
-}
-
 const BLOCK_SIZE: u64 = 0x20_0000;
 
 /// Mirrors `mmu::in_mmio_ranges`: true when the 2 MiB identity block
