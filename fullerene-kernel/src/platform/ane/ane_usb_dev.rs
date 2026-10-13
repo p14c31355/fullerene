@@ -433,6 +433,16 @@ static mut DBG_FB_DISPATCH: u32 = 0;
 static mut DBG_FB_REPLY: u32 = 0;
 static mut DBG_LAST_RXSTS: u32 = 0;
 static mut DBG_CMD_HEAD: u64 = 0;
+/// v307: EP1 conversations served (bulk commands dispatched OR ADB frames
+/// decoded). A nonzero count proves the host's identity latch is good - the
+/// v306 quiet detector must never fire after this (a live conversation is
+/// the opposite of a garbled one).
+pub static EP1_CONVERSATIONS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// v307: conversations served this boot (see EP1_CONVERSATIONS).
+pub fn conversations_served() -> u32 {
+    EP1_CONVERSATIONS.load(core::sync::atomic::Ordering::Relaxed)
+}
 /// The EP registers as the loader left them (captured before init writes).
 static mut LK_SNAP: [u32; 6] = [0; 6];
 /// The dedicated-FIFO scan result at init (informational; 0 = none found).
@@ -1030,8 +1040,7 @@ pub fn setups_seen() -> u32 {
 /// EP0 sequencing works at all; the watchdog then only guards the
 /// `strings_served()==0` case, which remains real for the pre-string
 /// deaths (config-1 via host cache). Kept as a marker for the FB line.
-pub static ADDRESS_SEEN: core::sync::atomic::AtomicU32 =
-    core::sync::atomic::AtomicU32::new(0);
+pub static ADDRESS_SEEN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 pub fn address_seen() -> u32 {
     ADDRESS_SEEN.load(core::sync::atomic::Ordering::Relaxed)
@@ -1602,6 +1611,9 @@ fn fb_poll(log: fn(&str, u64)) {
                 }
                 super::ane_fb::event(b"DEC OK");
                 adb_dispatch(&pkt, log);
+                // v307: a decoded ADB frame is a live conversation - the
+                // v306 quiet detector must stand down from here on.
+                EP1_CONVERSATIONS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                 unsafe {
                     core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
                 }
@@ -1658,6 +1670,9 @@ fn fb_poll(log: fn(&str, u64)) {
             DBG_CMD_HEAD = (DBG_CMD_HEAD << 8) | b as u64;
         }
     }
+    // v307: a dispatched bulk command is a live conversation. The v306 quiet
+    // detector must stand down from here on.
+    EP1_CONVERSATIONS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     log("fb: cmd len=", len as u64);
     log("fb: cmd8=", unsafe {
         core::ptr::addr_of!(DBG_CMD_HEAD).read()

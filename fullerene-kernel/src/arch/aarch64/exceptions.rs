@@ -938,7 +938,16 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                 static GARBLE_RETRIES: AtomicU32 = AtomicU32::new(0);
                 static GARBLE_T0: AtomicU32 = AtomicU32::new(0);
                 static LAST_SETUP_COUNT: AtomicU32 = AtomicU32::new(0);
-                if super::platform::ane_usb_dev::usb_config_was_1()
+                // v307: a served EP1 conversation (fastboot command or ADB
+                // frame) proves the host's identity latch is good - the
+                // opposite of the garbled state this detector hunts. Stand
+                // down permanently once one conversation happened: the
+                // detector's SETUP-quiet premise is false for a healthy
+                // bulk-only session (no control traffic after config-1),
+                // so without this latch it kills the very boots that work.
+                let had_conversation = super::platform::ane_usb_dev::conversations_served() > 0;
+                if !had_conversation
+                    && super::platform::ane_usb_dev::usb_config_was_1()
                     && super::platform::ane_usb_dev::strings_served() > 0
                 {
                     // v305: snapshot the SETUP counter each check pass.
