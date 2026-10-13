@@ -1030,6 +1030,16 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         // Wipe canvas rows inherited from the previous (warm-reset) boot;
         // stale lines must never masquerade as current evidence in a photo.
         platform::ane_fb::clear();
+        // v331e: FIRST LIGHT - the phone-native home screen renders before
+        // ANY USB work. The boots live ~17-60 s under the quiet-detector
+        // resets; the home UI must be on the panel before the first USB
+        // hazard, not after the reenumerate gauntlet. Every later boot
+        // stage overwrites or extends it.
+        mobile_home::render_home();
+        platform::ane_fb::STG_STAGE.store(b'H', core::sync::atomic::Ordering::Relaxed);
+        platform::ane_fb::event(b"STG HOME-OK");
+        platform::ane_fb::flush_panel();
+        uart::puts("mobile home: first-light\n");
         // v273 ABLATION: every per-tick diagnostic paint goes through
         // ane_fb::flush_row, which already early-returns on IRQ_QUIET. Setting
         // it here removes ALL of the flush_row work (a full-row memcpy plus a
