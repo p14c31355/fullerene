@@ -2481,3 +2481,26 @@ the tick cap ~28 min); v280 control re-flashed and verified green (full
 enumeration, getvar served, CNXN ring 2096 at 19:34). Next: port the proven
 HIST shape into the production (desktop-on) path instead of re-enabling
 SKIP_DESKTOP.
+
+## 2026-10-13 v307-v319: the desktop wall narrowed to the pump's IRQ stack
+
+- v307 conversation latch: boot lifetime 17 s -> 65 min (a single getvar
+  keeps the v306 quiet detector disarmed). Host ModemManager joined
+  adb/fwupd as an EP1 claim polluter.
+- v318 stage probes pinned the boot-thread park: STG PRE-RENUM logged,
+  RENUM-OK never - the boot thread freezes on usb_reenumerate's first
+  DCTL write while the host holds an EP1 conversation (the write never
+  retires; the isb after it waits for visibility forever; spin size
+  irrelevant, v311).
+- v319 quiet-wait (poll EP1_CONVERSATIONS until 10 s of silence, 60 s cap,
+  skip the cycle on timeout) got the boot thread PAST reenumerate for the
+  first time on a conversing boot: the desktop text render STARTED
+  (PC inside embedded_graphics mono_font StrGlyphMapping::index).
+- The render then froze at the glyph mapper - matching the v159-class
+  hazard: adb_dispatch + the CNXN ring copy run from the timer IRQ; at
+  that depth the IRQ corrupts the interrupted context. Silence test
+  armed (15 min, no host traffic) to confirm.
+- LAW (re-confirmed across v308/v310/v312/v314a/v317): any structural
+  change to the post-attach boot tail breaks the attach lottery
+  (0/2..0/6 clean enumerations). Constant-local changes (v311, v319)
+  keep attaching.
