@@ -607,6 +607,25 @@ fn usb_spin(units: u32) {
     }
 }
 
+/// v327: a settle wait bounded by BEATS, not iterations. Spins until the
+/// timer tick count advances `ticks` beats or `max_iters` iterations,
+/// whichever comes first. The tick clock is immune to the bus-latency
+/// variance that made the iteration-count settles take minutes.
+fn usb_settle_beats(ticks: u32) {
+    let t0 = crate::ane_tick_count();
+    let mut iters = 0u32;
+    while iters < 0x190_0000 {
+        core::hint::spin_loop();
+        iters += 1;
+        if iters % 0x100 == 0 {
+            let now = crate::ane_tick_count();
+            if now.wrapping_sub(t0) >= ticks {
+                return;
+            }
+        }
+    }
+}
+
 /// Run the vendor USB bring-up once and return the readbacks.
 ///
 /// Every wait here is a vendor-mandated settle (the CIL's mdelay between the
@@ -784,13 +803,16 @@ pub fn usb_reenumerate() {
         }
     }
     crate::blackbox::text_puts("UD: REENUM GO\n");
-    unsafe {
-        usb_or(USB_CORE_BASE + 0x804, 0x2);
-    }
-    usb_spin(0x190_0000); /* ~50 ms disconnect settle */
+    // v327: the 0x190_0000-iteration settle measured 24+ MINUTES on this
+    // bus (the v313 park) - the iteration count is meaningless there. Bound
+    // each settle by BEATS: 2 ticks (~160 ms at the observed 12 beats/s)
+    // preserves the vendor settle intent and makes the 24-min park
+    // impossible. The quiet-wait above already handled the conversation
+    // hazard; the beat budget handles the bus slowness.
+    usb_settle_beats(2);
     unsafe {
         usb_mask(USB_CORE_BASE + 0x804, 0x2, 0);
     }
-    usb_spin(0x190_0000); /* ~50 ms connect settle */
+    usb_settle_beats(2);
     crate::blackbox::text_puts("UD: REENUM DONE\n");
 }
