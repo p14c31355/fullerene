@@ -6,6 +6,7 @@ mod allocator;
 mod cpu;
 #[cfg(fullerene_aarch64_ane)]
 pub(crate) mod desktop;
+pub(crate) mod mobile_home;
 mod devices;
 #[cfg(fullerene_aarch64_bramble)]
 mod display;

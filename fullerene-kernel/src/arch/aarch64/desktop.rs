@@ -154,6 +154,18 @@ pub fn bring_up() {
             (width as usize) * (height as usize),
         )
     };
+    // v330: the phone-native home screen renders FIRST (primitive drawing,
+    // no font dependency) so the device gets a usable portrait UI even if
+    // the solvent render path hangs. It is the first backend of the
+    // reusable mobile shell.
+    #[cfg(fullerene_aarch64_ane)]
+    {
+        super::mobile_home::render_home();
+        ane_fb::STG_STAGE.store(b'H', Ordering::Relaxed);
+        ane_fb::event(b"STG HOME-OK");
+        ane_fb::flush_panel();
+        uart::puts("mobile home: rendered\n");
+    }
     let Some(mut framebuffer) = FramebufferGuard::try_new(canvas, width, height, width) else {
         uart::puts("desktop: framebuffer guard refused\n");
         return;
