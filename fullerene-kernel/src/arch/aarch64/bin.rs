@@ -18,3 +18,10 @@ mod blackbox;
 mod cdc_acm;
 
 pub(crate) use runtime::timer;
+
+// v310: the ane platform's beat-gated reenumerate FSM reads the tick count.
+// `tick_count` lives under `runtime::exceptions`; the platform tree reaches
+// it through the crate root.
+pub(crate) fn ane_tick_count() -> u32 {
+    runtime::exceptions::tick_count()
+}

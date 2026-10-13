@@ -750,13 +750,64 @@ pub fn usb_attach() {
 /// up while that renderer is monopolizing the boot thread, merely servicing
 /// the existing gadget state is not enough: the pull-up must be dropped and
 /// raised so the host starts a fresh descriptor exchange.
+///
+/// v310: the old busy-wait form parked the boot thread FOREVER when the core
+/// never retired the DCTL write (measured 11:2x-11:5x: PC pinned at the
+/// settle spin for 24+ min / tens of thousands of beats while the timer-IRQ
+/// pump kept serving conversations). The settle waits now run as a beat-
+/// gated state machine advanced by `usb_reenum_tick()` from the service
+/// path - the boot thread only arms the sequence and returns.
+#[cfg(fullerene_aarch64_ane)]
+fn reenum_note(msg: &[u8]) {
+    crate::blackbox::text_puts(unsafe { core::str::from_utf8_unchecked(msg) });
+}
+#[cfg(not(fullerene_aarch64_ane))]
+fn reenum_note(_msg: &[u8]) {}
+
+static REENUM_STATE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static REENUM_BEAT0: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// v310: arm the D+ cycle. Returns immediately; `usb_reenum_tick()` (called
+/// from the USB service path every pass) advances the phases.
 pub fn usb_reenumerate() {
+    use core::sync::atomic::Ordering;
+    // 0 = idle, 1 = disconnected (waiting to reconnect), 2 = reconnected.
+    if REENUM_STATE.load(Ordering::Relaxed) != 0 {
+        return; // already cycling
+    }
     unsafe {
         usb_or(USB_CORE_BASE + 0x804, 0x2);
     }
-    usb_spin(0x190_0000); /* ~50 ms disconnect settle */
-    unsafe {
-        usb_mask(USB_CORE_BASE + 0x804, 0x2, 0);
+    REENUM_BEAT0.store(crate::ane_tick_count(), Ordering::Relaxed);
+    REENUM_STATE.store(1, Ordering::Relaxed);
+    reenum_note(b"UD: REENUM DROP\n");
+}
+
+/// v310: advance the reenumerate state machine. Called from the USB service
+/// path (every pump pass). Beats gate the settle phases; the boot thread
+/// never waits on the core.
+pub fn usb_reenum_tick() {
+    use core::sync::atomic::Ordering;
+    let st = REENUM_STATE.load(Ordering::Relaxed);
+    if st == 0 {
+        return;
     }
-    usb_spin(0x190_0000); /* ~50 ms connect settle */
+    let now = crate::ane_tick_count();
+    let t0 = REENUM_BEAT0.load(Ordering::Relaxed);
+    // 32 beats per phase: ~2-3 s real at the measured 12 beats/s, far above
+    // the vendor's 50 ms settle, far below the enumeration watchdog window.
+    if now.wrapping_sub(t0) < 32 {
+        return;
+    }
+    if st == 1 {
+        unsafe {
+            usb_mask(USB_CORE_BASE + 0x804, 0x2, 0);
+        }
+        REENUM_BEAT0.store(now, Ordering::Relaxed);
+        REENUM_STATE.store(2, Ordering::Relaxed);
+        reenum_note(b"UD: REENUM RAISE\n");
+    } else {
+        REENUM_STATE.store(0, Ordering::Relaxed);
+        reenum_note(b"UD: REENUM DONE\n");
+    }
 }
