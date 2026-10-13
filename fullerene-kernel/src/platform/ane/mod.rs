@@ -797,25 +797,15 @@ pub fn usb_reenumerate() {
             break; // quiet - the core is idle, the write will retire
         }
     }
-    crate::blackbox::text_puts("UD: REENUM GO\n");
-    // v331c: the DCTL write itself is the park hazard - the boot thread
-    // must not touch it. Hand the write to the timer pump (which performs
-    // MMIO writes every tick and survives the parks): set the request,
-    // then wait beat-bounded for the pump's DONE. 2400 beats (~3 min at
-    // the observed 12 beats/s) is far above the pump's 1-tick latency;
-    // the wait can only expire if the pump itself is dead - and then the
-    // frozen-boot recovery lane is already counting.
-    REENUM_REQ.store(true, core::sync::atomic::Ordering::Relaxed);
-    let t0 = crate::ane_tick_count();
-    while !REENUM_DONE.load(core::sync::atomic::Ordering::Relaxed) {
-        usb_spin(0x190);
-        if crate::ane_tick_count().wrapping_sub(t0) > 2400 {
-            crate::blackbox::text_puts("UD: REENUM PUMP TIMEOUT\n");
-            break;
-        }
-    }
-    usb_settle_beats(2);
-    crate::blackbox::text_puts("UD: REENUM DONE\n");
+    // v331d: NO D+ write at all. The pump-side write (v331c) still parked
+    // - the DCTL write stalls in ANY context when the core is in the bad
+    // state, and a parked pump means no beats, no timer, and the SP805
+    // reset (~22 s): the observed LK loop. The D+ cycle is unnecessary:
+    // the device is already enumerated (the LK left it configured, the
+    // responder is serving), and the host side handles its own stale
+    // state (the engine's reboot-bootloader). The boot proceeds straight
+    // to the desktop render on the existing enumeration.
+    crate::blackbox::text_puts("UD: REENUM SKIP-WRITE\n");
 }
 
 /// v331c: the pump-side reenumerate handoff. The boot thread asks (REQ);
