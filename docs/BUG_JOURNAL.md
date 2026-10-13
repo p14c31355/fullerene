@@ -2504,3 +2504,26 @@ SKIP_DESKTOP.
   change to the post-attach boot tail breaks the attach lottery
   (0/2..0/6 clean enumerations). Constant-local changes (v311, v319)
   keep attaching.
+
+## 2026-10-13 15:0x v320-v323: the frozen PC is CORRUPTED - pump IRQ stack collision
+
+- v321 G= stage byte on every IQ line works (stage '. ' observed live).
+- v322 us-based caps expired instantly (uptime_us races 1172x - CNTFRQ_EL0
+  lies). v323 beat-based caps: 720 beats elapsed but the boot thread never
+  returned from the quiet-wait.
+- THE SMOKING GUN: the v323 PT trail shows LAST_IRQ_PC = 0x44140178 - far
+  outside the kernel image (vaddr ceiling ~0xCEC000). The boot thread's
+  saved exception frame (ELR) is CORRUPTED, not parked at a real
+  instruction. Earlier eras' "plausible" PCs (0x5C17A8 reenumerate spin,
+  0x5E48A4 glyph mapping) were the last REAL values before progressive
+  corruption, or coincidental corruption points.
+- Root cause hypothesis (consistent with v159's "CNXN froze the remaining
+  stack at the stall depth"): the timer-IRQ pump (ane_usb_dev::service()
+  from the timer IRQ) recurses deep enough (adb_dispatch + the CNXN ring
+  copy + panel paints) to overflow/collide with the boot thread's stack
+  or exception frame. The corruption point moves with the binary layout -
+  exactly what the A/B matrix shows.
+- Fix direction: stop calling service() from the timer IRQ. The v275
+  NO_PUMP boot already proved the boot thread reaches fs::init pass 2
+  without the pump; the enumeration watchdog that killed it is since
+  fixed (v287+). The wait loop already calls service() every iteration.
