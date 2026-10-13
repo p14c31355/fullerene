@@ -1280,7 +1280,20 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                 || (option_env!("FULLERENE_ANE_HISTORICAL_USB_SEQUENCE").is_none()
                     && option_env!("FULLERENE_ANE_NO_POST_RECONNECT").is_none())
             {
-                platform::ane::usb_reenumerate();
+                // v308: the post-desktop reenumerate parks the boot thread
+                // FOREVER in its disconnect-settle spin when the core never
+                // retires the DCTL write (measured 11:2x: PC 0x5C17AC for
+                // 50+ min / 0x400-beat IQ hearts while every conversation
+                // stays served). The deferred-attach flow (v197+) already
+                // gives the host a fresh enumeration at usb_attach(); the
+                // second edge adds nothing the first didn't, and it is the
+                // one MMIO write that has now eaten every long-lived boot.
+                // Skip it on the production path (the NO_POST_RECONNECT
+                // escape now becomes the default; the env knobs keep the
+                // A/B roles for re-testing).
+                if option_env!("FULLERENE_ANE_FORCE_POST_RECONNECT") == Some("1") {
+                    platform::ane::usb_reenumerate();
+                }
             }
             platform::ane_usb_dev::service(ane_log);
             if option_env!("FULLERENE_ANE_SKIP_DESKTOP") != Some("1") {
