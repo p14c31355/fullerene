@@ -757,28 +757,28 @@ pub fn usb_reenumerate() {
     // EP1 (no new conversation for 10 s), bounded at 60 s; if the host
     // never goes quiet, SKIP the cycle - the boot continues to the desktop
     // on the existing enumeration instead of parking forever.
-    // v320 fix: the wall-clock cost of usb_spin on this bus is ~100x the
-    // estimate (the v313 park measured 0x190_0000 iters = 24+ min), so the
-    // chunk-count cap meant HOURS. Bound by uptime_us instead: poll the
-    // conversation counter every 0x190 iterations, give the host 60 s of
-    // wall time to go quiet, then proceed (or skip if never quiet).
-    let t0 = crate::ane_uptime_us();
-    let quiet_target = 10_000_000u64; // 10 s of no new conversation
-    let hard_cap = 60_000_000u64; // 60 s total
+    // v321 fix: uptime_us RACES on this SoC (CNTFRQ_EL0 lies - the v179
+    // artifact), so a us-based bound expired instantly and the D+ cycle
+    // ran mid-conversation again. Bound by BEATS (the timer tick count,
+    // clock-immune per the v195 lesson): 120 beats quiet (~10 s real),
+    // 720 beats hard cap (~60 s real).
+    let t0 = crate::ane_tick_count();
+    let quiet_target = 120u32;
+    let hard_cap = 720u32;
     let mut last = crate::ane_conversations();
     let mut last_change = t0;
     loop {
         usb_spin(0x190);
-        let now = crate::ane_uptime_us();
+        let now = crate::ane_tick_count();
         let served = crate::ane_conversations();
         if served != last {
             last = served;
             last_change = now;
         }
-        if now.saturating_sub(last_change) >= quiet_target {
-            break; // 10 s quiet - the core is idle, the write will retire
+        if now.wrapping_sub(last_change) >= quiet_target {
+            break; // quiet - the core is idle, the write will retire
         }
-        if now.saturating_sub(t0) >= hard_cap {
+        if now.wrapping_sub(t0) >= hard_cap {
             crate::blackbox::text_puts("UD: REENUM SKIP\n");
             return; // host never quiet - keep the existing enumeration
         }

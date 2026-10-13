@@ -11,7 +11,7 @@ mod devices;
 mod display;
 mod elf;
 mod entry;
-mod exceptions;
+pub(crate) mod exceptions;
 mod fdt;
 mod fs;
 #[cfg(feature = "aarch64-user-launchd")]

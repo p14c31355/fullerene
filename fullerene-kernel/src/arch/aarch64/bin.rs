@@ -37,3 +37,7 @@ pub(crate) fn ane_conversations() -> u32 {
 pub(crate) fn ane_uptime_us() -> u64 {
     runtime::timer::uptime_us()
 }
+
+pub(crate) fn ane_tick_count() -> u32 {
+    runtime::exceptions::tick_count()
+}
