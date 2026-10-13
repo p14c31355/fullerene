@@ -14,16 +14,7 @@
 use core::sync::atomic::Ordering;
 
 /// Fill a rectangle with a color, clipped to the canvas.
-fn fill_rect(
-    fb: &mut [u32],
-    fb_w: u32,
-    fb_h: u32,
-    x: u32,
-    y: u32,
-    w: u32,
-    h: u32,
-    color: u32,
-) {
+fn fill_rect(fb: &mut [u32], fb_w: u32, fb_h: u32, x: u32, y: u32, w: u32, h: u32, color: u32) {
     let x1 = x.min(fb_w);
     let y1 = y.min(fb_h);
     let x2 = x.saturating_add(w).min(fb_w);

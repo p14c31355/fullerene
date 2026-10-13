@@ -451,6 +451,50 @@ pub fn in_irq_context() -> bool {
     crate::blackbox::ANE_IRQ_CONTEXT.load(core::sync::atomic::Ordering::Relaxed)
 }
 
+/// v330 recovery: the boot thread's heartbeat. The wait loop bumps this
+/// every pass; the timer pump checks it - a stalled heartbeat with the
+/// pump alive means the boot thread is wedged, and the pump schedules the
+/// v63 loader reset (the no-combo recovery window) instead of leaving the
+/// device unreachable until a power hold.
+pub static BOOT_HEARTBEAT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// v330 recovery: called by the wait loop every pass.
+pub fn boot_heartbeat() {
+    BOOT_HEARTBEAT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// v330 recovery: pump-side check. Runs from the timer IRQ every tick:
+/// if the heartbeat has not moved for 7200 beats (~10 min at the observed
+/// 12 beats/s), schedule the loader reset. The 10 min window is far above
+/// the storage probe and the desktop render's legitimate stall times.
+pub fn boot_recovery_check(beats: u32) {
+    use core::sync::atomic::Ordering;
+    static LAST_SEEN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    static FROZEN_AT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    let hb = BOOT_HEARTBEAT.load(Ordering::Relaxed);
+    let last = LAST_SEEN.load(Ordering::Relaxed);
+    if hb != last {
+        // The boot thread is alive.
+        LAST_SEEN.store(hb, Ordering::Relaxed);
+        FROZEN_AT.store(0, Ordering::Relaxed);
+        return;
+    }
+    // The heartbeat is frozen: the boot thread has not run the wait loop.
+    let frozen_at = FROZEN_AT.load(Ordering::Relaxed);
+    if frozen_at == 0 {
+        FROZEN_AT.store(beats, Ordering::Relaxed);
+        crate::blackbox::text_puts("WD: BOOT FROZEN\n");
+        return;
+    }
+    if beats.wrapping_sub(frozen_at) > 7200 {
+        // ~10 min of a frozen boot thread with the pump alive. Schedule the
+        // v63 loader reset: the unmanned engine reflashes, the device
+        // recovers without a power hold.
+        crate::blackbox::text_puts("WD: BOOT FROZEN RESET\n");
+        crate::blackbox::schedule_reset_at(crate::timer::uptime_us());
+    }
+}
+
 pub static EP1_CONVERSATIONS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// v307: conversations served this boot (see EP1_CONVERSATIONS).

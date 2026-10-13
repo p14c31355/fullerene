@@ -6,7 +6,6 @@ mod allocator;
 mod cpu;
 #[cfg(fullerene_aarch64_ane)]
 pub(crate) mod desktop;
-pub(crate) mod mobile_home;
 mod devices;
 #[cfg(fullerene_aarch64_bramble)]
 mod display;
@@ -19,6 +18,7 @@ mod fs;
 mod launchd;
 mod linux;
 mod mmu;
+pub(crate) mod mobile_home;
 #[path = "../../platform/mod.rs"]
 pub(crate) mod platform;
 mod syscall;
@@ -1331,6 +1331,12 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     // inside the IRQ handler in the log tail.
     uart::puts("ane: entering wait loop\n");
     loop {
+        // v330 recovery: heartbeat for the pump-side stall recovery. The
+        // timer pump counts missed heartbeats; 60 s of silence with the
+        // pump alive schedules the v63 loader reset (the no-combo recovery
+        // window) instead of leaving the device wedged until a power hold.
+        #[cfg(fullerene_aarch64_ane)]
+        platform::ane_usb_dev::boot_heartbeat();
         // Serve the device-side USB control transfers in the same loop.
         // The wait loop already wakes on the timer IRQ (the watchdog feed),
         // so one poll pass per wake keeps the host's transfers answered.

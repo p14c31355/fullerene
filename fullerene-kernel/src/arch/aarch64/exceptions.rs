@@ -783,6 +783,11 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
             use core::sync::atomic::{AtomicU32, Ordering};
             static HEARTBEATS: AtomicU32 = AtomicU32::new(0);
             let beats = HEARTBEATS.fetch_add(1, Ordering::Relaxed);
+            // v330 recovery: the pump checks the boot thread's heartbeat
+            // (see ane_usb_dev::boot_recovery_check) and schedules the
+            // loader reset when the boot thread wedges.
+            #[cfg(fullerene_aarch64_ane)]
+            super::platform::ane_usb_dev::boot_recovery_check(beats);
             TICK_NOW.store(beats.wrapping_add(1), Ordering::Relaxed);
             // ANE desktop clock: solvent reads this as its monotonic time
             // source (nominal milliseconds; set_tsc_per_ms(1000) keeps the

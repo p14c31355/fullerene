@@ -17,8 +17,8 @@ mod blackbox;
 #[path = "../../cdc_acm.rs"]
 mod cdc_acm;
 
-pub(crate) use runtime::timer;
 pub(crate) use runtime::platform;
+pub(crate) use runtime::timer;
 
 // v315: the pump-side park recovery calls the desktop bring-up through the
 // crate root (desktop is a private sibling module of the runtime).
