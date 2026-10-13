@@ -1631,8 +1631,12 @@ fn fb_poll(log: fn(&str, u64)) {
                 // anchored frame into ADB_PENDING and let the next NON-IRQ
                 // service pass (wait loop / SVC boundary) dispatch it.
                 if crate::blackbox::in_irq_context() {
+                    // v326: copy the ANCHORED frame (the stale prefix must
+                    // not ride along - the deferred decode would fail its
+                    // magic check and drop the reply).
+                    let skip = anchored.as_ptr() as usize - raw.as_ptr() as usize;
                     unsafe {
-                        let src = core::ptr::addr_of!(FB_CMD) as *const u8;
+                        let src = (core::ptr::addr_of!(FB_CMD) as *const u8).add(skip);
                         let dst = core::ptr::addr_of_mut!(ADB_PENDING) as *mut u8;
                         let n = anchored.len().min(ADB_PENDING_CAP);
                         core::ptr::copy_nonoverlapping(src, dst, n);
