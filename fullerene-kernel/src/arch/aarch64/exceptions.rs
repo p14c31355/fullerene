@@ -980,7 +980,12 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                 use core::sync::atomic::AtomicBool;
                 static PARK_DONE: AtomicBool = AtomicBool::new(false);
                 static PARK_SEEN_AT: AtomicU32 = AtomicU32::new(0);
+                // v317: the desktop now runs BEFORE the reenumerate in the
+                // boot thread (main.rs reorder). The recovery is only for a
+                // boot that parked before the desktop rendered - gated on
+                // DESKTOP_OWNED staying false.
                 if !PARK_DONE.load(Ordering::Relaxed)
+                    && !super::platform::ane_fb::DESKTOP_OWNED.load(Ordering::Relaxed)
                     && super::platform::ane_usb_dev::usb_config_was_1()
                 {
                     const PARK_PC_LO: u64 = 0x005C_1700;
