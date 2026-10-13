@@ -1040,13 +1040,15 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         platform::ane_fb::event(b"STG HOME-OK");
         platform::ane_fb::flush_panel();
         uart::puts("mobile home: first-light\n");
-        // v331g: the touch bring-up probe - regulators are already owned
-        // by the PMIC driver, so this brings the bus up and reads the
-        // FocalTech chip ID into the ring. Runs before the USB hazards
-        // so the short boots still carry the probe evidence.
+        // v331h: the touch probe is opt-in (FULLERENE_ANE_TOUCH_PROBE).
+        // The ungated probe hung every boot before USB - the I2C0 CRG
+        // clock gate is not yet identified, and writing a clock-gated
+        // peripheral parks the bus. Re-enable only with the gate proven.
         #[cfg(fullerene_aarch64_ane)]
-        unsafe {
-            platform::ane_touch::probe();
+        if option_env!("FULLERENE_ANE_TOUCH_PROBE").is_some() {
+            unsafe {
+                platform::ane_touch::probe();
+            }
         }
         // v273 ABLATION: every per-tick diagnostic paint goes through
         // ane_fb::flush_row, which already early-returns on IRQ_QUIET. Setting
