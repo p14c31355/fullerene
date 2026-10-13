@@ -37,6 +37,8 @@ mod ufs;
 /// ring must carry boot markers, not USB chatter).
 #[cfg(fullerene_aarch64_ane)]
 fn ane_service_pump() {
+    // v331c: the pump owns the D+ write (the boot thread parks on it).
+    platform::ane::usb_reenumerate_pump_step();
     platform::ane_usb_dev::service(|_label: &str, _value: u64| {});
 }
 // ── Why the USB test/simulation modules are *siblings* of `usb`, not inside it

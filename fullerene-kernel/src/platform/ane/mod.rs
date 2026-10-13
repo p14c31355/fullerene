@@ -798,16 +798,44 @@ pub fn usb_reenumerate() {
         }
     }
     crate::blackbox::text_puts("UD: REENUM GO\n");
-    // v327: the 0x190_0000-iteration settle measured 24+ MINUTES on this
-    // bus (the v313 park) - the iteration count is meaningless there. Bound
-    // each settle by BEATS: 2 ticks (~160 ms at the observed 12 beats/s)
-    // preserves the vendor settle intent and makes the 24-min park
-    // impossible. The quiet-wait above already handled the conversation
-    // hazard; the beat budget handles the bus slowness.
-    usb_settle_beats(2);
-    unsafe {
-        usb_mask(USB_CORE_BASE + 0x804, 0x2, 0);
+    // v331c: the DCTL write itself is the park hazard - the boot thread
+    // must not touch it. Hand the write to the timer pump (which performs
+    // MMIO writes every tick and survives the parks): set the request,
+    // then wait beat-bounded for the pump's DONE. 2400 beats (~3 min at
+    // the observed 12 beats/s) is far above the pump's 1-tick latency;
+    // the wait can only expire if the pump itself is dead - and then the
+    // frozen-boot recovery lane is already counting.
+    REENUM_REQ.store(true, core::sync::atomic::Ordering::Relaxed);
+    let t0 = crate::ane_tick_count();
+    while !REENUM_DONE.load(core::sync::atomic::Ordering::Relaxed) {
+        usb_spin(0x190);
+        if crate::ane_tick_count().wrapping_sub(t0) > 2400 {
+            crate::blackbox::text_puts("UD: REENUM PUMP TIMEOUT\n");
+            break;
+        }
     }
     usb_settle_beats(2);
     crate::blackbox::text_puts("UD: REENUM DONE\n");
+}
+
+/// v331c: the pump-side reenumerate handoff. The boot thread asks (REQ);
+/// the timer pump performs the DCTL write on its next pass and answers
+/// (DONE). The pump already does MMIO writes every tick and is the only
+/// context proven to survive the write parks - the boot thread parks on
+/// them forever (the v318/v319 lesson, re-confirmed all night).
+pub static REENUM_REQ: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+pub static REENUM_DONE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Called from the timer pump (the IRQ context) every tick.
+pub fn usb_reenumerate_pump_step() {
+    use core::sync::atomic::Ordering;
+    if !REENUM_REQ.load(Ordering::Relaxed) {
+        return;
+    }
+    REENUM_REQ.store(false, Ordering::Relaxed);
+    unsafe {
+        usb_mask(USB_CORE_BASE + 0x804, 0x2, 0);
+    }
+    REENUM_DONE.store(true, Ordering::Relaxed);
+    crate::blackbox::text_puts("UD: REENUM PUMP WROTE\n");
 }
