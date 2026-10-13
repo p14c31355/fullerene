@@ -1040,6 +1040,14 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         platform::ane_fb::event(b"STG HOME-OK");
         platform::ane_fb::flush_panel();
         uart::puts("mobile home: first-light\n");
+        // v331g: the touch bring-up probe - regulators are already owned
+        // by the PMIC driver, so this brings the bus up and reads the
+        // FocalTech chip ID into the ring. Runs before the USB hazards
+        // so the short boots still carry the probe evidence.
+        #[cfg(fullerene_aarch64_ane)]
+        unsafe {
+            platform::ane_touch::probe();
+        }
         // v273 ABLATION: every per-tick diagnostic paint goes through
         // ane_fb::flush_row, which already early-returns on IRQ_QUIET. Setting
         // it here removes ALL of the flush_row work (a full-row memcpy plus a

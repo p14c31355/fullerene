@@ -30,6 +30,8 @@ pub mod ane_dwmmc;
 pub mod ane_emmc;
 #[path = "ane/ane_fb.rs"]
 pub mod ane_fb;
+#[path = "ane/ane_touch.rs"]
+pub mod ane_touch;
 #[path = "ane/ane_usb_dev.rs"]
 pub mod ane_usb_dev;
 
