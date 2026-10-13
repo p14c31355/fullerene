@@ -883,19 +883,9 @@ pub fn draw_fb_diag(d: &super::ane_usb_dev::FbDiag) {
         .x((d.cmd_head >> 32) as u32)
         .x(d.cmd_head as u32)
         .draw(canvas, y);
-    y += LINE_PITCH;
-    // v302: the one-behind probe line. FF=flush runs, FFSTUCK=flush never
-    // self-cleared, STR=strings served, EP0STUCK=stale-EPENA events.
-    Line::new()
-        .s(b"FB8 FF=")
-        .x(d.fflush & 0xffff)
-        .s(b" FFSTUCK=")
-        .x(d.fflush >> 16)
-        .s(b" STR=")
-        .x(d.strs & 0xffff)
-        .s(b" E0STK=")
-        .x(d.strs >> 16)
-        .draw(canvas, y);
+    // v331f: the FB8 probe line (FF/FFSTUCK/STR/E0STK) is gone from the
+    // panel - the durable ring logs all of it, and the user asked to drop
+    // the S-value display once logging was in place.
 
     // Refresh the strip on every accepted scan-out window and make the
     // canvas strip itself durable (the data cache is on).
