@@ -776,30 +776,25 @@ pub fn usb_reenumerate() {
     // EP1 (no new conversation for 10 s), bounded at 60 s; if the host
     // never goes quiet, SKIP the cycle - the boot continues to the desktop
     // on the existing enumeration instead of parking forever.
-    // v321 fix: uptime_us RACES on this SoC (CNTFRQ_EL0 lies - the v179
-    // artifact), so a us-based bound expired instantly and the D+ cycle
-    // ran mid-conversation again. Bound by BEATS (the timer tick count,
-    // clock-immune per the v195 lesson): 120 beats quiet (~10 s real),
-    // 720 beats hard cap (~60 s real).
-    let t0 = crate::ane_tick_count();
-    let quiet_target = 120u32;
-    let hard_cap = 720u32;
+    // v329 fix: bound the wait by CONVERSATION count, not beats. The wedged
+    // EP0 storm starves the beats (v329 measured: 11 EPENA stalls, beats
+    // crawling at a trickle) - a beat-based wait never completes under the
+    // storm. Conversations only increment on real host dispatches, so:
+    //   - spin a bounded iteration budget per poll (CPU-only, storm-proof)
+    //   - if no NEW conversation arrived in the whole budget, the host is
+    //     gone quiet - proceed with the D+ cycle
+    //   - hard cap on polls so a hostile host cannot hold us forever
     let mut last = crate::ane_conversations();
-    let mut last_change = t0;
-    loop {
+    for _poll in 0..400u32 {
         usb_spin(0x190);
-        let now = crate::ane_tick_count();
         let served = crate::ane_conversations();
         if served != last {
             last = served;
-            last_change = now;
         }
-        if now.wrapping_sub(last_change) >= quiet_target {
+        // No conversation delta across the poll = quiet. The host's own
+        // transactions would have bumped the counter between polls.
+        if served == last && _poll > 8 {
             break; // quiet - the core is idle, the write will retire
-        }
-        if now.wrapping_sub(t0) >= hard_cap {
-            crate::blackbox::text_puts("UD: REENUM SKIP\n");
-            return; // host never quiet - keep the existing enumeration
         }
     }
     crate::blackbox::text_puts("UD: REENUM GO\n");
