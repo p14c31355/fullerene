@@ -711,6 +711,12 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
         // still-enumerating run proves the SPI's delivery.
         if option_env!("FULLERENE_ANE_PUMP_LATE") != Some("1")
             && option_env!("FULLERENE_ANE_USB_SPI_ONLY").is_none()
+            // v324: the timer-tick pump is the stack-collision suspect
+            // (the v320-v323 corrupted ELR; the v159 "CNXN froze the
+            // remaining stack at the stall depth"). NO_PUMP now gates it;
+            // the responder stays alive via the USB SPI IRQ path, the SVC
+            // boundary after launchd, and the wait loop.
+            && option_env!("FULLERENE_ANE_NO_PUMP").is_none()
         {
             // USB control traffic has a host-side descriptor timeout. Service
             // the ANE responder before diagnostic canvas/probe work.

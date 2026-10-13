@@ -437,6 +437,20 @@ static mut DBG_CMD_HEAD: u64 = 0;
 /// decoded). A nonzero count proves the host's identity latch is good - the
 /// v306 quiet detector must never fire after this (a live conversation is
 /// the opposite of a garbled one).
+/// v325: a decoded ADB frame staged by the IRQ pump, waiting for a
+/// non-IRQ service pass to dispatch it (the deep dispatch path collided
+/// with the boot thread's exception frame - see the v325 note).
+static mut ADB_PENDING: [u8; ADB_PENDING_CAP] = [0; ADB_PENDING_CAP];
+static mut ADB_PENDING_LEN: usize = 0;
+static mut ADB_PENDING_READY: bool = false;
+const ADB_PENDING_CAP: usize = 256;
+
+/// v325: true while the timer-IRQ handler is running (the pump). The
+/// exceptions handler sets this on entry and clears it on exit.
+pub fn in_irq_context() -> bool {
+    crate::blackbox::ANE_IRQ_CONTEXT.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 pub static EP1_CONVERSATIONS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// v307: conversations served this boot (see EP1_CONVERSATIONS).
@@ -1610,7 +1624,25 @@ fn fb_poll(log: fn(&str, u64)) {
                     super::ane_fb::event(b"DEC ANCH");
                 }
                 super::ane_fb::event(b"DEC OK");
-                adb_dispatch(&pkt, log);
+                // v325: adb_dispatch is the pump's deep path (the CNXN ring
+                // copy + chunked send) - running it from the timer IRQ
+                // collided with the boot thread's exception frame (the
+                // v320-v323 corrupted ELR). From IRQ context, copy the raw
+                // anchored frame into ADB_PENDING and let the next NON-IRQ
+                // service pass (wait loop / SVC boundary) dispatch it.
+                if crate::blackbox::in_irq_context() {
+                    unsafe {
+                        let src = core::ptr::addr_of!(FB_CMD) as *const u8;
+                        let dst = core::ptr::addr_of_mut!(ADB_PENDING) as *mut u8;
+                        let n = anchored.len().min(ADB_PENDING_CAP);
+                        core::ptr::copy_nonoverlapping(src, dst, n);
+                        core::ptr::addr_of_mut!(ADB_PENDING_LEN).write(n);
+                        core::ptr::addr_of_mut!(ADB_PENDING_READY).write(true);
+                    }
+                    super::ane_fb::event(b"ADB DEFER");
+                } else {
+                    adb_dispatch(&pkt, log);
+                }
                 // v307: a decoded ADB frame is a live conversation - the
                 // v306 quiet detector must stand down from here on.
                 EP1_CONVERSATIONS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
@@ -2637,6 +2669,23 @@ fn ep0_state_line() {
 /// loop's polling cadence (the wait loop already wakes on the timer IRQ).
 pub fn service(log: fn(&str, u64)) {
     use core::sync::atomic::{AtomicBool, Ordering};
+    // v325: dispatch an ADB frame the IRQ pump staged. The deep dispatch
+    // (ring copy + chunked send) runs here, in whichever non-IRQ context
+    // called service - never from the timer IRQ.
+    if !crate::blackbox::ANE_IRQ_CONTEXT.load(Ordering::Relaxed) {
+        unsafe {
+            if core::ptr::addr_of!(ADB_PENDING_READY).read() {
+                core::ptr::addr_of_mut!(ADB_PENDING_READY).write(false);
+                let n = core::ptr::addr_of!(ADB_PENDING_LEN).read();
+                let raw =
+                    core::slice::from_raw_parts(core::ptr::addr_of!(ADB_PENDING) as *const u8, n);
+                if let Some(pkt) = crate::adb_wire::decode(raw).ok() {
+                    adb_dispatch(&pkt, log);
+                }
+                core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
+            }
+        }
+    }
     // Reentrancy guard (v158): the timer-IRQ pump now runs every ~16 ms, so
     // it can fire while the boot thread is inside its own service() call.
     // The pass is a state machine over shared endpoint arming, so a nested

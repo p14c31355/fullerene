@@ -1019,8 +1019,12 @@ pub struct ProgressWatchdog {
     in_irq: core::sync::atomic::AtomicBool,
 }
 
+/// v325: mirrored IRQ context for the ANE responder's ADB defer gate.
+pub static ANE_IRQ_CONTEXT: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 /// The single watchdog instance.
-pub static PROGRESS_WATCHDOG: ProgressWatchdog = ProgressWatchdog {
+static PROGRESS_WATCHDOG: ProgressWatchdog = ProgressWatchdog {
     count: core::sync::atomic::AtomicU32::new(0),
     last_seen: core::sync::atomic::AtomicU32::new(0),
     stalled_since_us: AtomicU64::new(0),
@@ -1163,6 +1167,10 @@ pub fn check_scheduled_reset(now_us: u64) {
 
 /// IRQ-context flag for the watchdog (set by the exception layer).
 pub fn set_irq_context(v: bool) {
+    // v325: the ANE responder's ADB defer gate mirrors the IRQ context
+    // through this blackbox-owned atomic (blackbox is platform-independent;
+    // ane_usb_dev reads it via crate::blackbox::ANE_IRQ_CONTEXT).
+    ANE_IRQ_CONTEXT.store(v, core::sync::atomic::Ordering::Relaxed);
     PROGRESS_WATCHDOG.set_irq_context(v);
 }
 
