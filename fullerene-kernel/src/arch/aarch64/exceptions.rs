@@ -994,6 +994,7 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                         } else if beats.wrapping_sub(seen) > 512 {
                             PARK_DONE.store(true, Ordering::Relaxed);
                             crate::blackbox::text_puts("WD: PARK RECOVERY\n");
+                            super::platform::ane_fb::IRQ_QUIET.store(false, Ordering::Relaxed);
                             crate::ane_park_desktop();
                         }
                     } else {

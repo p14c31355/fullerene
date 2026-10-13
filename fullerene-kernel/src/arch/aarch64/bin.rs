@@ -22,5 +22,8 @@ pub(crate) use runtime::timer;
 // v315: the pump-side park recovery calls the desktop bring-up through the
 // crate root (desktop is a private sibling module of the runtime).
 pub(crate) fn ane_park_desktop() {
+    runtime::desktop::PARK_RECOVERY_RUN.store(true, core::sync::atomic::Ordering::Relaxed);
     runtime::desktop::bring_up();
+    // The tick-driven row flushes take the canvas from here; re-enable the
+    // desktop ownership marker exactly as the boot-thread path does.
 }

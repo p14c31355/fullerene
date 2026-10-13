@@ -28,6 +28,13 @@ use super::uart;
 
 /// Bring up the desktop on the ANE canvas. Called once, after the heap is
 /// live and before the user task starts.
+/// v315: set by the pump's park-recovery path before calling bring_up, so
+/// bring_up skips the inline 9.6 MB panel flush (it would block the IRQ for
+/// minutes and starve the SP805). The tick-driven row flushes push the
+/// canvas out afterwards.
+pub static PARK_RECOVERY_RUN: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 pub fn bring_up() {
     // Silence every IRQ-side canvas paint/row transfer before the first
     // cacheable probe. The probe must measure its own memory path, not the
@@ -150,7 +157,13 @@ pub fn bring_up() {
     uart::puts("desktop: rendered\n");
 
     // 4. Propagate the canvas to every display channel the gates accept.
-    ane_fb::flush_panel();
+    // v315: when bring_up runs from the pump's park recovery (IRQ context),
+    // the 9.6 MB panel flush would block the IRQ for minutes and starve the
+    // SP805 (the v315 2m07s deaths). The tick-driven row flushes push the
+    // canvas out afterwards; only the boot-thread path flushes inline.
+    if !PARK_RECOVERY_RUN.load(Ordering::Relaxed) {
+        ane_fb::flush_panel();
+    }
     uart::puts("desktop: done\n");
 }
 
