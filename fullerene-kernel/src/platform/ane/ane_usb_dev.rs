@@ -477,6 +477,10 @@ pub fn boot_recovery_check(beats: u32) {
         // The boot thread is alive.
         LAST_SEEN.store(hb, Ordering::Relaxed);
         FROZEN_AT.store(0, Ordering::Relaxed);
+        // v331b: also check the USB liveness lane - a live boot thread with
+        // a permanently wedged EP0 (the host sees a zombie: descriptor
+        // reads hang, no flash window) is unrecoverable without a reset.
+        usb_zombie_check(beats);
         return;
     }
     // The heartbeat is frozen: the boot thread has not run the wait loop.
@@ -492,6 +496,38 @@ pub fn boot_recovery_check(beats: u32) {
         // recovers without a power hold.
         crate::blackbox::text_puts("WD: BOOT FROZEN RESET\n");
         crate::blackbox::schedule_reset_at(crate::timer::uptime_us());
+    }
+}
+
+/// v331b: incremented by ep0_send on every SUCCESSFUL EP0 completion
+/// (the endpoint armed and the transfer retired). Frozen success +
+/// rising stuck = the USB zombie.
+pub static EP0_OK: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// v331b: the USB zombie lane. Runs only while the boot thread is alive
+/// (the frozen-boot lane owns the wedge case). If no EP0 transfer
+/// completed for 54000 beats (~15 min) while the pump keeps seeing EPENA
+/// stalls, the link cannot recover by itself - schedule the loader reset.
+fn usb_zombie_check(beats: u32) {
+    use core::sync::atomic::Ordering;
+    static LAST_OK: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    static ZOMBIE_AT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    let ok = EP0_OK.load(Ordering::Relaxed);
+    let last = LAST_OK.load(Ordering::Relaxed);
+    if ok != last {
+        LAST_OK.store(ok, Ordering::Relaxed);
+        ZOMBIE_AT.store(0, Ordering::Relaxed);
+        return;
+    }
+    let at = ZOMBIE_AT.load(Ordering::Relaxed);
+    if at == 0 {
+        ZOMBIE_AT.store(beats, Ordering::Relaxed);
+        return;
+    }
+    if beats.wrapping_sub(at) > 54000 {
+        crate::blackbox::text_puts("WD: USB ZOMBIE RESET\n");
+        crate::blackbox::schedule_reset_at(crate::timer::uptime_us());
+        ZOMBIE_AT.store(beats, Ordering::Relaxed); // once per window
     }
 }
 
@@ -707,6 +743,10 @@ fn ep0_send(data: &[u8]) {
         unsafe {
             DBG_EPENA_STUCK = DBG_EPENA_STUCK.wrapping_add(1);
         }
+    } else {
+        // v331b: the arming path is alive (the MMIO + the endpoint state
+        // machine respond). The USB-zombie lane watches this counter.
+        EP0_OK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     }
     wr(DIEPTSIZ0, (1 << 19) | ((n & 0x7f) as u32));
     wr(
