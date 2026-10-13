@@ -5,7 +5,7 @@ use fullerene_abi::boot::{self, BootArchitecture, BootInfo, BootPlatform};
 mod allocator;
 mod cpu;
 #[cfg(fullerene_aarch64_ane)]
-mod desktop;
+pub(crate) mod desktop;
 mod devices;
 #[cfg(fullerene_aarch64_bramble)]
 mod display;

@@ -52,8 +52,7 @@ pub(crate) static IRQ_LAST_STAGE: core::sync::atomic::AtomicU8 =
 /// v224: the interrupted PC of the most recent IRQ - the boot thread's
 /// suspended PC whenever it is parked (see aarch64_exception_irq).
 /// Readable via the 256-beat re-stamp ("PC:<16 hex>").
-pub(crate) static LAST_IRQ_PC: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(0);
+pub static LAST_IRQ_PC: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// v228: the most recent IRQ's saved fault/status registers. If the parked
 /// thread is really looping through a faulting access, ESR_EL1/FAR_EL1 will
@@ -967,6 +966,38 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                         GARBLE_T0.store(beats, Ordering::Relaxed);
                         crate::blackbox::text_puts("WD: GARBLE RECONNECT\n");
                         super::platform::ane_usb_dev::usb_reconnect_begin();
+                    }
+                }
+            }
+            // v315: PARK_RECOVERY. Every v306+ boot parks the boot thread
+            // forever inside usb_reenumerate's settle spin (LAST_IRQ_PC
+            // pinned at the spin, ESR/FAR=0, conversations keep being
+            // served by this pump). The boot's remaining work - the desktop
+            // bring-up - must therefore run HERE, in the pump, once the
+            // park is detected. One-shot; the guard makes it re-entrancy
+            // safe (the timer IRQ cannot nest here).
+            {
+                use core::sync::atomic::AtomicBool;
+                static PARK_DONE: AtomicBool = AtomicBool::new(false);
+                static PARK_SEEN_AT: AtomicU32 = AtomicU32::new(0);
+                if !PARK_DONE.load(Ordering::Relaxed)
+                    && super::platform::ane_usb_dev::usb_config_was_1()
+                {
+                    const PARK_PC_LO: u64 = 0x005C_1700;
+                    const PARK_PC_HI: u64 = 0x005C_1900;
+                    let pc = LAST_IRQ_PC.load(Ordering::Relaxed);
+                    let in_park = (PARK_PC_LO..=PARK_PC_HI).contains(&pc);
+                    if in_park {
+                        let seen = PARK_SEEN_AT.load(Ordering::Relaxed);
+                        if seen == 0 {
+                            PARK_SEEN_AT.store(beats, Ordering::Relaxed);
+                        } else if beats.wrapping_sub(seen) > 512 {
+                            PARK_DONE.store(true, Ordering::Relaxed);
+                            crate::blackbox::text_puts("WD: PARK RECOVERY\n");
+                            crate::ane_park_desktop();
+                        }
+                    } else {
+                        PARK_SEEN_AT.store(0, Ordering::Relaxed);
                     }
                 }
             }

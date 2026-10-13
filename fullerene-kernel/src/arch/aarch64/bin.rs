@@ -18,3 +18,9 @@ mod blackbox;
 mod cdc_acm;
 
 pub(crate) use runtime::timer;
+
+// v315: the pump-side park recovery calls the desktop bring-up through the
+// crate root (desktop is a private sibling module of the runtime).
+pub(crate) fn ane_park_desktop() {
+    runtime::desktop::bring_up();
+}
