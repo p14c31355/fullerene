@@ -750,18 +750,47 @@ pub fn usb_attach() {
 /// up while that renderer is monopolizing the boot thread, merely servicing
 /// the existing gadget state is not enough: the pull-up must be dropped and
 /// raised so the host starts a fresh descriptor exchange.
+#[cfg(fullerene_aarch64_ane)]
+fn reenum_note(msg: &[u8]) {
+    crate::blackbox::text_puts(unsafe { core::str::from_utf8_unchecked(msg) });
+}
+#[cfg(not(fullerene_aarch64_ane))]
+fn reenum_note(_msg: &[u8]) {}
+
+static REENUM_REQ: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// v312: request a D+ cycle WITHOUT touching the core from the boot thread.
+/// The v306-v311 boots all parked the boot thread forever on the reenumerate
+/// DCTL write itself (PC 0x5C17AC with ESR/FAR=0: the write to a mid-URB
+/// core never retires - spin size is irrelevant, v311 measured it at 6400
+/// iterations). The timer-IRQ pump owns the cycle: it performs drop/raise
+/// across successive service() passes, where a stalled write only costs the
+/// IRQ tail (bounded), never the boot thread.
 pub fn usb_reenumerate() {
-    // v311: 0x1900 iterations (~2.6k). The old 0x190_0000 settle parked the
-    // boot thread for 24+ min when the core never retired the DCTL write
-    // (PC 0x5C17AC measured across v306-v309 long-lived boots). 2.6k
-    // iterations still covers the vendor's settle intent on the observed
-    // core speed while bounding the worst case to milliseconds.
-    unsafe {
-        usb_or(USB_CORE_BASE + 0x804, 0x2);
+    REENUM_REQ.store(1, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// v312: pump-side D+ cycle. Called from the USB service path every pass.
+/// 0 = idle, 1 = drop pending, 2 = raise pending, 3 = raise done.
+pub fn usb_reenum_tick() {
+    use core::sync::atomic::Ordering;
+    let st = REENUM_REQ.load(Ordering::Relaxed);
+    if st == 0 {
+        return;
     }
-    usb_spin(0x1900); /* bounded disconnect settle */
-    unsafe {
-        usb_mask(USB_CORE_BASE + 0x804, 0x2, 0);
+    if st == 1 {
+        // One MMIO write from IRQ context. If the core never retires it the
+        // IRQ tail hangs - bounded by the GIC deadline, not the boot.
+        unsafe {
+            usb_or(USB_CORE_BASE + 0x804, 0x2);
+        }
+        REENUM_REQ.store(2, Ordering::Relaxed);
+        reenum_note(b"UD: REENUM DROP\n");
+    } else if st == 2 {
+        unsafe {
+            usb_mask(USB_CORE_BASE + 0x804, 0x2, 0);
+        }
+        REENUM_REQ.store(3, Ordering::Relaxed);
+        reenum_note(b"UD: REENUM RAISE\n");
     }
-    usb_spin(0x1900); /* bounded connect settle */
 }
