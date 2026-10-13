@@ -1274,6 +1274,13 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
             // then hand the canvas to the desktop renderer. The
             // HISTORICAL_NO_RECONNECT / FORCE_POST_RECONNECT knobs keep
             // their A/B roles.
+            // v318: stage probes. The boot thread's post-storage narrative
+            // never survives in the 2 KB piggyback window (the pump floods
+            // EVT/UD/IQ at ~100/s), so the desktop's reachability was
+            // unmeasurable. One ring event before/after each tail stage
+            // names the last completed stage on the next collection.
+            #[cfg(fullerene_aarch64_ane)]
+            platform::ane_fb::event(b"STG PRE-RENUM");
             if (option_env!("FULLERENE_ANE_HISTORICAL_USB_SEQUENCE") == Some("1")
                 && option_env!("FULLERENE_ANE_HISTORICAL_NO_RECONNECT") != Some("1"))
                 || option_env!("FULLERENE_ANE_FORCE_POST_RECONNECT") == Some("1")
@@ -1281,10 +1288,14 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                     && option_env!("FULLERENE_ANE_NO_POST_RECONNECT").is_none())
             {
                 platform::ane::usb_reenumerate();
+                #[cfg(fullerene_aarch64_ane)]
+                platform::ane_fb::event(b"STG RENUM-OK");
             }
             platform::ane_usb_dev::service(ane_log);
             if option_env!("FULLERENE_ANE_SKIP_DESKTOP") != Some("1") {
                 desktop::bring_up();
+                #[cfg(fullerene_aarch64_ane)]
+                platform::ane_fb::event(b"STG DESK-OK");
             }
             platform::ane_usb_dev::service(ane_log);
             if platform::ane_usb_dev::usb_enumerated() {
