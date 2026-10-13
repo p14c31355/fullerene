@@ -41,3 +41,12 @@ pub(crate) fn ane_uptime_us() -> u64 {
 pub(crate) fn ane_tick_count() -> u32 {
     runtime::exceptions::tick_count()
 }
+
+/// v328: the solvent render stage probe - mirrors the stage byte into the
+/// durable ring so any collection names the render's progress.
+#[unsafe(no_mangle)]
+pub extern "Rust" fn ane_stage_probe(stage: u8) {
+    crate::blackbox::text_puts("RP: ");
+    crate::blackbox::text_byte(stage);
+    crate::blackbox::text_puts("\n");
+}

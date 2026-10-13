@@ -324,6 +324,10 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
     }
 
     render_progress(b"RENDER: pre-update");
+    // v328: the ANE ring stage probe - the render's reachability was
+    // unmeasurable when the freeze hit before this label.
+    #[cfg(feature = "fullerene_ane_stage_probe")]
+    crate::ane_stage_probe(b'T');
 
     if rt.editor_dirty {
         crate::editor_bridge::render_editor(rt);

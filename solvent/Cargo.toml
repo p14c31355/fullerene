@@ -9,6 +9,7 @@ rust-version.workspace = true
 
 [features]
 esp32 = []
+fullerene_ane_stage_probe = []
 
 [target.'cfg(not(any(target_arch = "xtensa", target_arch = "aarch64")))'.dependencies]
 x86_64 = { workspace = true, features = [

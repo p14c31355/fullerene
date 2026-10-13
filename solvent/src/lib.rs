@@ -133,6 +133,13 @@ pub use lattice::wallpaper::{
 pub use network_state::{NETWORK_SNAPSHOT, NetworkSnapshot};
 #[cfg(not(target_arch = "xtensa"))]
 pub use render::{render, render_cursor_fast, set_render_progress_fn};
+
+/// v328: the ANE ring stage probe. The kernel crate root provides the real
+/// implementation; solvent only calls it under the stage-probe feature.
+#[cfg(feature = "fullerene_ane_stage_probe")]
+unsafe extern "Rust" {
+    pub safe fn ane_stage_probe(stage: u8);
+}
 #[cfg(not(target_arch = "xtensa"))]
 pub use runtime_context::{
     DISPLAY_BRIGHTNESS_X100, HEAP_EXTEND_RESERVE, MOUSE_SENSITIVITY, ProcessTerminal,

@@ -137,7 +137,7 @@ nitrogen = { path = "../nitrogen" }
 nozzle = { path = "../nozzle" }
 bonder = { path = "../bonder" }
 lattice = { path = "../lattice" }
-solvent = { path = "../solvent" }
+solvent = { path = "../solvent", features = ["fullerene_ane_stage_probe"] }
 resonance = { path = "../resonance" }
 embedded-graphics = { workspace = true }
 memoffset = { version = "0.9", default-features = false }
@@ -165,7 +165,7 @@ fullerene-abi = { path = "abi" }
 genome = { path = "../genome" }
 lattice = { path = "../lattice" }
 petroleum = { path = "../petroleum" }
-solvent = { path = "../solvent" }
+solvent = { path = "../solvent", features = ["fullerene_ane_stage_probe"] }
 spin = { workspace = true, features = ["mutex", "spin_mutex"] }
 
 [target.'cfg(target_arch = "xtensa")'.dependencies]
@@ -174,7 +174,7 @@ spin = { workspace = true, features = ["once", "mutex", "spin_mutex"] }
 nitrogen = { path = "../nitrogen" }
 genome = { path = "../genome" }
 lattice = { path = "../lattice" }
-solvent = { path = "../solvent" }
+solvent = { path = "../solvent", features = ["fullerene_ane_stage_probe"] }
 resonance = { path = "../resonance" }
 nozzle = { path = "../nozzle" }
 
