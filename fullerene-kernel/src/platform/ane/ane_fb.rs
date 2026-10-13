@@ -50,6 +50,11 @@ const AMBER: u32 = 0xFFFF_C857;
 /// cannot scribble over the desktop pixels. The durable ring and the
 /// flush helpers are unaffected (the flushes copy whatever the canvas
 /// already holds).
+/// v320: the boot-tail stage byte (0 = none, 'R' = reenumerate done,
+/// 'S' = solvent init done, 'T' = render started, 'K' = render ok). The IQ
+/// line prints it so any 2 KB window carries the current stage.
+pub static STG_STAGE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
 pub static DESKTOP_OWNED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 

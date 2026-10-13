@@ -1067,6 +1067,11 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                                 worst_slot = i;
                             }
                         }
+                        // v320: the boot-tail stage byte rides on every IQ
+                        // line, so any 2 KB window names the current stage.
+                        crate::blackbox::text_puts(" G=");
+                        let stg = super::platform::ane_fb::STG_STAGE.load(Ordering::Relaxed);
+                        crate::blackbox::text_byte(if stg == 0 { b'.' } else { stg });
                         crate::blackbox::text_puts(" W=");
                         crate::blackbox::text_byte(b'A' + worst_slot as u8);
                         let w = worst_us as u64;

@@ -134,7 +134,10 @@ pub fn bring_up() {
     uart::puts("D2\n");
     solvent::init();
     #[cfg(fullerene_aarch64_ane)]
-    ane_fb::event(b"STG SOLVENT-INIT-OK");
+    {
+        ane_fb::STG_STAGE.store(b'S', Ordering::Relaxed);
+        ane_fb::event(b"STG SOLVENT-INIT-OK");
+    }
     solvent::apply_settings(1.0, 100, true);
     solvent::tick_core(solvent::now_tsc());
     uart::puts("desktop: init done\n");
@@ -156,10 +159,16 @@ pub fn bring_up() {
         return;
     };
     #[cfg(fullerene_aarch64_ane)]
-    ane_fb::event(b"STG RENDER-START");
+    {
+        ane_fb::STG_STAGE.store(b'T', Ordering::Relaxed);
+        ane_fb::event(b"STG RENDER-START");
+    }
     solvent::render(&mut framebuffer);
     #[cfg(fullerene_aarch64_ane)]
-    ane_fb::event(b"STG RENDER-OK");
+    {
+        ane_fb::STG_STAGE.store(b'K', Ordering::Relaxed);
+        ane_fb::event(b"STG RENDER-OK");
+    }
     uart::puts("desktop: rendered\n");
 
     // 4. Propagate the canvas to every display channel the gates accept.

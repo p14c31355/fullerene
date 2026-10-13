@@ -1289,7 +1289,10 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
             {
                 platform::ane::usb_reenumerate();
                 #[cfg(fullerene_aarch64_ane)]
-                platform::ane_fb::event(b"STG RENUM-OK");
+                {
+                    platform::ane_fb::STG_STAGE.store(b'R', core::sync::atomic::Ordering::Relaxed);
+                    platform::ane_fb::event(b"STG RENUM-OK");
+                }
             }
             platform::ane_usb_dev::service(ane_log);
             if option_env!("FULLERENE_ANE_SKIP_DESKTOP") != Some("1") {
