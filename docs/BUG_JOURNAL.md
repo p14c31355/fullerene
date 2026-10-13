@@ -2527,3 +2527,26 @@ SKIP_DESKTOP.
   NO_PUMP boot already proved the boot thread reaches fs::init pass 2
   without the pump; the enumeration watchdog that killed it is since
   fixed (v287+). The wait loop already calls service() every iteration.
+
+## 2026-10-13 22:0x v329: the freeze survives the panel-paint removal -
+## the EP0 storm under the quiet-wait
+
+- v329 (MARKS_UART_ONLY: event() writes the ring only, no panel paint)
+  still freezes: STG PRE-RENUM logged, RENUM-OK never. The freeze is NOT
+  in event()'s panel paint.
+- The ring windows after PRE-RENUM carry: EP0 EPENA stalls (11 in 4KB),
+  USB RST + FFLUSH cycles, WD: BOOT PROGRESS STALLED, and only ONE IQ
+  line (N=0x0400) - the timer beats are advancing glacially under the
+  EP0 interrupt storm.
+- Mechanism: the wedged EP0 (EPENA stuck) generates a continuous USB
+  interrupt; each pump pass force-disables and re-arms, re-sticking. The
+  boot thread's quiet-wait (120-beat quiet requirement) cannot complete
+  because the beats advance at a trickle under the storm.
+- v322's wall-clock caps expired instantly (uptime_us races 1172x);
+  v323's beat caps expire but only as fast as the starved beats tick.
+- The storm is self-inflicted: my host collections wedge EP0 (the
+  un-acked EPENA state), and the device-side re-arm loop then storms.
+- Fix directions: (a) count conversations not beats in the quiet-wait
+  (conversations stay 0 during a storm - the wait completes in one pass);
+  (b) bound the EP0 re-arm loop in the pump (after N consecutive EPENA
+  stalls, leave EP0 disabled and wait for a real bus reset).
