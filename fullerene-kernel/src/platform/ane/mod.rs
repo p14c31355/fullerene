@@ -751,12 +751,17 @@ pub fn usb_attach() {
 /// the existing gadget state is not enough: the pull-up must be dropped and
 /// raised so the host starts a fresh descriptor exchange.
 pub fn usb_reenumerate() {
+    // v311: 0x1900 iterations (~2.6k). The old 0x190_0000 settle parked the
+    // boot thread for 24+ min when the core never retired the DCTL write
+    // (PC 0x5C17AC measured across v306-v309 long-lived boots). 2.6k
+    // iterations still covers the vendor's settle intent on the observed
+    // core speed while bounding the worst case to milliseconds.
     unsafe {
         usb_or(USB_CORE_BASE + 0x804, 0x2);
     }
-    usb_spin(0x190_0000); /* ~50 ms disconnect settle */
+    usb_spin(0x1900); /* bounded disconnect settle */
     unsafe {
         usb_mask(USB_CORE_BASE + 0x804, 0x2, 0);
     }
-    usb_spin(0x190_0000); /* ~50 ms connect settle */
+    usb_spin(0x1900); /* bounded connect settle */
 }
