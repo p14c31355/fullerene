@@ -19,7 +19,7 @@ mod launchd;
 mod linux;
 mod mmu;
 #[path = "../../platform/mod.rs"]
-mod platform;
+pub(crate) mod platform;
 mod syscall;
 mod task;
 pub(crate) mod timer;

@@ -133,6 +133,8 @@ pub fn bring_up() {
     solvent::set_render_progress_fn(render_progress);
     uart::puts("D2\n");
     solvent::init();
+    #[cfg(fullerene_aarch64_ane)]
+    ane_fb::event(b"STG SOLVENT-INIT-OK");
     solvent::apply_settings(1.0, 100, true);
     solvent::tick_core(solvent::now_tsc());
     uart::puts("desktop: init done\n");
@@ -153,7 +155,11 @@ pub fn bring_up() {
         uart::puts("desktop: framebuffer guard refused\n");
         return;
     };
+    #[cfg(fullerene_aarch64_ane)]
+    ane_fb::event(b"STG RENDER-START");
     solvent::render(&mut framebuffer);
+    #[cfg(fullerene_aarch64_ane)]
+    ane_fb::event(b"STG RENDER-OK");
     uart::puts("desktop: rendered\n");
 
     // 4. Propagate the canvas to every display channel the gates accept.
