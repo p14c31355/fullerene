@@ -27,3 +27,9 @@ pub(crate) fn ane_park_desktop() {
     // The tick-driven row flushes take the canvas from here; re-enable the
     // desktop ownership marker exactly as the boot-thread path does.
 }
+
+// v319: the reenumerate quiet-wait reads the EP1 conversation counter
+// through the crate root (ane_usb_dev is a platform-level sibling).
+pub(crate) fn ane_conversations() -> u32 {
+    runtime::platform::ane_usb_dev::conversations_served()
+}

@@ -751,17 +751,40 @@ pub fn usb_attach() {
 /// the existing gadget state is not enough: the pull-up must be dropped and
 /// raised so the host starts a fresh descriptor exchange.
 pub fn usb_reenumerate() {
-    // v311: 0x1900 iterations (~2.6k). The old 0x190_0000 settle parked the
-    // boot thread for 24+ min when the core never retired the DCTL write
-    // (PC 0x5C17AC measured across v306-v309 long-lived boots). 2.6k
-    // iterations still covers the vendor's settle intent on the observed
-    // core speed while bounding the worst case to milliseconds.
+    // v319: the DCTL write only stalls when the core is mid-conversation
+    // (v318 STG probes: PRE-RENUM logged, RENUM-OK never; the boot thread
+    // parks on the write/isb while the host holds EP1). Wait for a quiet
+    // EP1 (no new conversation for 10 s), bounded at 60 s; if the host
+    // never goes quiet, SKIP the cycle - the boot continues to the desktop
+    // on the existing enumeration instead of parking forever.
+    // ~10 ms spin chunks (0x1900 iterations measured ~microseconds on this
+    // core; 4000 chunks x 0x1900 keeps the loop CPU-only - the pump runs in
+    // IRQ context and advances EP1_CONVERSATIONS, which this loop reads).
+    let mut last = crate::ane_conversations();
+    let mut quiet_chunks = 0u32;
+    let mut chunks = 0u32;
+    while chunks < 6000 {
+        usb_spin(0x1900);
+        chunks += 1;
+        let served = crate::ane_conversations();
+        if served != last {
+            last = served;
+            quiet_chunks = 0;
+        } else {
+            quiet_chunks += 1;
+            if quiet_chunks >= 1000 {
+                break; // ~10 s without a new conversation
+            }
+        }
+    }
+    crate::blackbox::text_puts("UD: REENUM GO\n");
     unsafe {
         usb_or(USB_CORE_BASE + 0x804, 0x2);
     }
-    usb_spin(0x1900); /* bounded disconnect settle */
+    usb_spin(0x190_0000); /* ~50 ms disconnect settle */
     unsafe {
         usb_mask(USB_CORE_BASE + 0x804, 0x2, 0);
     }
-    usb_spin(0x1900); /* bounded connect settle */
+    usb_spin(0x190_0000); /* ~50 ms connect settle */
+    crate::blackbox::text_puts("UD: REENUM DONE\n");
 }

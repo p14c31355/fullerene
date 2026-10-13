@@ -14,6 +14,20 @@ mod common;
 #[path = "../src/platform/ane/mod.rs"]
 mod ane;
 
+// v310/v319: the reenumerate quiet-wait calls crate::ane_tick_count() and
+// super::ane_usb_dev (both exist only in the kernel roots). Stubs keep the
+// host-side include compiling.
+pub(crate) fn ane_tick_count() -> u32 {
+    0
+}
+
+pub(crate) fn ane_conversations() -> u32 {
+    0
+}
+
+#[path = "../src/blackbox.rs"]
+mod blackbox;
+
 const BLOCK_SIZE: u64 = 0x20_0000;
 
 /// Mirrors `mmu::in_mmio_ranges`: true when the 2 MiB identity block
