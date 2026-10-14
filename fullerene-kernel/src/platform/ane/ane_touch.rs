@@ -228,7 +228,7 @@ pub unsafe fn poll() {
 /// The touch bring-up stage: returns true when the chip answered.
 pub unsafe fn probe() -> bool {
     TOUCH_STAGE.store(b'R', Ordering::Relaxed);
-    // 0. pclk_gpio18 gate (SCTRL+0x10 bit 18, the DTB's hi3xxx-clk-gate
+    // 0a. pclk_gpio18 gate (SCTRL+0x10 bit 18, the DTB's hi3xxx-clk-gate
     // <0x10 0x40000>): a PL061 write with its pclk gated parks the bus -
     // the v331g hang. The gate lives in the proven-accessible SCTRL.
     const SCTRL: usize = 0xfff0_a000;
@@ -236,6 +236,19 @@ pub unsafe fn probe() -> bool {
     let g = rd32(SCTRL, 0x10);
     wr32(SCTRL, 0x10, g | PCLK_GPIO18);
     spin(2);
+    // 0b. THE TOUCH RAILS (the v331s park hypothesis): the stock ts_kit
+    // powers the touch VDD (3.0 V) + IO (1.8 V) BEFORE the first I2C
+    // access. Without them the bus floats (the slave holds SDA low) and
+    // the DW I2C waits forever on the transaction = the park. The
+    // descriptors are the DTB's fts-vdd/io-supply phandles via the
+    // hisi_ldo contract (the control register + the enable bit).
+    for rail in ane::TOUCH_REGULATORS.iter() {
+        let ctrl = rail.control_register as usize;
+        let cur = crate::platform::common::pmic::pmic_rd(ctrl);
+        crate::platform::common::pmic::pmic_wr(ctrl, cur | rail.enable_mask);
+        spin(rail.enable_time_us / 1000 + 5);
+    }
+    crate::blackbox::text_puts("T0: rails on\n");
     // 1. Pinmux + controller reset release + master init - with a ring
     // marker between each step (the v331n park is inside one of them;
     // the last logged letter names the culprit).
