@@ -294,6 +294,12 @@ pub fn put_hex(label: &str, value: u64) {
     put_hex_value(value);
 }
 
+/// The label + hex value + newline - the common diagnostic line shape.
+pub fn put_hexln(label: &str, value: u64) {
+    put_hex(label, value);
+    puts("\n");
+}
+
 pub fn put_hex_value(value: u64) {
     puts("0x");
     for shift in (0..16).rev() {

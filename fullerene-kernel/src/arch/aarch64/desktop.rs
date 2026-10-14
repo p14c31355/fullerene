@@ -135,8 +135,7 @@ pub fn bring_up() {
     solvent::init();
     #[cfg(fullerene_aarch64_ane)]
     {
-        ane_fb::STG_STAGE.store(b'S', Ordering::Relaxed);
-        ane_fb::event(b"STG SOLVENT-INIT-OK");
+        ane_fb::stage_advance(b'S', b"STG SOLVENT-INIT-OK");
     }
     solvent::apply_settings(1.0, 100, true);
     solvent::tick_core(solvent::now_tsc());
@@ -165,8 +164,7 @@ pub fn bring_up() {
     #[cfg(fullerene_aarch64_ane)]
     {
         super::mobile_home::render_home();
-        ane_fb::STG_STAGE.store(b'H', Ordering::Relaxed);
-        ane_fb::event(b"STG HOME-OK");
+        ane_fb::stage_advance(b'H', b"STG HOME-OK");
         ane_fb::flush_panel();
         uart::puts("mobile home: rendered\n");
     }
@@ -176,14 +174,12 @@ pub fn bring_up() {
     };
     #[cfg(fullerene_aarch64_ane)]
     {
-        ane_fb::STG_STAGE.store(b'T', Ordering::Relaxed);
-        ane_fb::event(b"STG RENDER-START");
+        ane_fb::stage_advance(b'T', b"STG RENDER-START");
     }
     solvent::render(&mut framebuffer);
     #[cfg(fullerene_aarch64_ane)]
     {
-        ane_fb::STG_STAGE.store(b'K', Ordering::Relaxed);
-        ane_fb::event(b"STG RENDER-OK");
+        ane_fb::stage_advance(b'K', b"STG RENDER-OK");
     }
     uart::puts("desktop: rendered\n");
 

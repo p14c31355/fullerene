@@ -602,6 +602,14 @@ const EVENT_ROW_BASE: u32 = 38;
 const EVENT_SLOTS: u32 = 20;
 static EVENT_NEXT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
+/// v331 refactor: one call per stage transition - the stage byte, the
+/// ring event, and (optionally) the panel flush. The stage transitions
+/// were three repeated lines at every site.
+pub fn stage_advance(code: u8, tag: &[u8]) {
+    STG_STAGE.store(code, core::sync::atomic::Ordering::Relaxed);
+    event(tag);
+}
+
 pub fn event(tag: &[u8]) {
     use core::sync::atomic::Ordering;
     let idx = EVENT_NEXT.fetch_add(1, Ordering::Relaxed);

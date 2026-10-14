@@ -1021,8 +1021,7 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     /// log), shared by the USB bring-up report and the device-side service.
     #[cfg(fullerene_aarch64_ane)]
     fn ane_log(label: &str, value: u64) {
-        uart::put_hex(label, value);
-        uart::puts("\n");
+        uart::put_hexln(label, value);
     }
 
     #[cfg(fullerene_aarch64_ane)]
@@ -1036,8 +1035,7 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         // hazard, not after the reenumerate gauntlet. Every later boot
         // stage overwrites or extends it.
         mobile_home::render_home();
-        platform::ane_fb::STG_STAGE.store(b'H', core::sync::atomic::Ordering::Relaxed);
-        platform::ane_fb::event(b"STG HOME-OK");
+        platform::ane_fb::stage_advance(b'H', b"STG HOME-OK");
         platform::ane_fb::flush_panel();
         uart::puts("mobile home: first-light\n");
         // v331q: the probe moved to the wait loop (the first pass after
@@ -1064,8 +1062,7 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         // (the binary ring record was taken at entry, before this console
         // exists). Re-writing is idempotent; the readback proves the value.
         platform::common::pmic::pmic_wr(0x18C, 250);
-        uart::put_hex("bkp: rb=", platform::common::pmic::pmic_rd(0x18C) as u64);
-        uart::puts("\n");
+        uart::put_hexln("bkp: rb=", platform::common::pmic::pmic_rd(0x18C) as u64);
         // The loader wrote the reset reason into PMIC reg 0x18B (0x01 =
         // bootloader reset, 0x02 = recovery, 0x10 = cold boot; anything else
         // means a watchdog fired). Painting it puts the cause of the LAST
@@ -1094,18 +1091,15 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         let usb = platform::ane::usb_bringup();
         uart::put_hex("usb: abb=", usb.abb as u64);
         uart::put_hex(" ppll0=", usb.ppll0.0 as u64);
-        uart::put_hex("->", usb.ppll0.1 as u64);
-        uart::puts("\n");
+        uart::put_hexln("->", usb.ppll0.1 as u64);
         uart::put_hex("usb: gusbcfg=", usb.core[0] as u64);
         uart::put_hex(" dcfg=", usb.core[1] as u64);
         uart::put_hex(" dctl=", usb.core[2] as u64);
-        uart::put_hex(" gintsts=", usb.core[3] as u64);
-        uart::puts("\n");
+        uart::put_hexln(" gintsts=", usb.core[3] as u64);
         uart::put_hex("usb: phy0=", usb.phy[0] as u64);
         uart::put_hex(" phy4=", usb.phy[1] as u64);
         uart::put_hex(" phy8=", usb.phy[2] as u64);
-        uart::put_hex(" phyc=", usb.phy[3] as u64);
-        uart::puts("\n");
+        uart::put_hexln(" phyc=", usb.phy[3] as u64);
         // Previous boot's dying words (the durable block survives reboots):
         // the rows above the tail window show the last panic file/line, the
         // only fault channel that needs no USB to read.
@@ -1314,8 +1308,7 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                 platform::ane::usb_reenumerate();
                 #[cfg(fullerene_aarch64_ane)]
                 {
-                    platform::ane_fb::STG_STAGE.store(b'R', core::sync::atomic::Ordering::Relaxed);
-                    platform::ane_fb::event(b"STG RENUM-OK");
+                    platform::ane_fb::stage_advance(b'R', b"STG RENUM-OK");
                 }
             }
             platform::ane_usb_dev::service(ane_log);
