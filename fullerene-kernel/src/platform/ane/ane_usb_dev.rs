@@ -182,59 +182,15 @@ const DCFG_DEVADDR_MASK: u32 = 0x7f << 4;
 // answers. Measured open question: whether the fastboot client still matches
 // the interface with 0x01 - our own tools (pyusb/xfer/adbtest) do not care.
 
-const DEV_DESC: [u8; 18] = [
-    18, 0x01, // bLength, DEVICE
-    0x00, 0x02, // bcdUSB 2.00
-    0x00, 0x00, 0x00, // class, subclass, protocol
-    64,   // bMaxPacketSize0
-    0xd1, 0x18, // idVendor 0x18d1
-    0x0d, 0xd0, // idProduct 0xd00d
-    0x00, 0x01, // bcdDevice 1.00
-    1, 2, 3, // iManufacturer, iProduct, iSerialNumber
-    1, // bNumConfigurations
-];
-
+// v331 golf: the descriptor tables build via the shared
+// fastboot_dispatch builders (the shapes are the USB-IF standard
+// fastboot class; the identity is the device's).
+const DEV_DESC: [u8; 18] = crate::fastboot_dispatch::device_descriptor(0x18d1, 0xd00d);
 #[cfg(fullerene_ane_adb_protocol)]
 const IFACE_PROTOCOL: u8 = 0x01;
 #[cfg(not(fullerene_ane_adb_protocol))]
 const IFACE_PROTOCOL: u8 = 0x03;
-
-const CFG_DESC: [u8; 32] = [
-    // configuration
-    9,
-    0x02,
-    32,
-    0x00,
-    1,
-    1,
-    0,
-    0x80,
-    50, // bus powered, 100 mA
-    // interface: fastboot (class 0xff, subclass 0x42, protocol 0x03)
-    9,
-    0x04,
-    0,
-    0,
-    2,
-    0xff,
-    0x42,
-    IFACE_PROTOCOL,
-    0, // endpoint IN, bulk, 512
-    7,
-    0x05,
-    0x81,
-    0x02,
-    0x00,
-    0x02,
-    0, // endpoint OUT, bulk, 512
-    7,
-    0x05,
-    0x01,
-    0x02,
-    0x00,
-    0x02,
-    0,
-];
+const CFG_DESC: [u8; 32] = crate::fastboot_dispatch::config_descriptor(IFACE_PROTOCOL);
 
 // v331 golf: the string descriptors build via the shared
 // fastboot_dispatch::string_descriptor (the hand-unrolled UTF-16LE

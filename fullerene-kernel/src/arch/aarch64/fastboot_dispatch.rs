@@ -95,3 +95,72 @@ pub const fn string_descriptor(text: &[u8], out: &mut [u8]) -> usize {
     }
     2 + 2 * n
 }
+
+/// The fastboot-class descriptor set: the DEVICE + CONFIGURATION tables
+/// the host's enumeration reads. The identity (the VID:PID + the
+/// strings) is per-device; the shapes are the USB-IF standard fastboot
+/// class (class 0xFF / subclass 0x42 / protocol 0x03, the bulk pair).
+/// `protocol` is 0x03 (fastboot) or 0x01 (the ADB-first builds).
+pub const fn device_descriptor(vid: u16, pid: u16) -> [u8; 18] {
+    let mut d = [0u8; 18];
+    d[0] = 18;
+    d[1] = 0x01; // DEVICE
+    d[2] = 0x00;
+    d[3] = 0x02; // bcdUSB 2.00
+    d[4] = 0x00;
+    d[5] = 0x00;
+    d[6] = 0x00; // class/subclass/protocol at the device level
+    d[7] = 64; // bMaxPacketSize0
+    d[8] = (vid & 0xff) as u8;
+    d[9] = (vid >> 8) as u8;
+    d[10] = (pid & 0xff) as u8;
+    d[11] = (pid >> 8) as u8;
+    d[12] = 0x00;
+    d[13] = 0x01; // bcdDevice 1.00
+    d[14] = 1; // iManufacturer
+    d[15] = 2; // iProduct
+    d[16] = 3; // iSerialNumber
+    d[17] = 1; // bNumConfigurations
+    d
+}
+
+pub const fn config_descriptor(protocol: u8) -> [u8; 32] {
+    let mut c = [0u8; 32];
+    // configuration
+    c[0] = 9;
+    c[1] = 0x02;
+    c[2] = 32;
+    c[3] = 0x00;
+    c[4] = 1; // bNumInterfaces
+    c[5] = 1; // bConfigurationValue
+    c[6] = 0; // iConfiguration
+    c[7] = 0x80; // bmAttributes: bus powered
+    c[8] = 50; // bMaxPower: 100 mA
+    // interface: fastboot class
+    c[9] = 9;
+    c[10] = 0x04;
+    c[11] = 0; // bInterfaceNumber
+    c[12] = 0; // bAlternateSetting
+    c[13] = 2; // bNumEndpoints
+    c[14] = 0xff; // class
+    c[15] = 0x42; // subclass
+    c[16] = protocol; // 0x03 fastboot / 0x01 ADB
+    c[17] = 0; // iInterface
+    // endpoint IN, bulk, 512
+    c[18] = 7;
+    c[19] = 0x05;
+    c[20] = 0x81;
+    c[21] = 0x02;
+    c[22] = 0x00;
+    c[23] = 0x02;
+    c[24] = 0;
+    // endpoint OUT, bulk, 512
+    c[25] = 7;
+    c[26] = 0x05;
+    c[27] = 0x01;
+    c[28] = 0x02;
+    c[29] = 0x00;
+    c[30] = 0x02;
+    c[31] = 0;
+    c
+}
