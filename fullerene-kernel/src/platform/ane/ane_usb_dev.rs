@@ -1187,6 +1187,13 @@ pub fn ep1_diag() -> u64 {
 }
 
 /// Send `data` on the EP1 bulk IN endpoint (the fastboot response path).
+/// v331 refactor: the fastboot reply shapes - the log + the OKAY/FAIL
+/// send pairs that recurred at every command handler site.
+fn reply_ok(log: fn(&str, u64), tag: &str, value: u64) {
+    log(tag, value);
+    ep1_send(b"OKAY");
+}
+
 fn ep1_send(data: &[u8]) {
     // v217: shared implementation - the pointer form lets the `oem xfer r`
     // stream arm ONE transfer per window straight from the source RAM (no
@@ -1390,8 +1397,7 @@ fn fb_poll(log: fn(&str, u64)) {
             };
             log("fb: dl_len=", len as u64);
             log("fb: dl_w0=", w0 as u64);
-            log("fb: dl_wl=", wl as u64);
-            ep1_send(b"OKAY");
+            reply_ok(log, "fb: dl_wl=", wl as u64);
             return;
         }
         _ => {}
