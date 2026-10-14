@@ -1312,9 +1312,12 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                 }
             }
             platform::ane_usb_dev::service(ane_log);
+            // v331 golf: the desktop bring-up is the ANE's canvas path
+            // (the qemu-virt/bramble runtimes have no desktop module -
+            // their UI paths are the platform's own).
+            #[cfg(fullerene_aarch64_ane)]
             if option_env!("FULLERENE_ANE_SKIP_DESKTOP") != Some("1") {
                 desktop::bring_up();
-                #[cfg(fullerene_aarch64_ane)]
                 platform::ane_fb::event(b"STG DESK-OK");
             }
             platform::ane_usb_dev::service(ane_log);

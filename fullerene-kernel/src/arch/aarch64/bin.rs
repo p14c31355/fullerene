@@ -24,6 +24,9 @@ pub(crate) use runtime::timer;
 
 // v315: the pump-side park recovery calls the desktop bring-up through the
 // crate root (desktop is a private sibling module of the runtime).
+// v331 golf: ANE-only - the other aarch64 platforms have no desktop
+// module (the v315 comment predates the multi-platform runtime).
+#[cfg(fullerene_aarch64_ane)]
 pub(crate) fn ane_park_desktop() {
     runtime::desktop::PARK_RECOVERY_RUN.store(true, core::sync::atomic::Ordering::Relaxed);
     runtime::desktop::bring_up();
@@ -41,8 +44,16 @@ pub(crate) fn ane_uptime_us() -> u64 {
     runtime::timer::uptime_us()
 }
 
+#[cfg(fullerene_aarch64_ane)]
 pub(crate) fn ane_tick_count() -> u32 {
     runtime::exceptions::tick_count()
+}
+
+// The non-ANE aarch64 targets never invoke the ANE reenumerate path;
+// the stub keeps the platform module compiling.
+#[cfg(not(fullerene_aarch64_ane))]
+pub(crate) fn ane_tick_count() -> u32 {
+    0
 }
 
 /// v328: the solvent render stage probe - mirrors the stage byte into the

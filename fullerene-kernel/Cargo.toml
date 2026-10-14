@@ -137,7 +137,7 @@ nitrogen = { path = "../nitrogen" }
 nozzle = { path = "../nozzle" }
 bonder = { path = "../bonder" }
 lattice = { path = "../lattice" }
-solvent = { path = "../solvent", features = ["fullerene_ane_stage_probe"] }
+solvent = { path = "../solvent" }
 resonance = { path = "../resonance" }
 embedded-graphics = { workspace = true }
 memoffset = { version = "0.9", default-features = false }
