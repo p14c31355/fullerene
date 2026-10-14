@@ -25,11 +25,13 @@
 //! v331 refactor MAP (the split into platform/ane/usb/, in order):
 //!   DONE: the recovery lanes -> platform/common/recovery.rs
 //!   DONE: the stage diagnostics -> platform/common/ring.rs
-//!   NEXT: the ADB wire plumbing (adb_dispatch, the anchors, the pending
-//!         buffer, fmt_okay_hex/parse_hex) -> usb/adb.rs (the EP1 sink
-//!         becomes a trait so the wire layer stops touching MMIO)
-//!   THEN: the fastboot state (fb_poll, fb_log_step, DOWNLOAD_*, fb_cmd)
-//!         -> usb/fastboot.rs
+//!   DONE: the ADB wire plumbing -> arch/aarch64/adb_dispatch.rs (the
+//!         aarch64-shared layer; the transport injected via AdbDeviceIo)
+//!   NEXT: the fastboot state machine (fb_poll minus the oem xfer MMIO
+//!         readout, fb_log_step, DOWNLOAD_*, fb_cmd) ->
+//!         arch/aarch64/fastboot_dispatch.rs (the same injected-
+//!         transport pattern; the oem xfer handler stays SoC-side via
+//!         one callback - it IS the SoC's MMIO diagnostic readout)
 //!   THEN: the EP0 control flow (handle_setup, handle_reset, stall_ep0,
 //!         service_ep0, the descriptors) -> usb/ep0.rs
 //!   THEN: the EP1 bulk path (ep1_send*, init_ep1, service_ep1, pop_rx,
