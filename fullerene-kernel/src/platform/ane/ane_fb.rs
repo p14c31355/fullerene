@@ -837,126 +837,136 @@ pub unsafe fn flush_panel_rotated() {
 /// since the last paint. Called from the wait loop, so a photo of the panel
 /// shows the last exchange: FIFO layout, counters, registers.
 pub fn draw_fb_diag(d: &super::ane_usb_dev::FbDiag) {
-    if desktop_owned() || irq_quiet() {
+    // v331 golf: the marks-panel bench builds only (the default build's
+    // panel is the user UI; the strip's data lives in the ring).
+    #[cfg(not(fullerene_ane_marks_panel))]
+    {
+        let _ = d;
         return;
     }
-    let mut fold = 1u64;
-    for v in [
-        d.dptxfsiz1,
-        d.dtxfsts1,
-        d.gnptxfsiz,
-        d.grxfsiz,
-        d.tx_idx,
-        d.lk_diepctl1,
-        d.lk_doepctl1,
-        d.diepctl1,
-        d.doepctl1,
-        d.fb_len,
-        d.fb_disp,
-        d.fb_reply,
-        d.rx_entries,
-        d.ep1_bytes,
-        d.last_rxsts,
-        d.gintsts,
-        d.epint,
-        d.fflush,
-        d.strs,
-    ] {
-        fold = fold.wrapping_mul(31).wrapping_add(v as u64);
-    }
-    fold = fold.wrapping_mul(31).wrapping_add(d.cmd_head);
-    if fold == unsafe { core::ptr::addr_of!(DIAG_FOLD).read() } {
-        return;
-    }
-    unsafe {
-        core::ptr::addr_of_mut!(DIAG_FOLD).write(fold);
-    }
+    #[allow(unreachable_code)]
+    {
+        if desktop_owned() || irq_quiet() {
+            return;
+        }
+        let mut fold = 1u64;
+        for v in [
+            d.dptxfsiz1,
+            d.dtxfsts1,
+            d.gnptxfsiz,
+            d.grxfsiz,
+            d.tx_idx,
+            d.lk_diepctl1,
+            d.lk_doepctl1,
+            d.diepctl1,
+            d.doepctl1,
+            d.fb_len,
+            d.fb_disp,
+            d.fb_reply,
+            d.rx_entries,
+            d.ep1_bytes,
+            d.last_rxsts,
+            d.gintsts,
+            d.epint,
+            d.fflush,
+            d.strs,
+        ] {
+            fold = fold.wrapping_mul(31).wrapping_add(v as u64);
+        }
+        fold = fold.wrapping_mul(31).wrapping_add(d.cmd_head);
+        if fold == unsafe { core::ptr::addr_of!(DIAG_FOLD).read() } {
+            return;
+        }
+        unsafe {
+            core::ptr::addr_of_mut!(DIAG_FOLD).write(fold);
+        }
 
-    let canvas: &mut [u32] =
-        unsafe { core::slice::from_raw_parts_mut(CANVAS as *mut u32, CANVAS_LEN / 4) };
-    let mut y = DIAG_Y;
-    Line::new()
-        .s(b"FB0 DPTX1=")
-        .x(d.dptxfsiz1)
-        .s(b" DTXF1=")
-        .x(d.dtxfsts1)
-        .draw(canvas, y);
-    y += LINE_PITCH;
-    Line::new()
-        .s(b"FB1 GRX=")
-        .x(d.grxfsiz)
-        .s(b" TXIDX=")
-        .x(d.tx_idx)
-        .draw(canvas, y);
-    y += LINE_PITCH;
-    Line::new()
-        .s(b"FB2 LKDIE=")
-        .x(d.lk_diepctl1)
-        .s(b" LKDOE=")
-        .x(d.lk_doepctl1)
-        .draw(canvas, y);
-    y += LINE_PITCH;
-    Line::new()
-        .s(b"FB3 DIEP=")
-        .x(d.diepctl1)
-        .s(b" DOEP=")
-        .x(d.doepctl1)
-        .draw(canvas, y);
-    y += LINE_PITCH;
-    Line::new()
-        .s(b"FB4 LEN=")
-        .x(d.fb_len)
-        .s(b" DSP=")
-        .x(d.fb_disp)
-        .s(b" RPLY=")
-        .x(d.fb_reply)
-        .draw(canvas, y);
-    y += LINE_PITCH;
-    Line::new()
-        .s(b"FB5 RXE=")
-        .x(d.rx_entries)
-        .s(b" RXD=")
-        .x(d.ep1_bytes)
-        .s(b" GSTS=")
-        .x(d.gintsts)
-        .draw(canvas, y);
-    y += LINE_PITCH;
-    Line::new()
-        .s(b"FB6 LAST=")
-        .x(d.last_rxsts)
-        .s(b" EPINT=")
-        .x(d.epint)
-        .draw(canvas, y);
-    y += LINE_PITCH;
-    Line::new()
-        .s(b"FB7 CMD=")
-        .x((d.cmd_head >> 32) as u32)
-        .x(d.cmd_head as u32)
-        .draw(canvas, y);
-    // v331f: the FB8 probe line (FF/FFSTUCK/STR/E0STK) is gone from the
-    // panel - the durable ring logs all of it, and the user asked to drop
-    // the S-value display once logging was in place.
+        let canvas: &mut [u32] =
+            unsafe { core::slice::from_raw_parts_mut(CANVAS as *mut u32, CANVAS_LEN / 4) };
+        let mut y = DIAG_Y;
+        Line::new()
+            .s(b"FB0 DPTX1=")
+            .x(d.dptxfsiz1)
+            .s(b" DTXF1=")
+            .x(d.dtxfsts1)
+            .draw(canvas, y);
+        y += LINE_PITCH;
+        Line::new()
+            .s(b"FB1 GRX=")
+            .x(d.grxfsiz)
+            .s(b" TXIDX=")
+            .x(d.tx_idx)
+            .draw(canvas, y);
+        y += LINE_PITCH;
+        Line::new()
+            .s(b"FB2 LKDIE=")
+            .x(d.lk_diepctl1)
+            .s(b" LKDOE=")
+            .x(d.lk_doepctl1)
+            .draw(canvas, y);
+        y += LINE_PITCH;
+        Line::new()
+            .s(b"FB3 DIEP=")
+            .x(d.diepctl1)
+            .s(b" DOEP=")
+            .x(d.doepctl1)
+            .draw(canvas, y);
+        y += LINE_PITCH;
+        Line::new()
+            .s(b"FB4 LEN=")
+            .x(d.fb_len)
+            .s(b" DSP=")
+            .x(d.fb_disp)
+            .s(b" RPLY=")
+            .x(d.fb_reply)
+            .draw(canvas, y);
+        y += LINE_PITCH;
+        Line::new()
+            .s(b"FB5 RXE=")
+            .x(d.rx_entries)
+            .s(b" RXD=")
+            .x(d.ep1_bytes)
+            .s(b" GSTS=")
+            .x(d.gintsts)
+            .draw(canvas, y);
+        y += LINE_PITCH;
+        Line::new()
+            .s(b"FB6 LAST=")
+            .x(d.last_rxsts)
+            .s(b" EPINT=")
+            .x(d.epint)
+            .draw(canvas, y);
+        y += LINE_PITCH;
+        Line::new()
+            .s(b"FB7 CMD=")
+            .x((d.cmd_head >> 32) as u32)
+            .x(d.cmd_head as u32)
+            .draw(canvas, y);
+        // v331f: the FB8 probe line (FF/FFSTUCK/STR/E0STK) is gone from the
+        // panel - the durable ring logs all of it, and the user asked to drop
+        // the S-value display once logging was in place.
 
-    // Refresh the strip on every accepted scan-out window and make the
-    // canvas strip itself durable (the data cache is on).
-    let off = DIAG_Y as usize * WIDTH as usize * 4;
-    let bytes = DIAG_ROWS as usize * WIDTH as usize * 4;
-    for &ch in CHANNELS.iter() {
-        for &w in WINDOWS.iter() {
-            let addr = unsafe { ptr::read_volatile((ch + w) as *const u32) };
-            if blit_ok(addr) {
-                unsafe {
-                    ptr::copy_nonoverlapping(
-                        (CANVAS + off) as *const u8,
-                        (addr as usize + off) as *mut u8,
-                        bytes,
-                    );
-                    crate::blackbox::cache_clean(addr as usize + off, bytes);
+        // Refresh the strip on every accepted scan-out window and make the
+        // canvas strip itself durable (the data cache is on).
+        let off = DIAG_Y as usize * WIDTH as usize * 4;
+        let bytes = DIAG_ROWS as usize * WIDTH as usize * 4;
+        for &ch in CHANNELS.iter() {
+            for &w in WINDOWS.iter() {
+                let addr = unsafe { ptr::read_volatile((ch + w) as *const u32) };
+                if blit_ok(addr) {
+                    unsafe {
+                        ptr::copy_nonoverlapping(
+                            (CANVAS + off) as *const u8,
+                            (addr as usize + off) as *mut u8,
+                            bytes,
+                        );
+                        crate::blackbox::cache_clean(addr as usize + off, bytes);
+                    }
                 }
             }
         }
-    }
-    unsafe {
-        crate::blackbox::cache_clean(CANVAS + off, bytes);
+        unsafe {
+            crate::blackbox::cache_clean(CANVAS + off, bytes);
+        }
     }
 }
