@@ -108,6 +108,12 @@ pub fn render_home() {
     let count = (width as usize) * (height as usize);
     let fb = unsafe { core::slice::from_raw_parts_mut(canvas_ptr, count) };
 
+    // v331k: the mobile shell owns the panel from this moment - the boot
+    // strip, the S-value diag, and the uart mirror all stop painting (the
+    // ane_fb paint paths early-return on DESKTOP_OWNED). The diagnostics
+    // live in the ring.
+    crate::platform::ane_fb::DESKTOP_OWNED.store(true, Ordering::Relaxed);
+
     // Palette (Android-ish dark theme).
     let bg: u32 = 0xFF10_14_18;
     let bar: u32 = 0xFF1A_1E_24;
@@ -128,13 +134,11 @@ pub fn render_home() {
     let notch_l = (width - notch_w) / 2;
     let notch_r = notch_l + notch_w;
 
-    // Status bar: the full-width band behind the notch row (the panel
-    // under the notch shows the wallpaper - the UI paints AROUND it).
-    let bar_h = notch_h.max(56);
+    // Status bar: the full-width band. Its content row sits BELOW the
+    // notch row: the band covers the notch depth plus the content strip,
+    // and the notch rectangle itself is left as background (the cutout).
+    let bar_h = notch_h + 56;
     fill_rect(fb, width, height, 0, 0, width, bar_h, bar);
-    // Re-expose the notch cutout (paint the background back over the
-    // notch rectangle - the cutout is a hardware mask, but the canvas
-    // must not imply content the panel cannot show).
     fill_rect(fb, width, height, notch_l, 0, notch_w, notch_h, bg);
 
     // App grid: 4 cols x N rows of tiles between the bars.
