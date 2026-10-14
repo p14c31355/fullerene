@@ -236,19 +236,29 @@ pub unsafe fn probe() -> bool {
     let g = rd32(SCTRL, 0x10);
     wr32(SCTRL, 0x10, g | PCLK_GPIO18);
     spin(2);
-    // 1. Pinmux + controller reset release + master init.
+    // 1. Pinmux + controller reset release + master init - with a ring
+    // marker between each step (the v331n park is inside one of them;
+    // the last logged letter names the culprit).
+    crate::blackbox::text_puts("T1: pinmux\n");
     i2c0_pinmux();
+    crate::blackbox::text_puts("T2: reset\n");
     i2c0_reset_release();
+    crate::blackbox::text_puts("T3: init\n");
     i2c0_master_init();
+    crate::blackbox::text_puts("T4: initdone\n");
     TOUCH_STAGE.store(b'I', Ordering::Relaxed);
     // 2. Touch reset toggle.
+    crate::blackbox::text_puts("T5: rsttoggle\n");
     touch_reset_toggle();
+    crate::blackbox::text_puts("T6: rstdone\n");
     TOUCH_STAGE.store(b'T', Ordering::Relaxed);
     // 3. Chip ID read. FocalTech keeps the firmware ID at 0xA3 (boot ID)
     // and the panel/ chip version block at 0x00..0x03. Read 4 bytes from
     // 0x00 (the FT5x06 class: gate 0x00 = 0x54 on the FT5446 family).
+    crate::blackbox::text_puts("T7: idread\n");
     let mut id = [0u8; 4];
     let r = i2c0_write_read(0x00, &mut id);
+    crate::blackbox::text_puts("T8: iddone\n");
     match r {
         Ok(()) => {
             let v =
