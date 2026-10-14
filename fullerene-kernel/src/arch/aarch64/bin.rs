@@ -10,6 +10,7 @@ mod runtime;
 // `arch/aarch64/main.rs` (now `runtime`) refers to the black box as
 // `crate::blackbox`, so this crate root has to declare it too. The file lives at
 // the package's `src/` root, hence the relative path from here.
+pub(crate) mod adb_dispatch;
 #[path = "../../adb_wire.rs"]
 mod adb_wire;
 #[path = "../../blackbox.rs"]
