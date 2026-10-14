@@ -1040,16 +1040,12 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         platform::ane_fb::event(b"STG HOME-OK");
         platform::ane_fb::flush_panel();
         uart::puts("mobile home: first-light\n");
-        // v331h: the touch probe is opt-in (FULLERENE_ANE_TOUCH_PROBE).
-        // The ungated probe hung every boot before USB - the I2C0 CRG
-        // clock gate is not yet identified, and writing a clock-gated
-        // peripheral parks the bus. Re-enable only with the gate proven.
-        #[cfg(fullerene_aarch64_ane)]
-        if option_env!("FULLERENE_ANE_TOUCH_PROBE").is_some() {
-            unsafe {
-                platform::ane_touch::probe();
-            }
-        }
+        // v331q: the probe moved to the wait loop (the first pass after
+        // the desktop render) - a park there leaves the ring markers AND
+        // the frozen-boot recovery resets the device, so the evidence
+        // survives into the next boot's collection. The boot-path probe
+        // parked BEFORE the USB init: no USB, no collection, a bricked
+        // wait state.
         // v273 ABLATION: every per-tick diagnostic paint goes through
         // ane_fb::flush_row, which already early-returns on IRQ_QUIET. Setting
         // it here removes ALL of the flush_row work (a full-row memcpy plus a
@@ -1364,6 +1360,20 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         // window) instead of leaving the device wedged until a power hold.
         #[cfg(fullerene_aarch64_ane)]
         platform::ane_usb_dev::boot_heartbeat();
+        // v331q: the touch probe runs HERE (the first wait-loop pass):
+        // the USB is up, the ring is readable next boot even if this
+        // parks, and the frozen-boot lane recovers the device.
+        #[cfg(fullerene_aarch64_ane)]
+        if option_env!("FULLERENE_ANE_TOUCH_PROBE").is_some() {
+            static TOUCH_PROBED: core::sync::atomic::AtomicBool =
+                core::sync::atomic::AtomicBool::new(false);
+            if !TOUCH_PROBED.load(core::sync::atomic::Ordering::Relaxed) {
+                TOUCH_PROBED.store(true, core::sync::atomic::Ordering::Relaxed);
+                unsafe {
+                    platform::ane_touch::probe();
+                }
+            }
+        }
         // v331n: poll the touch IC (a no-op until the probe answered).
         #[cfg(fullerene_aarch64_ane)]
         unsafe {
