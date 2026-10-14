@@ -1376,6 +1376,75 @@ pub(crate) fn adb_dispatch_io(pkt: &crate::adb_wire::Packet<'_>) {
     crate::adb_dispatch::adb_dispatch(&mut io, pkt);
 }
 
+/// v331 golf: the ANE's fastboot transport for the shared
+/// fastboot_dispatch (the same pattern as AneAdbIo).
+struct AneFbIo;
+
+impl crate::fastboot_dispatch::FastbootIo for AneFbIo {
+    fn bulk_send(&mut self, data: &[u8]) {
+        ep1_send(data);
+    }
+    fn log(&mut self, tag: &str, value: u64) {
+        super::super::uart::put_hexln(tag, value);
+    }
+    fn event(&mut self, tag: &[u8]) {
+        super::ane_fb::event(tag);
+    }
+}
+
+/// The registered variable table (the identity strings are the device's
+/// own; partition-size computes via the eMMC GPT lookup).
+fn fb_vars() -> [crate::fastboot_dispatch::VarEntry; 6] {
+    use crate::fastboot_dispatch::{VarEntry, VarReply};
+    [
+        VarEntry {
+            name: b"version",
+            reply: VarReply::Static(b"OKAY0.4"),
+        },
+        VarEntry {
+            name: b"product",
+            reply: VarReply::Static(b"OKAYANE-LX2J"),
+        },
+        VarEntry {
+            name: b"serialno",
+            reply: VarReply::Static(b"OKAYSCV7N18927000473"),
+        },
+        VarEntry {
+            name: b"secure",
+            reply: VarReply::Static(b"OKAYno"),
+        },
+        VarEntry {
+            name: b"unlocked",
+            reply: VarReply::Static(b"OKAYyes"),
+        },
+        VarEntry {
+            name: b"partition-size",
+            reply: VarReply::Computed(|part, out| {
+                let mut gv = [0u8; 32];
+                if let Some((first, last)) = super::ane_emmc::find_partition(part, |tag, v| {
+                    super::super::uart::put_hexln(tag, v);
+                }) {
+                    let n = fmt_okay_hex(((last - first + 1) as u64) * 512, &mut gv);
+                    out[..n].copy_from_slice(&gv[..n]);
+                    n
+                } else {
+                    let f = b"FAILunknown partition";
+                    out[..f.len()].copy_from_slice(f);
+                    f.len()
+                }
+            }),
+        },
+    ]
+}
+
+/// The getvar dispatch through the shared table.
+fn fb_getvar_io(name: &[u8]) {
+    let mut io = AneFbIo;
+    let vars = fb_vars();
+    let mut out = [0u8; 64];
+    crate::fastboot_dispatch::getvar_dispatch(&mut io, &vars, name, &mut out);
+}
+
 /// Fastboot protocol: run when bytes arrived on EP1 OUT. The host's command
 /// lines are NUL-terminated, and the responses are the plain "OKAY"/"FAIL"
 /// strings the host's parser reads back NUL-terminated.
@@ -1942,37 +2011,19 @@ fn fb_poll(log: fn(&str, u64)) {
 
     let mut reply: &[u8] = b"FAILunknown command";
     if let Some(name) = cmd.strip_prefix(b"getvar:") {
-        // partition-size:<name> needs a computed reply, so it leaves the
-        // static-string match below (the client asks this before flashing;
-        // a FAIL makes it warn "partition size: 0" but continue).
-        if let Some(part) = name.strip_prefix(b"partition-size:") {
-            log("fb: ps1=", crate::timer::uptime_us());
-            let mut gv = [0u8; 32];
-            if let Some((first, last)) = super::ane_emmc::find_partition(part, log) {
-                log("fb: ps2=", crate::timer::uptime_us());
-                let n = fmt_okay_hex(((last - first + 1) as u64) * 512, &mut gv);
-                log("fb: ps3=", crate::timer::uptime_us());
-                ep1_send(&gv[..n]);
-                log("fb: ps4=", crate::timer::uptime_us());
-            } else {
-                ep1_send(b"FAILunknown partition");
-            }
+        // v331 golf: the variable replies dispatch through the shared
+        // fastboot_dispatch table (the identity strings + the computed
+        // partition-size lookup registered below). The computed path
+        // sends directly and returns.
+        if name == b"max-download-size" {
+            reply = b"OKAY0xC00000";
+        } else {
+            fb_getvar_io(name);
             unsafe {
                 core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
             }
             return;
         }
-        reply = match name {
-            b"version" => b"OKAY0.4",
-            b"product" => b"OKAYANE-LX2J",
-            b"serialno" => b"OKAYSCV7N18927000473",
-            b"secure" => b"OKAYno",
-            b"unlocked" => b"OKAYyes",
-            // The client parses numeric getvars with strtoul base 0, so a
-            // bare hex string fails ("couldn't parse max-download-size").
-            b"max-download-size" => b"OKAY0xC00000",
-            _ => b"FAILunknown variable",
-        };
     }
     ep1_send(reply);
     unsafe {
