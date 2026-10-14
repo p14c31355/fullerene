@@ -40,8 +40,12 @@
 //!         into the table at init (no match-chain edits per port).
 //!   THEN: the EP0 control flow (handle_setup, handle_reset, stall_ep0,
 //!         service_ep0, the descriptors) -> usb/ep0.rs
-//!   THEN: the EP1 bulk path (ep1_send*, init_ep1, service_ep1, pop_rx,
-//!         the TX FIFO management) -> usb/ep1.rs
+//!   NEXT (after the ADB + fastboot tables): the EP1 bulk transport
+//!         (ep1_send/ep1_send_ptr/init_ep1/service_ep1 + EP1_IN_IDLE/
+//!         SWEPT_FIRST_REPLY/LOG_WD_* - ~280 lines, the first attempt
+//!         aborted on the extraction-scars lesson: cut each fn by its
+//!         exact signature anchor with the doc comments, never by the
+//!         line ranges) -> usb/ep1.rs
 //!   THEN: the diagnostics (trace_request, ep0_state_line, pass_*,
 //!         ring_hex8, the DBG_* statics) -> usb/diag.rs
 //!   LAST: mod.rs keeps init/service/prepare_attach + the register map
