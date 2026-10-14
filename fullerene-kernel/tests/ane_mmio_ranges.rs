@@ -29,6 +29,14 @@ pub(crate) fn ane_uptime_us() -> u64 {
     0
 }
 
+// v331 refactor: common::recovery calls crate::timer::uptime_us() from the
+// schedule path; the host-side include stubs it.
+pub(crate) mod timer {
+    pub fn uptime_us() -> u64 {
+        0
+    }
+}
+
 #[path = "../src/blackbox.rs"]
 mod blackbox;
 

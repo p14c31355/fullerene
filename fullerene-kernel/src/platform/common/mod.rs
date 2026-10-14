@@ -7,4 +7,5 @@ pub mod i2c;
 pub mod mmio;
 pub mod pmic;
 pub mod power;
+pub mod recovery;
 pub mod regulator;
