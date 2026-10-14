@@ -9,3 +9,4 @@ pub mod pmic;
 pub mod power;
 pub mod recovery;
 pub mod regulator;
+pub mod ring;
