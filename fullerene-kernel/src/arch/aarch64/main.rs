@@ -1364,6 +1364,11 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         // window) instead of leaving the device wedged until a power hold.
         #[cfg(fullerene_aarch64_ane)]
         platform::ane_usb_dev::boot_heartbeat();
+        // v331n: poll the touch IC (a no-op until the probe answered).
+        #[cfg(fullerene_aarch64_ane)]
+        unsafe {
+            platform::ane_touch::poll();
+        }
         // Serve the device-side USB control transfers in the same loop.
         // The wait loop already wakes on the timer IRQ (the watchdog feed),
         // so one poll pass per wake keeps the host's transfers answered.

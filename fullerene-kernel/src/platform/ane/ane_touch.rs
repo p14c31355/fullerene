@@ -165,6 +165,66 @@ unsafe fn i2c0_write_read(register: u8, out: &mut [u8]) -> Result<(), u32> {
     Ok(())
 }
 
+/// v331n: the touch point snapshot the shell reads. Up to 5 points
+/// (the FT5x06 class); each is (x, y, pressed). 0xFFFF = absent.
+pub struct TouchPoint {
+    pub x: u16,
+    pub y: u16,
+    pub pressed: bool,
+}
+
+pub static TOUCH_POINTS: [core::sync::atomic::AtomicU32; 5] = [
+    core::sync::atomic::AtomicU32::new(0xFFFF_FFFF),
+    core::sync::atomic::AtomicU32::new(0xFFFF_FFFF),
+    core::sync::atomic::AtomicU32::new(0xFFFF_FFFF),
+    core::sync::atomic::AtomicU32::new(0xFFFF_FFFF),
+    core::sync::atomic::AtomicU32::new(0xFFFF_FFFF),
+];
+
+/// The packed point: x | y<<16 (0xFFFF = absent), pressed in bit 31.
+pub fn snapshot(index: usize) -> Option<(u16, u16)> {
+    if index >= 5 {
+        return None;
+    }
+    let v = TOUCH_POINTS[index].load(Ordering::Relaxed);
+    if v & 0xFFFF == 0xFFFF {
+        return None;
+    }
+    Some(((v & 0xFFFF) as u16, ((v >> 16) & 0xFFFF) as u16))
+}
+
+/// Poll the touch IC: read TD_STATUS (0x02), then the point records.
+/// Called from the wait loop every pass (the I2C transaction is ~1 ms
+/// at 400 kHz for 5 points - acceptable at the boot-thread cadence).
+pub unsafe fn poll() {
+    if TOUCH_STAGE.load(Ordering::Relaxed) != b'C' {
+        return; // the chip never answered the probe
+    }
+    let mut status = [0u8; 1];
+    if i2c0_write_read(0x02, &mut status).is_err() {
+        return;
+    }
+    let count = ((status[0] >> 4) & 0x7) as usize; // bits 6-4, capped 5
+    let count = count.min(5);
+    for slot in TOUCH_POINTS.iter() {
+        slot.store(0xFFFF_FFFF, Ordering::Relaxed);
+    }
+    for i in 0..count {
+        // Each point record: 6 bytes from 0x03 + i*6.
+        let mut rec = [0u8; 6];
+        if i2c0_write_read((0x03 + i as u8 * 6) as u8, &mut rec).is_err() {
+            return;
+        }
+        let event = (rec[0] >> 6) & 0x3;
+        let x = (((rec[0] & 0x0f) as u16) << 8) | rec[1] as u16;
+        let y = (((rec[2] & 0x0f) as u16) << 8) | rec[3] as u16;
+        // event 0 = press down, 1 = contact, 2 = lift; 3 = no event.
+        let pressed = event <= 1;
+        let packed = (x as u32) | (y as u32) << 16 | if pressed { 1 << 31 } else { 0 };
+        TOUCH_POINTS[i].store(packed, Ordering::Relaxed);
+    }
+}
+
 /// The touch bring-up stage: returns true when the chip answered.
 pub unsafe fn probe() -> bool {
     TOUCH_STAGE.store(b'R', Ordering::Relaxed);
