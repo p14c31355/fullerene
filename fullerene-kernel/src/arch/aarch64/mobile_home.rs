@@ -188,3 +188,48 @@ pub fn render_home() {
         accent,
     );
 }
+
+/// v331t: the touch feedback - map the polled touch point to a grid
+/// tile and repaint that tile in the accent color (the launcher's
+/// press feedback). Called from the wait loop; a no-op when the touch
+/// poller has no point.
+pub fn touch_feedback() {
+    let Some((tx16, ty16)) = crate::platform::ane_touch::snapshot(0) else {
+        return;
+    };
+    let x = tx16 as u32;
+    let y = ty16 as u32;
+    let width = crate::platform::ane_fb::WIDTH;
+    let height = crate::platform::ane_fb::HEIGHT;
+    // The grid geometry (mirrors render_home's layout).
+    let notch_h = height * 80 / 2280;
+    let bar_h = notch_h + 56;
+    let grid_top = bar_h + 40;
+    let margin = 40u32;
+    let gap = 28u32;
+    let cols = 4u32;
+    let tile_w = (width - margin * 2 - gap * (cols - 1)) / cols;
+    let tile_h = tile_w;
+    let dock_top = height.saturating_sub(200);
+    let grid_bottom = dock_top.saturating_sub(32);
+    // Inside the grid?
+    if y < grid_top || y >= grid_bottom || x < margin {
+        return;
+    }
+    let col = (x - margin) / (tile_w + gap);
+    if col >= cols {
+        return;
+    }
+    let rel_y = y - grid_top;
+    if rel_y % (tile_h + gap) >= tile_h {
+        return; // in a gap
+    }
+    let row = rel_y / (tile_h + gap);
+    let tx = margin + col * (tile_w + gap);
+    let ty = grid_top + row * (tile_h + gap);
+    // Repaint the tile in the accent color (the press feedback).
+    let canvas_ptr = crate::platform::ane_fb::CANVAS as *mut u32;
+    let count = (width as usize) * (height as usize);
+    let fb = unsafe { core::slice::from_raw_parts_mut(canvas_ptr, count) };
+    fill_tile(fb, width, height, tx, ty, tile_w, tile_h, 24, 0xFF4C_8D_FF);
+}

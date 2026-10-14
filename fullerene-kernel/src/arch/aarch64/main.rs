@@ -1375,6 +1375,9 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         unsafe {
             platform::ane_touch::poll();
         }
+        // v331t: the launcher's press feedback (a no-op without a point).
+        #[cfg(fullerene_aarch64_ane)]
+        mobile_home::touch_feedback();
         // Serve the device-side USB control transfers in the same loop.
         // The wait loop already wakes on the timer IRQ (the watchdog feed),
         // so one poll pass per wake keeps the host's transfers answered.
