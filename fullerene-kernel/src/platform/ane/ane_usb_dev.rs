@@ -236,21 +236,24 @@ const CFG_DESC: [u8; 32] = [
     0,
 ];
 
-const STR_LANG: [u8; 4] = [4, 0x03, 0x09, 0x04];
-/// "Fullerene" in UTF-16LE, length-prefixed.
-const STR_MFR: [u8; 20] = [
-    20, 0x03, b'F', 0, b'u', 0, b'l', 0, b'l', 0, b'e', 0, b'r', 0, b'e', 0, b'n', 0, b'e', 0,
-];
-/// "ANE fastboot" in UTF-16LE.
-const STR_PROD: [u8; 26] = [
-    26, 0x03, b'A', 0, b'N', 0, b'E', 0, b' ', 0, b'f', 0, b'a', 0, b's', 0, b't', 0, b'b', 0,
-    b'o', 0, b'o', 0, b't', 0,
-];
-/// "SCV7N18927000473" (this handset's serial) in UTF-16LE.
-const STR_SER: [u8; 34] = [
-    34, 0x03, b'S', 0, b'C', 0, b'V', 0, b'7', 0, b'N', 0, b'1', 0, b'8', 0, b'9', 0, b'2', 0,
-    b'7', 0, b'0', 0, b'0', 0, b'0', 0, b'4', 0, b'7', 0, b'3', 0,
-];
+// v331 golf: the string descriptors build via the shared
+// fastboot_dispatch::string_descriptor (the hand-unrolled UTF-16LE
+// arrays are gone). The builder is const-evaluable.
+const fn str_desc(text: &[u8]) -> [u8; 64] {
+    let mut out = [0u8; 64];
+    let n = crate::fastboot_dispatch::string_descriptor(text, &mut out);
+    let mut fixed = [0u8; 64];
+    let mut i = 0;
+    while i < n {
+        fixed[i] = out[i];
+        i += 1;
+    }
+    fixed
+}
+const STR_LANG: [u8; 64] = str_desc(b"0409");
+const STR_MFR: [u8; 64] = str_desc(b"Fullerene");
+const STR_PROD: [u8; 64] = str_desc(b"ANE fastboot");
+const STR_SER: [u8; 64] = str_desc(b"SCV7N18927000473");
 
 // ---- state ------------------------------------------------------------------
 

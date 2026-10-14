@@ -74,3 +74,24 @@ pub fn getvar_dispatch(
     io.bulk_send(b"FAILunknown variable");
     true
 }
+
+/// The USB string descriptor builder: a length-prefixed UTF-16LE
+/// descriptor for `text`, written into `out`. Returns the used length.
+/// (Replaces the hand-unrolled per-string arrays - the v331 golf.)
+pub const fn string_descriptor(text: &[u8], out: &mut [u8]) -> usize {
+    // bLength = 2 + 2*chars, capped to the buffer.
+    let n = if text.len() * 2 + 2 > out.len() {
+        (out.len() - 2) / 2
+    } else {
+        text.len()
+    };
+    out[0] = (2 + 2 * n) as u8;
+    out[1] = 0x03; // STRING
+    let mut i = 0;
+    while i < n {
+        out[2 + i * 2] = text[i];
+        out[3 + i * 2] = 0;
+        i += 1;
+    }
+    2 + 2 * n
+}
