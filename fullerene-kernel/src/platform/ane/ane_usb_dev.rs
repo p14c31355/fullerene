@@ -21,6 +21,23 @@
 //!
 //! Staging: this version serves the standard requests (the enumeration);
 //! the fastboot bulk protocol is the next stage.
+//!
+//! v331 refactor MAP (the split into platform/ane/usb/, in order):
+//!   DONE: the recovery lanes -> platform/common/recovery.rs
+//!   DONE: the stage diagnostics -> platform/common/ring.rs
+//!   NEXT: the ADB wire plumbing (adb_dispatch, the anchors, the pending
+//!         buffer, fmt_okay_hex/parse_hex) -> usb/adb.rs (the EP1 sink
+//!         becomes a trait so the wire layer stops touching MMIO)
+//!   THEN: the fastboot state (fb_poll, fb_log_step, DOWNLOAD_*, fb_cmd)
+//!         -> usb/fastboot.rs
+//!   THEN: the EP0 control flow (handle_setup, handle_reset, stall_ep0,
+//!         service_ep0, the descriptors) -> usb/ep0.rs
+//!   THEN: the EP1 bulk path (ep1_send*, init_ep1, service_ep1, pop_rx,
+//!         the TX FIFO management) -> usb/ep1.rs
+//!   THEN: the diagnostics (trace_request, ep0_state_line, pass_*,
+//!         ring_hex8, the DBG_* statics) -> usb/diag.rs
+//!   LAST: mod.rs keeps init/service/prepare_attach + the register map
+//!         (the SoC-specific register constants move to usb/regs.rs)
 
 use core::ptr;
 
