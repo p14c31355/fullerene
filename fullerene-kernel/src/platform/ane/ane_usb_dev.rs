@@ -31,7 +31,13 @@
 //!         readout, fb_log_step, DOWNLOAD_*, fb_cmd) ->
 //!         arch/aarch64/fastboot_dispatch.rs (the same injected-
 //!         transport pattern; the oem xfer handler stays SoC-side via
-//!         one callback - it IS the SoC's MMIO diagnostic readout)
+//!         one callback - it IS the SoC's MMIO diagnostic readout).
+//!         The verb surface to table-ize: oem log/raw/main (1529..1591),
+//!         reboot* (1592..1674), oem crash (1675), oem ringsave (1710),
+//!         oem udmount (1829), oem touch (1844), oem ps1 (1862), plus
+//!         getvar/download/flash/erase. Each verb becomes a handler
+//!         entry: (verb, Io&, args) -> reply; the SoC extras register
+//!         into the table at init (no match-chain edits per port).
 //!   THEN: the EP0 control flow (handle_setup, handle_reset, stall_ep0,
 //!         service_ep0, the descriptors) -> usb/ep0.rs
 //!   THEN: the EP1 bulk path (ep1_send*, init_ep1, service_ep1, pop_rx,
