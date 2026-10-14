@@ -168,6 +168,14 @@ unsafe fn i2c0_write_read(register: u8, out: &mut [u8]) -> Result<(), u32> {
 /// The touch bring-up stage: returns true when the chip answered.
 pub unsafe fn probe() -> bool {
     TOUCH_STAGE.store(b'R', Ordering::Relaxed);
+    // 0. pclk_gpio18 gate (SCTRL+0x10 bit 18, the DTB's hi3xxx-clk-gate
+    // <0x10 0x40000>): a PL061 write with its pclk gated parks the bus -
+    // the v331g hang. The gate lives in the proven-accessible SCTRL.
+    const SCTRL: usize = 0xfff0_a000;
+    const PCLK_GPIO18: u32 = 1 << 18;
+    let g = rd32(SCTRL, 0x10);
+    wr32(SCTRL, 0x10, g | PCLK_GPIO18);
+    spin(2);
     // 1. Pinmux + controller reset release + master init.
     i2c0_pinmux();
     i2c0_reset_release();
