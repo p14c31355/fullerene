@@ -45,7 +45,11 @@
 //!         SWEPT_FIRST_REPLY/LOG_WD_* - ~280 lines, the first attempt
 //!         aborted on the extraction-scars lesson: cut each fn by its
 //!         exact signature anchor with the doc comments, never by the
-//!         line ranges) -> usb/ep1.rs
+//!         line ranges; the second attempt (the next-fn boundary spans)
+//!         ALSO aborted - ep1_send sits directly above reply_ok/
+//!         adb_dispatch_io, so even the correct spans break the
+//!         neighbours. This one needs the AST-aware tooling or the
+//!         manual editing) -> usb/ep1.rs
 //!   THEN: the diagnostics (trace_request, ep0_state_line, pass_*,
 //!         ring_hex8, the DBG_* statics) -> usb/diag.rs
 //!   LAST: mod.rs keeps init/service/prepare_attach + the register map
