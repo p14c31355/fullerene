@@ -146,8 +146,12 @@ pub fn bring_up() {
     //    stop painting so their text rows cannot scribble over it.
     ane_fb::DESKTOP_OWNED.store(true, Ordering::Relaxed);
 
-    let width = ane_fb::WIDTH;
-    let height = ane_fb::HEIGHT;
+    // v331m: the landscape desktop mode - the solvent layout fits the
+    // landscape natively (the user's design call); the flush rotates.
+    #[cfg(fullerene_ane_desktop_landscape)]
+    let (width, height) = (ane_fb::HEIGHT, ane_fb::WIDTH);
+    #[cfg(not(fullerene_ane_desktop_landscape))]
+    let (width, height) = (ane_fb::WIDTH, ane_fb::HEIGHT);
     let canvas = unsafe {
         slice::from_raw_parts_mut(
             ane_fb::CANVAS as *mut u32,
@@ -201,6 +205,11 @@ pub fn bring_up() {
     // SP805 (the v315 2m07s deaths). The tick-driven row flushes push the
     // canvas out afterwards; only the boot-thread path flushes inline.
     if !PARK_RECOVERY_RUN.load(Ordering::Relaxed) {
+        #[cfg(fullerene_ane_desktop_landscape)]
+        unsafe {
+            ane_fb::flush_panel_rotated();
+        }
+        #[cfg(not(fullerene_ane_desktop_landscape))]
         ane_fb::flush_panel();
     }
     uart::puts("desktop: done\n");

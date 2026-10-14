@@ -783,6 +783,48 @@ pub fn flush_panel() {
     }
 }
 
+/// v331m: the 90-degree-CW rotated flush. The canvas holds a LANDSCAPE
+/// image (2340x1080, the solvent desktop's native orientation); this
+/// blits it into the portrait panel. The desktop's layout fits the
+/// landscape natively - the user's design call.
+///
+/// Mapping (rotate 90 CW): dst(px,py) = src(ly=1080-1-px, lx=py):
+///   dst[py*1080 + px] = src[(1080-1-px)*2340 + py]
+pub unsafe fn flush_panel_rotated() {
+    const LW: usize = HEIGHT as usize; // the landscape width = 2340
+    const LH: usize = WIDTH as usize; // the landscape height = 1080
+    let src = CANVAS as *const u32;
+    // Rotate into a scratch half? No scratch: rotate IN PLACE is complex.
+    // Use the tail of the canvas beyond the landscape image? The canvas
+    // is exactly W*H = LW*LH - no room. Rotate line-by-line into the
+    // DISPLAY channel: read the src pixel, write the dst pixel directly
+    // to the display address (column-major writes - slower but simple,
+    // and the flush is a one-shot).
+    for &ch in CHANNELS.iter() {
+        for &w in WINDOWS.iter() {
+            let addr = unsafe { ptr::read_volatile((ch + w) as *const u32) };
+            if !blit_ok(addr) {
+                continue;
+            }
+            let dst = addr as *mut u32;
+            for py in 0..HEIGHT as usize {
+                for px in 0..WIDTH as usize {
+                    let v = unsafe {
+                        ptr::read_volatile(src.add((HEIGHT as usize - 1 - px) * LW + py))
+                    };
+                    unsafe {
+                        ptr::write_volatile(dst.add(py * (WIDTH as usize) + px), v);
+                    }
+                }
+            }
+            crate::blackbox::cache_clean(addr as usize, CANVAS_LEN);
+        }
+    }
+    unsafe {
+        crate::blackbox::cache_clean(CANVAS, CANVAS_LEN);
+    }
+}
+
 /// Repaint the fastboot diagnostic strip when the responder's state changed
 /// since the last paint. Called from the wait loop, so a photo of the panel
 /// shows the last exchange: FIFO layout, counters, registers.

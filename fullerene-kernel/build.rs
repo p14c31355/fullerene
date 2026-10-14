@@ -258,6 +258,7 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_ep0_initial_512)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_ane_adb_protocol)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_ane_marks_uart_only)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_ane_desktop_landscape)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_ane_marks_panel)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_ane_no_timer)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_ane_adb_protocol)");
@@ -459,6 +460,11 @@ fn main() {
         // the user UI (the mobile home), not a diagnostic mirror. The
         // FULLERENE_ANE_MARKS_PANEL env re-enables the old on-panel marks
         // for the bench sessions that specifically need the photo evidence.
+        if env::var_os("FULLERENE_ANE_DESKTOP_LANDSCAPE").is_some() {
+            // v331m: the desktop renders landscape (2340x1080) and the
+            // flush rotates 90 CW into the portrait panel.
+            println!("cargo:rustc-cfg=fullerene_ane_desktop_landscape");
+        }
         if env::var_os("FULLERENE_ANE_MARKS_PANEL").is_none() {
             println!("cargo:rustc-cfg=fullerene_ane_marks_uart_only");
         } else {
