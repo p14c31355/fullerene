@@ -2133,13 +2133,12 @@ fn fb_log_step() {
 /// (eRecovery). Landing in fastboot instead lets the always-armed window
 /// catcher reflash and continue with no key combo. Pure MMIO; callable
 /// from the half-dead world. Never returns.
-pub fn panic_reset_to_bootloader() -> ! {
-    // BOOTLOADER=0x01: the loader enters fastboot on its next start.
-    unsafe {
-        ptr::write_volatile(PMIC_REASON_ADDR as *mut u8, 0x01);
-    }
-    // Same bounded settle as the fastboot path (counts only decreasing
-    // stretches of WDOGVALUE so the keep-alive cannot fake elapsed time).
+/// v331 golf: the shared reset chain - the watchdog drain, the LPM3 NMI
+/// pulse, and the SP805 fallback. Both reset paths ran these 40 lines
+/// verbatim.
+fn wdog_drain_and_reset() -> ! {
+    // Bounded settle (counts only decreasing stretches of WDOGVALUE so
+    // the keep-alive cannot fake elapsed time).
     let mut prev = wdog_r(0x004);
     let mut elapsed = 0u32;
     let mut spins = 0u32;
@@ -2174,6 +2173,14 @@ pub fn panic_reset_to_bootloader() -> ! {
     }
 }
 
+pub fn panic_reset_to_bootloader() -> ! {
+    // BOOTLOADER=0x01: the loader enters fastboot on its next start.
+    unsafe {
+        ptr::write_volatile(PMIC_REASON_ADDR as *mut u8, 0x01);
+    }
+    wdog_drain_and_reset();
+}
+
 /// Hand the loader its next boot mode, give the OKAY time to drain, then
 /// reset the SoC through the SP805 the loader already shares with us.
 fn fb_schedule_reboot(cmd: &[u8], log: fn(&str, u64)) {
@@ -2193,42 +2200,7 @@ fn fb_schedule_reboot(cmd: &[u8], log: fn(&str, u64)) {
     // Read it back for the durable log (visible through `oem log`).
     let back = unsafe { ptr::read_volatile(PMIC_REASON_ADDR as *const u8) };
     log("fb: hrst=", back as u64);
-    // Drain grace (~200 ms at 32.768 kHz): accumulate only decreasing
-    // stretches of WDOGVALUE so the keep-alive reloads cannot fake elapsed
-    // time. Bounded so a surprise costs a bounded spin, never a hang.
-    let mut prev = wdog_r(0x004);
-    let mut elapsed = 0u32;
-    let mut spins = 0u32;
-    while elapsed < 10000 && spins < 50_000_000 {
-        let v = wdog_r(0x004);
-        if v < prev {
-            elapsed += prev - v;
-        }
-        prev = v;
-        spins += 1;
-    }
-    // The full stock chain also pulses the LPM3 NMI (SCTRL + 0x510, bit 2):
-    // the always-on MCU performs the reset the loader's state machine
-    // expects. v28 without it was ignored (the loader cold-booted instead).
-    unsafe {
-        let r = 0xfff0_a510usize as *mut u32;
-        let v = ptr::read_volatile(r);
-        ptr::write_volatile(r, v | (1 << 2));
-        ptr::write_volatile(r, v & !(1 << 2));
-    }
-    // Fallback reset in ~0.5 s if the LPM3 does not step in; the reason is
-    // latched either way.
-    unsafe {
-        if wdog_r(0xc00) != 0 {
-            wdog_w(0xc00, 0x1acc_e551);
-        }
-        wdog_w(0x00c, 1);
-        wdog_w(0x000, 0x4000);
-        wdog_w(0x008, 3);
-    }
-    loop {
-        core::hint::spin_loop();
-    }
+    wdog_drain_and_reset();
 }
 
 fn wdog_r(off: usize) -> u32 {
