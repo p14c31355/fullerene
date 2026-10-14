@@ -1532,9 +1532,6 @@ fn fb_poll(log: fn(&str, u64)) {
                 // v307: a decoded ADB frame is a live conversation - the
                 // v306 quiet detector must stand down from here on.
                 EP1_CONVERSATIONS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                unsafe {
-                    core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
-                }
                 return;
             }
             Err(_) => {
@@ -1572,15 +1569,15 @@ fn fb_poll(log: fn(&str, u64)) {
         }
     }
     if end == 0 {
-        unsafe {
-            core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
-        }
         return; // nothing but padding
     }
     let cmd = unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(FB_CMD) as *const u8, end) };
     // The core can carry one stale transfer over from the loader's session;
     // anchor past any glued prefix so the dispatch still matches.
     let cmd = anchor_verb(cmd);
+    // v331 golf: the command length is consumed HERE (the handlers work
+    // on the copied slice view; the buffer is stable for this pass, and
+    // the next RX overwrites it). The 20 scattered resets collapse.
     unsafe {
         DBG_FB_DISPATCH = DBG_FB_DISPATCH.wrapping_add(1);
         DBG_CMD_HEAD = 0;
@@ -1703,9 +1700,6 @@ fn fb_poll(log: fn(&str, u64)) {
             ep1_send(&reply);
             log("fb: dl_arm=", size as u64);
         }
-        unsafe {
-            core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
-        }
         return;
     }
 
@@ -1740,9 +1734,6 @@ fn fb_poll(log: fn(&str, u64)) {
                 }
             }
         }
-        unsafe {
-            core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
-        }
         return;
     }
 
@@ -1775,9 +1766,6 @@ fn fb_poll(log: fn(&str, u64)) {
             super::ane_emmc::scan_sectors(lba, count, log);
             ep1_send(b"OKAYscan");
         }
-        unsafe {
-            core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
-        }
         return;
     }
 
@@ -1789,9 +1777,6 @@ fn fb_poll(log: fn(&str, u64)) {
         log("em: rs_ok=", ok);
         log("em: rs_bad=", bad);
         ep1_send(b"OKAYsaved");
-        unsafe {
-            core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
-        }
         return;
     }
 
@@ -1867,9 +1852,6 @@ fn fb_poll(log: fn(&str, u64)) {
                 }
             }
         }
-        unsafe {
-            core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
-        }
         return;
     }
 
@@ -1894,9 +1876,6 @@ fn fb_poll(log: fn(&str, u64)) {
             super::ane_emmc::dump_sectors(lba, count, log);
             ep1_send(b"OKAYdump");
         }
-        unsafe {
-            core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
-        }
         return;
     }
 
@@ -1910,9 +1889,6 @@ fn fb_poll(log: fn(&str, u64)) {
         super::ane_emmc::emmc_userdata_mount(log);
         log("fb: udm2=", crate::timer::uptime_us());
         ep1_send(b"OKAYudm");
-        unsafe {
-            core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
-        }
         return;
     }
 
@@ -1928,18 +1904,12 @@ fn fb_poll(log: fn(&str, u64)) {
         log("fb: ot_err=", err as u64);
         log("fb: ot_w0=", t[0] as u64);
         ep1_send(b"OKAYtouch");
-        unsafe {
-            core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
-        }
         return;
     }
 
     if cmd == b"oem ps1" {
         log("fb: ps1=", crate::timer::uptime_us());
         ep1_send(b"OKAYps1");
-        unsafe {
-            core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
-        }
         return;
     }
 
@@ -1950,9 +1920,6 @@ fn fb_poll(log: fn(&str, u64)) {
         let mut gv = [0u8; 32];
         let n = fmt_okay_hex(found.map(|f| f.0 as u64).unwrap_or(0), &mut gv);
         ep1_send(&gv[..n]);
-        unsafe {
-            core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
-        }
         return;
     }
 
@@ -1962,9 +1929,6 @@ fn fb_poll(log: fn(&str, u64)) {
         let n = fmt_okay_hex(0xDEAD_BEEF, &mut gv);
         log("fb: ps3b=", crate::timer::uptime_us());
         ep1_send(&gv[..n]);
-        unsafe {
-            core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
-        }
         return;
     }
 
@@ -1977,9 +1941,6 @@ fn fb_poll(log: fn(&str, u64)) {
         let mut gv = [0u8; 32];
         let n = fmt_okay_hex(ok as u64, &mut gv);
         ep1_send(&gv[..n]);
-        unsafe {
-            core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
-        }
         return;
     }
 
@@ -2003,9 +1964,6 @@ fn fb_poll(log: fn(&str, u64)) {
                 }
             }
         }
-        unsafe {
-            core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
-        }
         return;
     }
 
@@ -2019,16 +1977,10 @@ fn fb_poll(log: fn(&str, u64)) {
             reply = b"OKAY0xC00000";
         } else {
             fb_getvar_io(name);
-            unsafe {
-                core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
-            }
             return;
         }
     }
     ep1_send(reply);
-    unsafe {
-        core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
-    }
 }
 
 /// Advance the paced `oem log` stream by one line (called every service
