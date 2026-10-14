@@ -183,6 +183,18 @@ pub fn bring_up() {
     }
     uart::puts("desktop: rendered\n");
 
+    // v331l: the mobile shell reclaims the panel. The solvent render is
+    // the desktop-composite proof (the milestone), but the phone's face
+    // is the mobile home: after the proof, the shell re-renders itself
+    // over the canvas. The desktop becomes a launchable full-screen app
+    // once the touch path lands.
+    #[cfg(fullerene_aarch64_ane)]
+    {
+        super::mobile_home::render_home();
+        ane_fb::event(b"STG HOME-RESUME");
+        uart::puts("mobile home: resumed\n");
+    }
+
     // 4. Propagate the canvas to every display channel the gates accept.
     // v315: when bring_up runs from the pump's park recovery (IRQ context),
     // the 9.6 MB panel flush would block the IRQ for minutes and starve the
