@@ -98,7 +98,7 @@ pub fn bringup(log: fn(&str, u64)) {
     wr32(CRG_BASE, 0x040, peren4 | (1 << 17));
     // 2. Release the controller reset.
     wr32(CRG_BASE, 0x094, rstdis | (1 << 18));
-    spin_usb(0x8_0000, log); // ~1 ms settle
+    spin(0x8_0000); // ~1 ms settle
     paint2(5, b"SD5 PEREN0=", rd32(CRG_BASE, 0x000));
     paint2(6, b"SD6 PEREN4=", rd32(CRG_BASE, 0x040));
     paint2(7, b"SD7 RSTDIS=", rd32(CRG_BASE, 0x094));
@@ -110,11 +110,11 @@ pub fn bringup(log: fn(&str, u64)) {
     //    vqmmc (LDO9): selector 5 = 2.95 V, then enable.
     pmic_rmw(0x46, 0x07, 5);
     pmic_rmw(0x1D, 0x01, 1);
-    spin_usb(0x2_0000, log); // inter-enable gap (vendor protects back-to-back writes)
+    spin(0x2_0000); // inter-enable gap (vendor protects back-to-back writes)
     //    vmmc (LDO16): selector 6 = 2.95 V, then enable.
     pmic_rmw(0x4D, 0x07, 6);
     pmic_rmw(0x24, 0x01, 1);
-    spin_usb(0x8_0000, log); // ~1 ms for the rail to come up
+    spin(0x8_0000); // ~1 ms for the rail to come up
     let l9c = pmic_rd(0x1D);
     let l9v = pmic_rd(0x46);
     let l16c = pmic_rd(0x24);
@@ -446,7 +446,7 @@ fn card_init(log: fn(&str, u64), stage: u32) {
         wr32(MMC_BASE, MMC_RINTSTS, 0xFFFF_FFFF);
         wr32(MMC_BASE, MMC_CLKENA, 1);
         let _ = upd_clk2(log);
-        spin_usb(0x8_0000, log);
+        spin(0x8_0000);
         (rd32(MMC_BASE, MMC_CLKENA), rd32(MMC_BASE, MMC_RINTSTS))
     } else {
         (k_aft, r_aft)
