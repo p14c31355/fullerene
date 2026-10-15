@@ -1705,6 +1705,28 @@ fn fb_poll(log: fn(&str, u64)) {
     }
 
     #[cfg(fullerene_aarch64_ane)]
+    if cmd == b"oem coldreboot" {
+        // The software cold reboot: HRST_REG0 = AP_S_COLDBOOT (0x00) -
+        // the value the bootloader sees on a true fresh-from-off
+        // power-on (downstream hi6250-reboot.c, verified on the Kirin
+        // 659 family) - then the proven LPM3 NMI reset. The BL's BFM
+        // reads 0x00 as a clean power-on: no failure-count escalation,
+        // no eRecovery routing, and the boot-fail chain-of-custody
+        // restarts. The USB-PHY-warm-state question this targets: if
+        // the enumeration failures track the reset reason rather than
+        // the physical rails, this lane recovers the link without the
+        // physical power hold.
+        log("fb: cold_req=", 1);
+        ep1_send(b"OKAY");
+        unsafe {
+            ptr::write_volatile(PMIC_REASON_ADDR as *mut u8, 0x00);
+        }
+        let back = unsafe { ptr::read_volatile(PMIC_REASON_ADDR as *const u8) };
+        log("fb: cold_hrst=", back as u64);
+        wdog_drain_and_reset();
+    }
+
+    #[cfg(fullerene_aarch64_ane)]
     if cmd == b"oem crash" {
         // Deliberate panic for the BFM/escalation test: exercises the v63
         // panic -> PMIC reset -> loader path on demand. The bootup-keypoint
