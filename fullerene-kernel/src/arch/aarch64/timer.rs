@@ -59,32 +59,42 @@ pub fn uptime_us() -> u64 {
 }
 
 pub fn delay_ms(milliseconds: u64) {
-    let ticks = ticks_for_duration(frequency(), milliseconds, 1_000);
-    let start = counter();
-    // A counter that never advances must not park the boot. Cap the spin far
-    // beyond any real delay (2^26 iterations of spin_loop is seconds even on
-    // the slowest core this kernel targets); a capped return shows up as an
-    // implausible tick delta in the caller's print.
-    let mut spins: u64 = 0;
-    while counter().wrapping_sub(start) < ticks {
-        core::hint::spin_loop();
-        spins += 1;
-        if spins > (1 << 26) {
-            return;
-        }
-    }
+    delay_ticks(ticks_for_duration(frequency(), milliseconds, 1_000));
 }
 
 pub fn delay_us(microseconds: u64) {
-    let ticks = ticks_for_duration(frequency(), microseconds, 1_000_000);
+    delay_ticks(ticks_for_duration(frequency(), microseconds, 1_000_000));
+}
+
+/// Spin until the counter has advanced `ticks`.
+///
+/// The guard used to be a plain spin budget (2^26 iterations), which a
+/// counter read plus `spin_loop` exhausts in well under a second on this
+/// core: every long delay - the 45 s panel hold included - returned
+/// almost immediately, which is why a hold never looked like one. Watch
+/// the counter itself instead, so a real delay always completes and a
+/// dead counter still cannot park the boot.
+fn delay_ticks(ticks: u64) {
     let start = counter();
-    let mut spins: u64 = 0;
-    while counter().wrapping_sub(start) < ticks {
-        core::hint::spin_loop();
-        spins += 1;
-        if spins > (1 << 26) {
+    let mut last = start;
+    loop {
+        if counter().wrapping_sub(start) >= ticks {
             return;
         }
+        core::hint::spin_loop();
+        if counter() == last {
+            // Sampled the same value twice across a spin: if this persists
+            // the counter is stopped, and waiting longer is pointless.
+            let mut still = 0u32;
+            while counter() == last {
+                core::hint::spin_loop();
+                still += 1;
+                if still > 4096 {
+                    return;
+                }
+            }
+        }
+        last = counter();
     }
 }
 

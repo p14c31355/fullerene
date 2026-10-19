@@ -590,6 +590,22 @@ pub fn panic_screen(file: &str, line: u32, column: u32) {
     }
 }
 
+/// The enumeration never finished: say so on the panel and keep it there.
+///
+/// The desktop takes the canvas the moment bring-up continues, so the
+/// ledger and the SETUP trace were being wiped a fraction of a second
+/// after they were painted - long enough to notice, too short to
+/// photograph. This banner is painted where nothing else writes and the
+/// caller holds the boot for the length of a photograph.
+pub fn usb_fail_banner(setups: u64, serviced: u64) {
+    paint_at_force(49, 0, 22, b"USB NEVER CONFIGURED");
+    paint_hex_at_force(50, 0, b"SETUPS", setups);
+    paint_hex_at_force(51, 0, b"SERVICE", serviced);
+    flush_row_force(49);
+    flush_row_force(50);
+    flush_row_force(51);
+}
+
 /// Paint a text line at an explicit x (the right-column instruments). The
 /// cell band it clears is its own, so it never disturbs the left text rows
 /// painted by the boot report.

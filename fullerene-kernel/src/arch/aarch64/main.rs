@@ -1394,6 +1394,20 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                         served as u64,
                     );
                 }
+                #[cfg(fullerene_aarch64_ane)]
+                if !platform::ane_usb_dev::host_configured()
+                    && platform::ane_usb_dev::setups_seen() > 0
+                {
+                    // The panel keeps the trace only while the desktop has
+                    // not taken the canvas; hold here so the evidence can be
+                    // photographed, then resume the boot as usual.
+                    platform::ane_fb::usb_fail_banner(
+                        platform::ane_usb_dev::setups_seen() as u64,
+                        served as u64,
+                    );
+                    platform::ane_fb::event(b"STG ENUM-HOLD-45S");
+                    timer::delay_ms(45_000);
+                }
                 #[cfg(fullerene_ane_enum_diag)]
                 if !platform::ane_usb_dev::host_configured() {
                     // Diagnostic build: the desktop flush would paint over
