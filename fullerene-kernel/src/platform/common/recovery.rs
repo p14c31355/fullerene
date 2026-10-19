@@ -51,7 +51,10 @@ fn usb_zombie_check(beats: u32) {
         // A hold is not a zombie: EP0 is silent because the boot is parked on
         // purpose. Resetting here would throw away the evidence the hold exists
         // to show - exactly what happened at 22:29 tonight (blackbox.rs:1184).
-        if crate::blackbox::panel_hold() {
+        if crate::blackbox::panel_hold() || busy() {
+            // Nor is a busy flash: EP0 answers nothing while the write path
+            // owns the boot thread, and a 24 MB image through the init clock
+            // can outlast this window.
             ZOMBIE_AT.store(0, Ordering::Relaxed);
             return;
         }
