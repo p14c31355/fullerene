@@ -191,3 +191,22 @@ The image to flash when the loader window opens is built from `d33997a3`
 plus the notes above; `fastboot getvar emmc` then reports whether the PHY
 unlocked the divider ladder, and `getvar flash` reports the write counts
 without needing the panel.
+
+## The loader window without a key press (2026-10-20 02:35 JST)
+
+`fastboot reboot-bootloader` is answered by the responder itself: it writes
+`0x01` (BOOTLOADER) to the PMIC reason byte and resets through the SP805
+the loader shares with us, so LK comes up in fastboot. That makes the whole
+cycle software-driven, and it is what `~/dev/p20-root/cycle_flash.py` does:
+
+    responder: fastboot reboot-bootloader
+    LK:        fastboot flash kernel <img>      (LK's own eMMC driver)
+    LK:        fastboot reboot
+    responder: fastboot getvar product / flash / emmc
+
+Flashing from LK also sidesteps every write defect listed above - the
+loader writes at megabytes a second - which is why the responder's own
+write path stays a fallback rather than the main road. The gates are
+unchanged: a flash only runs when the product on `1-9` is one of the two
+known strings, and the boot afterwards is not called good until the new
+image answers `getvar product`.
