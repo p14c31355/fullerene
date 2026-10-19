@@ -57,3 +57,56 @@ two photographs taken a known wall-clock distance apart.
 | v332s-rcend | (unflashed) | reconnect completion made unconditional |
 | v332t-servehold | `7a3bbb14` | hold serves EP0; flashed 22:34:39; -110 on config descriptor, LK in 13 s |
 | v332u-peek | `7a3bbb14` | flashed 22:36:16, peek hold shows v332t's panic |
+## Enumeration is open (2026-10-20 00:00 JST)
+
+The control pipe now survives a full Linux enumeration and the fastboot
+protocol runs over EP1. Three defects were separable and all three were
+real:
+
+1. **The garble detector was the -71/-110 generator.** It read the gap
+   while the host retried a transfer after reaching config-1 as a dead
+   identity, cycled D+ three times and panicked (`exceptions.rs:990`).
+   Checked against the panel: `SETUPS=0x20`, config reached, then the
+   cycle. It now stands down whenever a conversation has happened and
+   only repairs when the host has been silent on *every* lane (SETUPs
+   and host events), not just on SETUPs. (`aa5110db`, then the event
+   lane in the same pass.)
+2. **EP0 sizes were missing `MC(1)`.** `dwc2_hsotg_program_zlp` and the
+   gadget core's `hs_ep->mc = 1` both keep the mult-count field at one
+   for the control endpoint; ours wrote `PKTCNT` only. That produced
+   the -75 on `string descriptor 0` and the occasional -71 on
+   SET_CONFIGURATION, i.e. exactly the flaky half-enumeration.
+   (`bd1247c0`)
+3. **A command was dispatched more than once.** `FB_CMD_LEN` is cleared
+   only when the ADB path consumes it, so fastboot re-ran the last
+   command on every service pass. `oem log` was answered with the
+   previous `getvar`'s FAIL, and the reply stream ran one command
+   behind. Fixed by consuming the command where it is dispatched
+   (`142aa368`) and by dispatching where the bytes are actually popped
+   rather than on the trailing OUTDONE (`cc0ad838`). The loader's
+   leftover bytes were then swept ahead of the first reply by design;
+   the FIFO is now emptied instead, so no parser has to resynchronise
+   (`f68e800a`).
+
+Current state: `fastboot devices` reports `SCV7N18927000473`,
+`getvar product|serialno|version|partition-size:kernel` all answer.
+
+## Self-flash
+
+`fastboot flash kernel` from the running kernel downloads and writes.
+The write path is slow and the faults were, in order:
+
+- `TIMEOUT_CONTROL` (0x2E) was never programmed, so the card got the
+  shortest data timeout and every write aborted while every read
+  passed (`c9fdca02`).
+- The frozen-boot lane counted the write as a dead boot and reset
+  mid-flash (`9ce6f6bd`).
+- The buffer-write gate was polled per 32-bit word instead of per
+  512-byte block (`4bd9a0a3`).
+- A deadline in `uptime_us` cut 85 s of progress because that counter
+  runs ~10x fast (`2f3ef942`).
+
+Measured rate: 512 KiB in 85 s, i.e. ~6 KB/s, which is ~8x below the
+400 kHz wire rate. The card clock is still the init clock; raising it
+is the next real speedup, and it needs the vendor clock plan for the
+Arasan block at 0xFF390000 rather than a guess.
