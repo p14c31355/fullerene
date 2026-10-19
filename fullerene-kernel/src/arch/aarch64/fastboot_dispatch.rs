@@ -544,7 +544,8 @@ pub fn poll(log: fn(&str, u64)) {
         let (n, c0, now) = crate::platform::ane_usb_dev::sof_measure();
         let span = now.wrapping_sub(c0);
         const HEX: [u8; 16] = *b"0123456789ABCDEF";
-        let mut line = [b' '; 26];
+        // Two sixteen-digit fields, one after the other: 4 + 16 + 16.
+        let mut line = [b' '; 36];
         line[..4].copy_from_slice(b"sof ");
         let mut put = |at: usize, v: u64| {
             for i in 0..16 {
@@ -606,14 +607,18 @@ pub fn poll(log: fn(&str, u64)) {
             Ok(v) => {
                 // A timing switch only widens the ladder; climbing it is what
                 // turns that into bytes per second, so do both here.
+                // The envelope moved in one direction or the other: lower the
+                // clock before climbing, so a card told to leave high speed is
+                // never driven above default-speed timing.
                 if v == 1 {
+                    crate::platform::ane_emmc::clock_probe(log);
+                } else {
+                    crate::platform::ane_emmc::clock_to_base(log);
                     crate::platform::ane_emmc::clock_probe(log);
                 }
                 let mut line = [0u8; 32];
                 let n = crate::adb_dispatch::fmt_okay_hex(v as u64, &mut line);
                 crate::platform::ane_usb_dev::ep1_send(&line[..n]);
-                // The envelope just moved: climb again under the new rules.
-                crate::platform::ane_emmc::clock_probe(log);
             }
             Err(code) => {
                 log("fb: hs_fail=", code as u64);

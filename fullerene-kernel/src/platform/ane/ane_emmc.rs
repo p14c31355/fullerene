@@ -78,6 +78,11 @@ fn row2(log: fn(&str, u64), row: u32, label0: &[u8], a: u32) {
 static CLK_RESULT: AtomicU64 = AtomicU64::new(0);
 static CLK_SAMPLE: AtomicU64 = AtomicU64::new(0);
 
+/// The divider the boot's own reads work at. The loader leaves 0xFA (400 kHz
+/// on a 200 MHz clk_xin); the first ladder overwrites this with whatever the
+/// controller actually held, so going back is a measurement, not a constant.
+pub static CLK_BASE_FIELD: core::sync::atomic::AtomicU16 = core::sync::atomic::AtomicU16::new(0xFA);
+
 /// What the clock ladder settled on (see `clock_probe`).
 pub fn clock_sample() -> u64 {
     CLK_SAMPLE.load(Ordering::Relaxed)
@@ -119,6 +124,7 @@ pub fn clock_result() -> u64 {
 /// probe never ran.
 pub fn clock_probe(log: fn(&str, u64)) {
     let base = rd16(SDHCI_BASE, 0x2C) >> 8;
+    CLK_BASE_FIELD.store(base, Ordering::Relaxed);
     // The inherited clock tree, so clk_xin stops being an inference:
     // 0xB4 bit0 picks PLL0/PLL3, bit2 the divider branch, bits 3..6 the
     // divider (2^val), and 0x40 is the gate word.
@@ -572,6 +578,18 @@ pub fn persist_all(log: fn(&str, u64)) -> (u64, u64) {
         bad += b;
     }
     (ok, bad)
+}
+
+/// Put the card clock back where the boot found it.
+///
+/// Switching high-speed *off* while the divider still asks for 50 MHz would
+/// leave a default-speed card over its timing, so the caller lowers the clock
+/// first and the ladder climbs again from there.
+pub fn clock_to_base(log: fn(&str, u64)) -> bool {
+    let base = CLK_BASE_FIELD.load(Ordering::Relaxed);
+    let ok = emmc_clock_set(base, log);
+    log("em: clk_base=", ((ok as u64) << 8) | base as u64);
+    ok
 }
 
 /// EXT_CSD byte 185 is the bus timing the card will use.
