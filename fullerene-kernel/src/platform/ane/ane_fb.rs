@@ -707,9 +707,7 @@ fn read_cntfrq() -> u64 {
 /// The raw virtual counter - no division, no bookkeeping, just the ticks.
 fn read_cntvct() -> u64 {
     let v: u64;
-    unsafe {
-        core::arch::asm!("isb", "mrs {}, cntvct_el0", out(reg) v, options(nomem, nostack))
-    };
+    unsafe { core::arch::asm!("isb", "mrs {}, cntvct_el0", out(reg) v, options(nomem, nostack)) };
     v
 }
 

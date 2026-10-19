@@ -35,30 +35,42 @@ pub fn boot_heartbeat() {
 /// completed for 54000 beats (~15 min) while the pump keeps seeing EPENA
 /// stalls, the link cannot recover by itself - schedule the loader reset.
 fn usb_zombie_check(beats: u32) {
-    static LAST_OK: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-    static ZOMBIE_AT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-    // A hold is not a zombie: EP0 is silent because the boot is parked on
-    // purpose. Resetting here would throw away the evidence the hold exists
-    // to show - exactly what happened at 22:29 tonight (blackbox.rs:1184).
-    if crate::blackbox::panel_hold() {
-        ZOMBIE_AT.store(0, Ordering::Relaxed);
+    // A diagnostic build is allowed to be a zombie: the enum_diag loop parks
+    // on the panel with the setup ledger precisely so a camera can read where
+    // the control pipe stopped. Resetting here destroyed that evidence on
+    // every single boot (23:02 tonight: attach, string 0, reset, nothing).
+    #[cfg(fullerene_ane_enum_diag)]
+    {
+        let _ = beats;
         return;
     }
-    let ok = EP0_OK.load(Ordering::Relaxed);
-    let last = LAST_OK.load(Ordering::Relaxed);
-    if ok != last {
-        LAST_OK.store(ok, Ordering::Relaxed);
-        ZOMBIE_AT.store(0, Ordering::Relaxed);
-        return;
-    }
-    let at = ZOMBIE_AT.load(Ordering::Relaxed);
-    if at == 0 {
-        ZOMBIE_AT.store(beats, Ordering::Relaxed);
-        return;
-    }
-    if beats.wrapping_sub(at) > 54000 {
-        schedule_loader_reset("WD: USB ZOMBIE RESET\n");
-        ZOMBIE_AT.store(beats, Ordering::Relaxed); // once per window
+    #[cfg(not(fullerene_ane_enum_diag))]
+    {
+        static LAST_OK: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+        static ZOMBIE_AT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+        // A hold is not a zombie: EP0 is silent because the boot is parked on
+        // purpose. Resetting here would throw away the evidence the hold exists
+        // to show - exactly what happened at 22:29 tonight (blackbox.rs:1184).
+        if crate::blackbox::panel_hold() {
+            ZOMBIE_AT.store(0, Ordering::Relaxed);
+            return;
+        }
+        let ok = EP0_OK.load(Ordering::Relaxed);
+        let last = LAST_OK.load(Ordering::Relaxed);
+        if ok != last {
+            LAST_OK.store(ok, Ordering::Relaxed);
+            ZOMBIE_AT.store(0, Ordering::Relaxed);
+            return;
+        }
+        let at = ZOMBIE_AT.load(Ordering::Relaxed);
+        if at == 0 {
+            ZOMBIE_AT.store(beats, Ordering::Relaxed);
+            return;
+        }
+        if beats.wrapping_sub(at) > 54000 {
+            schedule_loader_reset("WD: USB ZOMBIE RESET\n");
+            ZOMBIE_AT.store(beats, Ordering::Relaxed); // once per window
+        }
     }
 }
 
