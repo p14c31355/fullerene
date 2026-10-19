@@ -71,3 +71,27 @@ The overlapping addresses (0x1E twice, and 0x38 shared with the touch
 controller) are why this table is a list of candidates rather than a wiring
 diagram: the default config carries several board variants, and the device
 decides. Reading register 0 of each address costs nothing and settles it.
+
+## Blockers, with the evidence that they are blockers
+
+The goal says a missing driver is not a reason to stop, and a missing *code*
+is a reason to document. These are the latter - each one names what is absent
+and what would have to exist before a driver could be written honestly.
+
+- **Audio (hi6402).** The codec hangs off SLIMbus (`0xE8050000`) behind
+  `codec_controller@0xE82B9000` with reset on gpio79, and the vendor tree
+  contains no `sound/soc` driver for it - `drivers/gpio/gpio-hi6402.c` is
+  the only file with that name. Mainline has no HiSilicon 64xx codec either.
+  Without a register map the only route is SLIMbus enumeration against a
+  live device, which needs audio clocks running and is a project in itself.
+- **Wi-Fi / BT (hi1102).** SDIO plus a firmware download; the driver is
+  out-of-tree and the firmware lives on the device's vendor partition. The
+  first step is copying those blobs off the stock system, not writing a
+  driver.
+- **Modem.** Firmware, NV and a shared-memory protocol owned by the
+  non-secure loader. Nothing in this tree or the vendor tree describes it.
+
+What this means practically: touch, storage, charging, keys, sensors and the
+UI are within reach of this port; audio, Wi-Fi and telephony need the stock
+firmware pulled off the phone first, and the vendor partition is readable
+over ADB on a rooted stock boot.
