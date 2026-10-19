@@ -193,6 +193,42 @@ impl HomeLayout {
     }
 }
 
+/// Status-bar battery capsule: outline, then a fill proportional to charge.
+///
+/// The charge comes from the Hi6555V100 coulomb counter via the PMU cell
+/// (`platform::ane_battery`), two byte reads, so it is re-sampled on every
+/// repaint.  A pack whose voltage cannot be read leaves the capsule empty
+/// rather than inventing a percentage.
+fn draw_battery(fb: &mut [u32], fb_w: u32, fb_h: u32, l: &HomeLayout) {
+    let state = crate::platform::ane_battery::state();
+    let w = 46u32;
+    let h = 20u32;
+    let x = fb_w.saturating_sub(l.margin + w);
+    let y = l.notch_h + (l.bar_h - l.notch_h).saturating_sub(h) / 2;
+    let outline: u32 = 0xFF8A_94_A0;
+
+    fill_rect(fb, fb_w, fb_h, x, y, w, h, outline);
+    fill_rect(fb, fb_w, fb_h, x + 2, y + 2, w - 4, h - 4, 0xFF10_14_18);
+    // The nub on the right edge, so the capsule reads as a battery.
+    fill_rect(fb, fb_w, fb_h, x + w, y + 6, 3, h - 12, outline);
+
+    let Some(permille) = state.charge_permille else {
+        return;
+    };
+    let inner = w - 4;
+    let filled = inner * permille.min(1000) as u32 / 1000;
+    let color = if state.charging {
+        0xFF4C_8D_FF
+    } else if permille > 500 {
+        0xFF4C_AF_50
+    } else if permille > 200 {
+        0xFFE0_A0_30
+    } else {
+        0xFFE0_40_40
+    };
+    fill_rect(fb, fb_w, fb_h, x + 2, y + 2, filled, h - 4, color);
+}
+
 /// Render the phone home screen onto the canvas. Every color/position
 /// derives from the canvas dimensions.
 pub fn render_home() {
@@ -235,6 +271,7 @@ pub fn render_home() {
     let bar_h = l.bar_h;
     fill_rect(fb, width, height, 0, 0, width, bar_h, bar);
     fill_rect(fb, width, height, notch_l, 0, notch_w, notch_h, bg);
+    draw_battery(fb, width, height, &l);
 
     // App grid: 4 cols x N rows of tiles between the bars.
     let grid_top = bar_h + 40;

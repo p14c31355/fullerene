@@ -24,6 +24,8 @@ pub mod ane;
 
 /// `ane_dwmmc` etc. live beside `ane/mod.rs` on disk but are declared
 /// here, at the same module level, for the reason in the module header.
+#[path = "ane/ane_battery.rs"]
+pub mod ane_battery;
 #[path = "ane/ane_dwmmc.rs"]
 pub mod ane_dwmmc;
 #[path = "ane/ane_emmc.rs"]
