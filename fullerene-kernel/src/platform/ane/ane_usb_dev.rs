@@ -95,15 +95,15 @@ const DOEPINT1: usize = 0xB28;
 const DOEPTSIZ1: usize = 0xB30;
 /// Per-endpoint TX FIFO size map (hw.h DPTXFSIZN(1) = 0x104); read at boot
 /// to learn which TX FIFO slot this core assigned to EP1.
-const DPTXFSIZ1: usize = 0x104;
+pub(crate) const DPTXFSIZ1: usize = 0x104;
 /// EP1-IN's TX FIFO fill level in words (hw.h DTXFSTS(n) = 0x918 + n*0x20);
 /// a nonzero reading at boot is the loader's stale reply word.
-const DTXFSTS1: usize = 0x938;
+pub(crate) const DTXFSTS1: usize = 0x938;
 /// The PMIC reset-reason register (reg 0x18B, byte access at reg << 2). The
 /// loader reads this at its next start; BOOTLOADER=0x01 / RECOVERY=0x02 /
 /// COLDBOOT=0x10 (mntn_public_interface.h, same table the stock kernel uses
 /// in hisi_pm_system_reset -> set_reboot_reason).
-const PMIC_REASON_ADDR: usize = 0xfff3_4000 + (0x18B << 2);
+pub(crate) const PMIC_REASON_ADDR: usize = 0xfff3_4000 + (0x18B << 2);
 /// DPTXFSIZN(i) for the dedicated TX FIFOs (i >= 1; hw.h).
 fn dptxfsiz_n(i: u32) -> usize {
     0x104 + (i as usize - 1) * 4
@@ -285,8 +285,8 @@ pub fn last_send_state() -> u64 {
     (n << 32) | (free << 16)
 }
 /// The paced `oem log` stream: one INFO line per service pass.
-static mut LOG_ACTIVE: bool = false;
-static mut LOG_CURSOR: usize = 0;
+pub(crate) static mut LOG_ACTIVE: bool = false;
+pub(crate) static mut LOG_CURSOR: usize = 0;
 
 // ---- v220: the `oem xfer` bulk stream (vendor-pattern pump) ----------------
 // The vendor gadget.c (drivers/usb/dwc2/gadget.c, s3c_hsotg_write_fifo)
@@ -301,13 +301,13 @@ static mut LOG_CURSOR: usize = 0;
 // is silently dropped - the EP0 lesson).
 
 /// Stream on/off.
-static mut XFER_ON: bool = false;
+pub(crate) static mut XFER_ON: bool = false;
 /// Feed cursor: the next byte to hand the FIFO.
-static mut XFER_FEED: usize = 0;
+pub(crate) static mut XFER_FEED: usize = 0;
 /// End of the whole command's range.
-static mut XFER_END: usize = 0;
+pub(crate) static mut XFER_END: usize = 0;
 /// End of the currently armed window (a new arm happens when FEED reaches it).
-static mut XFER_WIN_END: usize = 0;
+pub(crate) static mut XFER_WIN_END: usize = 0;
 
 /// Advance the bulk xfer stream (statics above). Safe to call every pass.
 pub fn xfer_pump() {
@@ -392,17 +392,17 @@ pub fn xfer_pump() {
         crate::blackbox::text_puts("XF: DONE\n");
     }
 }
-static mut LOG_LINES: u32 = 0;
+pub(crate) static mut LOG_LINES: u32 = 0;
 /// The frozen end of the stream window (this boot's log length when the
 /// command arrived). Re-reading it live would make the stream chase the
 /// boot's own ongoing log writes and never end.
-static mut LOG_END: usize = 0;
+pub(crate) static mut LOG_END: usize = 0;
 /// True when the stream reads the main durable text block (TEXT_BLOCK_BASE
 /// + 12, cap 0xE000) instead of the 7 KiB fixed copy. The fixed copy is
 /// filled by ~the boot's first 200 lines on this platform (the loader's
 /// early phases are chatty), so `oem log full` alone cannot reach the
 /// USB/SD/eMMC sections - `oem log main [hexoff]` streams the whole block.
-static mut LOG_MAIN: bool = false;
+pub(crate) static mut LOG_MAIN: bool = false;
 /// True when no EP1-IN transfer is in flight. The log stream sends one line
 /// per completed transfer; arming the next while the previous was still in
 /// flight was silently multi-second slow.
@@ -415,10 +415,10 @@ static mut LOG_WD_ACC: u32 = 0;
 
 static mut DBG_RX_ENTRIES: u32 = 0;
 static mut DBG_EP1_BYTES: u32 = 0;
-static mut DBG_FB_DISPATCH: u32 = 0;
+pub(crate) static mut DBG_FB_DISPATCH: u32 = 0;
 static mut DBG_FB_REPLY: u32 = 0;
 static mut DBG_LAST_RXSTS: u32 = 0;
-static mut DBG_CMD_HEAD: u64 = 0;
+pub(crate) static mut DBG_CMD_HEAD: u64 = 0;
 /// v307: EP1 conversations served (bulk commands dispatched OR ADB frames
 /// decoded). A nonzero count proves the host's identity latch is good - the
 /// v306 quiet detector must never fire after this (a live conversation is
@@ -426,10 +426,10 @@ static mut DBG_CMD_HEAD: u64 = 0;
 /// v325: a decoded ADB frame staged by the IRQ pump, waiting for a
 /// non-IRQ service pass to dispatch it (the deep dispatch path collided
 /// with the boot thread's exception frame - see the v325 note).
-static mut ADB_PENDING: [u8; ADB_PENDING_CAP] = [0; ADB_PENDING_CAP];
-static mut ADB_PENDING_LEN: usize = 0;
-static mut ADB_PENDING_READY: bool = false;
-const ADB_PENDING_CAP: usize = 256;
+pub(crate) static mut ADB_PENDING: [u8; ADB_PENDING_CAP] = [0; ADB_PENDING_CAP];
+pub(crate) static mut ADB_PENDING_LEN: usize = 0;
+pub(crate) static mut ADB_PENDING_READY: bool = false;
+pub(crate) const ADB_PENDING_CAP: usize = 256;
 
 /// v325: true while the timer-IRQ handler is running (the pump). The
 /// exceptions handler sets this on entry and clears it on exit.
@@ -520,7 +520,7 @@ pub fn diag() -> FbDiag {
     }
 }
 
-fn rd(off: usize) -> u32 {
+pub(crate) fn rd(off: usize) -> u32 {
     super::common::mmio::rd32(USB_CORE_BASE, off)
 }
 
@@ -994,7 +994,7 @@ fn pop_rx(log: fn(&str, u64)) {
                     // the real fastboot client sends no NUL byte after the
                     // command, so dispatch here (not on a NUL).
                     super::ane_fb::event(b"EP1 DN");
-                    fb_poll(log);
+                    crate::fastboot_dispatch::poll(log);
                 } else if ep == 1 {
                     // The fastboot command stream on EP1 OUT. The RX FIFO is
                     // shared with EP0, so the pop window is the same 0x1000.
@@ -1020,7 +1020,7 @@ fn pop_rx(log: fn(&str, u64)) {
                     // with the previous one's reply - the host saw the
                     // product answer for serialno and a FAIL for download:.
                     if fb::dl_remain() == 0 {
-                        fb_poll(log);
+                        crate::fastboot_dispatch::poll(log);
                     }
                 } else {
                     // EP0 data/status OUT bytes: drain so the FIFO does not wedge.
@@ -1224,12 +1224,12 @@ pub fn ep1_diag() -> u64 {
 /// Send `data` on the EP1 bulk IN endpoint (the fastboot response path).
 /// v331 refactor: the fastboot reply shapes - the log + the OKAY/FAIL
 /// send pairs that recurred at every command handler site.
-fn reply_ok(log: fn(&str, u64), tag: &str, value: u64) {
+pub(crate) fn reply_ok(log: fn(&str, u64), tag: &str, value: u64) {
     log(tag, value);
     ep1_send(b"OKAY");
 }
 
-fn ep1_send(data: &[u8]) {
+pub(crate) fn ep1_send(data: &[u8]) {
     // v217: shared implementation - the pointer form lets the `oem xfer r`
     // stream arm ONE transfer per window straight from the source RAM (no
     // intermediate buffer). The v218 windowed fill makes long transfers safe.
@@ -1513,592 +1513,13 @@ fn fb_vars() -> [crate::fastboot_dispatch::VarEntry; 9] {
 }
 
 /// The getvar dispatch through the shared table.
-fn fb_getvar_io(name: &[u8]) {
+pub(crate) fn fb_getvar_io(name: &[u8]) {
     let mut io = AneFbIo;
     let vars = fb_vars();
     let mut out = [0u8; 64];
     crate::fastboot_dispatch::getvar_dispatch(&mut io, &vars, name, &mut out);
 }
 
-/// Fastboot protocol: run when bytes arrived on EP1 OUT. The host's command
-/// lines are NUL-terminated, and the responses are the plain "OKAY"/"FAIL"
-/// strings the host's parser reads back NUL-terminated.
-fn fb_poll(log: fn(&str, u64)) {
-    // A download in flight owns EP1 OUT: skip command parsing until its
-    // payload is complete, then answer it once and resume.
-    match fb::dl_state() {
-        1 => return,
-        2 => {
-            let len = fb::dl_len();
-            fb::dl_reset();
-            let (w0, wl) = unsafe {
-                let base = fb::dl_data().as_ptr();
-                let mut first = [0u8; 4];
-                let mut last = [0u8; 4];
-                for i in 0..4 {
-                    if i < len {
-                        first[i] = base.add(i).read();
-                    }
-                    if len >= 4 {
-                        last[i] = base.add(len - 4 + i).read();
-                    }
-                }
-                (u32::from_le_bytes(first), u32::from_le_bytes(last))
-            };
-            log("fb: dl_len=", len as u64);
-            log("fb: dl_w0=", w0 as u64);
-            reply_ok(log, "fb: dl_wl=", wl as u64);
-            return;
-        }
-        _ => {}
-    }
-    let len = fb::cmd_len();
-    if len == 0 {
-        return;
-    }
-    // A command arriving while `oem log` streams means the client moved on
-    // (or a new session started); stop the stream so it cannot flood an
-    // endpoint nobody reads. The oem-log handler re-activates it below.
-    unsafe {
-        core::ptr::addr_of_mut!(LOG_ACTIVE).write(false);
-    }
-    // ADB wire path: a host `adb` speaks the binary 24-byte framing whose
-    // header contains NUL bytes, so this check runs on the RAW transfer
-    // length before the fastboot NUL-trim below can cut it short. Text
-    // commands fail the frame magic instantly and fall through untouched.
-    if len >= crate::adb_wire::HEADER_BYTES {
-        let raw = fb::cmd();
-        // The RX FIFO can carry loader-session leftovers in front of our
-        // frame (the same glued-prefix defect the text path anchors around).
-        // Decoding the raw buffer made every CNXN fail the magic check and
-        // slide into the fastboot fallback. Anchor on the ADB header magic
-        // first; a false anchor cannot pass the trailing magic check.
-        let anchored = anchor_adb(raw);
-        match crate::adb_wire::decode(anchored) {
-            Ok(pkt) => {
-                if anchored.len() != raw.len() {
-                    super::ane_fb::event(b"DEC ANCH");
-                }
-                super::ane_fb::event(b"DEC OK");
-                // v325: adb_dispatch is the pump's deep path (the CNXN ring
-                // copy + chunked send) - running it from the timer IRQ
-                // collided with the boot thread's exception frame (the
-                // v320-v323 corrupted ELR). From IRQ context, copy the raw
-                // anchored frame into ADB_PENDING and let the next NON-IRQ
-                // service pass (wait loop / SVC boundary) dispatch it.
-                if crate::blackbox::in_irq_context() {
-                    // v326: copy the ANCHORED frame (the stale prefix must
-                    // not ride along - the deferred decode would fail its
-                    // magic check and drop the reply).
-                    let skip = anchored.as_ptr() as usize - raw.as_ptr() as usize;
-                    unsafe {
-                        let src = fb::cmd().as_ptr().add(skip);
-                        let dst = core::ptr::addr_of_mut!(ADB_PENDING) as *mut u8;
-                        let n = anchored.len().min(ADB_PENDING_CAP);
-                        core::ptr::copy_nonoverlapping(src, dst, n);
-                        core::ptr::addr_of_mut!(ADB_PENDING_LEN).write(n);
-                        core::ptr::addr_of_mut!(ADB_PENDING_READY).write(true);
-                    }
-                    super::ane_fb::event(b"ADB DEFER");
-                } else {
-                    adb_dispatch_io(&pkt);
-                }
-                // v307: a decoded ADB frame is a live conversation - the
-                // v306 quiet detector must stand down from here on.
-                EP1_CONVERSATIONS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                return;
-            }
-            Err(_) => {
-                // Hex clue for the photo ledger: raw length + the first four
-                // bytes (an intact header at offset 0 reads "434E584E").
-                let mut ev = [b' '; 18];
-                ev[0] = b'N';
-                ev[1] = b'G';
-                ev[2] = b' ';
-                let hexd = |v: u8| -> u8 { if v < 10 { b'0' + v } else { b'A' + v - 10 } };
-                ev[3] = hexd(((len >> 4) & 0xf) as u8);
-                ev[4] = hexd((len & 0xf) as u8);
-                ev[5] = b' ';
-                let mut i = 0;
-                while i < 4 {
-                    let b = if i < len { raw[i] } else { 0 };
-                    ev[6 + i * 2] = hexd(b >> 4);
-                    ev[7 + i * 2] = hexd(b & 0xf);
-                    i += 1;
-                }
-                super::ane_fb::event(&ev);
-            }
-        }
-    }
-    // The command ends at the transfer boundary; when the wire carried a
-    // NUL too, everything past the first NUL is padding/junk and ignored.
-    let mut end = len;
-    unsafe {
-        let buf = fb::cmd().as_ptr();
-        for i in 0..len {
-            if buf.add(i).read() == 0 {
-                end = i;
-                break;
-            }
-        }
-    }
-    if end == 0 {
-        return; // nothing but padding
-    }
-    let cmd = &fb::cmd()[..end];
-    // The core can carry one stale transfer over from the loader's session;
-    // anchor past any glued prefix so the dispatch still matches.
-    let cmd = anchor_verb(cmd);
-    // v336c: the length is consumed HERE - for real this time. v331's
-    // comment claimed it, but the only write sat on the ADB-pending path,
-    // so a fastboot text command stayed "received" for every later service
-    // pass and was re-dispatched over and over. The client read a stale
-    // reply (a `getvar` FAIL arrived for a later `oem log`) and every
-    // variable looked unknown. `cmd` is a slice over the session buffer and the next
-    // RX rewrites that buffer, so zeroing the length now cannot cut this
-    // pass short; the host also waits for the reply before sending again,
-    // so no partial transfer can be dropped here.
-    unsafe {
-        fb::clear_cmd();
-    }
-    unsafe {
-        DBG_FB_DISPATCH = DBG_FB_DISPATCH.wrapping_add(1);
-        DBG_CMD_HEAD = 0;
-        for &b in cmd.iter().take(8) {
-            DBG_CMD_HEAD = (DBG_CMD_HEAD << 8) | b as u64;
-        }
-    }
-    // v307: a dispatched bulk command is a live conversation. The v306 quiet
-    // detector must stand down from here on.
-    EP1_CONVERSATIONS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    log("fb: cmd len=", len as u64);
-    log("fb: cmd8=", unsafe {
-        core::ptr::addr_of!(DBG_CMD_HEAD).read()
-    });
-
-    // The whole `oem log` family streams the ANE's durable text block, whose
-    // addresses are ANE-only (blackbox::TEXT_BLOCK_*). Builds for another
-    // platform compile this branch out and fall through to the unknown-
-    // command reply below.
-    #[cfg(fullerene_aarch64_ane)]
-    if cmd == b"oem log"
-        || cmd == b"oem log full"
-        || cmd == b"oem log raw"
-        || cmd.starts_with(b"oem log main")
-    {
-        // The durable log as INFO lines, one per service pass. Plain
-        // `oem log` streams the last stretch of the fixed copy; `oem log
-        // full` the whole fixed copy (7 KiB - the boot's first ~200 lines
-        // fill it on this platform). `oem log main [hexoff]` streams the
-        // main text block (cap 0xE000) where the later sections (usb /
-        // sd / emmc) actually live. `oem log raw` streams the WHOLE
-        // 0xE000 ring, both sides of `raw` - after the ring wraps, the
-        // pre-wrap content lives in [raw..0xE000) and the plain `main`
-        // stream cannot reach it.
-        let mut main = false;
-        let mut written = crate::blackbox::fixed_log_len();
-        let mut start = 0usize;
-        if cmd.starts_with(b"oem log main") {
-            main = true;
-            // v331: the same computation main_log_len performed (the
-            // durable main block's used length).
-            let raw =
-                unsafe { ptr::read_volatile((crate::blackbox::TEXT_BLOCK_BASE + 4) as *const u32) }
-                    as usize;
-            written = if raw < crate::blackbox::TEXT_BLOCK_CAP as usize {
-                raw
-            } else {
-                0
-            };
-            let rest = &cmd[b"oem log main".len()..];
-            let off = parse_hex(rest.strip_prefix(b" ").unwrap_or(rest));
-            start = off.min(written);
-        } else if cmd == b"oem log raw" {
-            main = true;
-            written = crate::blackbox::TEXT_BLOCK_CAP as usize;
-            start = 0;
-        } else if cmd == b"oem log" {
-            // Back up ~12 lines from the end of this boot's content: the
-            // host reads at its own pace, so the default dump is kept short
-            // and `oem log full` exists for everything.
-            let mut pos = written;
-            let mut seen = 0u32;
-            let base =
-                (crate::blackbox::TEXT_BLOCK_BASE + crate::blackbox::FIXED_LOG_OFF) as *const u8;
-            while pos > 0 && seen < 12 {
-                pos -= 1;
-                let b = unsafe { ptr::read_volatile(base.add(pos)) };
-                if b == 0 || b == b'\n' {
-                    seen += 1;
-                }
-            }
-            start = pos;
-        }
-        unsafe {
-            core::ptr::addr_of_mut!(LOG_ACTIVE).write(true);
-            core::ptr::addr_of_mut!(LOG_CURSOR).write(start);
-            core::ptr::addr_of_mut!(LOG_LINES).write(0);
-            core::ptr::addr_of_mut!(LOG_END).write(written);
-            core::ptr::addr_of_mut!(LOG_MAIN).write(main);
-            fb::clear_cmd();
-        }
-        return;
-    }
-    if cmd == b"reboot"
-        || cmd == b"reboot-bootloader"
-        || cmd == b"reboot-fastboot"
-        || cmd == b"reboot-recovery"
-    {
-        // Reply first, then hand the loader its boot mode and reset: a
-        // bootloader reboot lands in the loader's fastboot with no key
-        // combo (the loader reads the PMIC reason register at its start).
-        ep1_send(b"OKAY");
-        fb_schedule_reboot(cmd, log);
-        return;
-    }
-
-    if let Some(rest) = cmd.strip_prefix(b"download:") {
-        let size = parse_hex(rest) as usize;
-        if size == 0 || size > fb::DOWNLOAD_MAX {
-            ep1_send(b"FAILbad download size");
-        } else {
-            unsafe {
-                fb::dl_begin(size as usize);
-            }
-            // The fastboot protocol wants "DATA" + the size as eight
-            // uppercase hex digits, then the raw payload follows.
-            let mut reply = [b'0'; 12];
-            reply[..4].copy_from_slice(b"DATA");
-            for i in 0..8 {
-                let nib = ((size >> (28 - 4 * i)) & 0xF) as u8;
-                reply[4 + i] = if nib < 10 {
-                    b'0' + nib
-                } else {
-                    b'A' + nib - 10
-                };
-            }
-            ep1_send(&reply);
-            log("fb: dl_arm=", size as u64);
-        }
-        return;
-    }
-
-    if let Some(part) = cmd.strip_prefix(b"flash:") {
-        let dl_len = fb::dl_len();
-        if dl_len == 0 || fb::dl_state() != 0 {
-            ep1_send(b"FAILno download in progress");
-        } else {
-            let mut nm = 0u64;
-            for &b in part.iter().take(8) {
-                nm = (nm << 8) | b as u64;
-            }
-            log("fb: flash_name=", nm);
-            match super::ane_emmc::find_partition(part, log) {
-                None => ep1_send(b"FAILpartition not found"),
-                Some((start, _last)) => {
-                    log("fb: flash_lba=", start as u64);
-                    let data = fb::dl_data();
-                    let (ok_s, bad_s) = super::ane_emmc::write_sectors(start, data, log);
-                    log("fb: flash_ok=", ok_s);
-                    log("fb: flash_bad=", bad_s);
-                    if bad_s == 0 {
-                        ep1_send(b"OKAY");
-                    } else {
-                        // v336j: carry the counts and the first failed
-                        // chunk's status words to the host - the panel and
-                        // the boot log block are both out of reach here.
-                        let mut m = [0u8; 48];
-                        m[..7].copy_from_slice(b"FAILwr ");
-                        let mut o = 7usize;
-                        let mut t = [0u8; 32];
-                        for v in [
-                            ok_s,
-                            bad_s,
-                            super::ane_emmc::LAST_WR.load(core::sync::atomic::Ordering::Relaxed)
-                                as u64,
-                        ] {
-                            let k = fmt_okay_hex(v, &mut t);
-                            let n = k - 6;
-                            m[o..o + n].copy_from_slice(&t[6..k]);
-                            o += n;
-                            m[o] = b',';
-                            o += 1;
-                        }
-                        ep1_send(&m[..o - 1]);
-                    }
-                }
-            }
-        }
-        return;
-    }
-
-    #[cfg(fullerene_aarch64_ane)]
-    if cmd == b"oem coldreboot" {
-        // The software cold reboot: HRST_REG0 = AP_S_COLDBOOT (0x00) -
-        // the value the bootloader sees on a true fresh-from-off
-        // power-on (downstream hi6250-reboot.c, verified on the Kirin
-        // 659 family) - then the proven LPM3 NMI reset. The BL's BFM
-        // reads 0x00 as a clean power-on: no failure-count escalation,
-        // no eRecovery routing, and the boot-fail chain-of-custody
-        // restarts. The USB-PHY-warm-state question this targets: if
-        // the enumeration failures track the reset reason rather than
-        // the physical rails, this lane recovers the link without the
-        // physical power hold.
-        log("fb: cold_req=", 1);
-        ep1_send(b"OKAY");
-        unsafe {
-            ptr::write_volatile(PMIC_REASON_ADDR as *mut u8, 0x00);
-        }
-        let back = unsafe { ptr::read_volatile(PMIC_REASON_ADDR as *const u8) };
-        log("fb: cold_hrst=", back as u64);
-        wdog_drain_and_reset();
-    }
-
-    #[cfg(fullerene_aarch64_ane)]
-    if cmd == b"oem crash" {
-        // Deliberate panic for the BFM/escalation test: exercises the v63
-        // panic -> PMIC reset -> loader path on demand. The bootup-keypoint
-        // write has already stamped this boot, so a crash here must NOT
-        // compound into the loader's failure count.
-        log("fb: crash_req=", 1);
-        panic!("oem crash: deliberate");
-    }
-
-    #[cfg(fullerene_aarch64_ane)]
-    if let Some(args) = cmd.strip_prefix(b"oem scan ") {
-        // `oem scan <lba-hex> <count-hex>`: compact non-zero-word scan.
-        let mut lba = 0u32;
-        let mut count = 0u32;
-        let mut it = args.split(|&b| b == b' ');
-        if let Some(a) = it.next() {
-            lba = parse_hex(a) as u32;
-        }
-        if let Some(b) = it.next() {
-            count = parse_hex(b) as u32;
-        }
-        if count == 0 || count > 256 {
-            ep1_send(b"FAILbad range");
-        } else {
-            log("fb: scan_req=", ((lba as u64) << 32) | count as u64);
-            super::ane_emmc::scan_sectors(lba, count, log);
-            ep1_send(b"OKAYscan");
-        }
-        return;
-    }
-
-    #[cfg(fullerene_aarch64_ane)]
-    if cmd.starts_with(b"oem ringsave") {
-        // On-demand full-ring persistence from the command context (see
-        // ane_emmc::persist_all for why it must not run from the IRQ).
-        let (ok, bad) = super::ane_emmc::persist_all(log);
-        log("em: rs_ok=", ok);
-        log("em: rs_bad=", bad);
-        ep1_send(b"OKAYsaved");
-        return;
-    }
-
-    #[cfg(fullerene_aarch64_ane)]
-    if let Some(args) = cmd.strip_prefix(b"oem xfer ") {
-        // `oem xfer r <addr-hex> <len-hex>`    - raw RAM bytes
-        // `oem xfer m <lba-hex> <sectors-hex>` - raw eMMC sectors
-        // Reply `OKAY<16-hex-byte-count>` then stream the payload as raw
-        // bulk packets. The host tool reads them directly, which drains tens
-        // of KiB per second instead of one INFO line per service pass.
-        let mut kind = 0u8;
-        let mut arg = 0u64;
-        let mut len = 0u64;
-        let mut it = args.split(|&b| b == b' ');
-        if let Some(k) = it.next() {
-            kind = k.first().copied().unwrap_or(0);
-            if let Some(a) = it.next() {
-                arg = parse_hex(a) as u64;
-            }
-            if let Some(l) = it.next() {
-                len = parse_hex(l) as u64;
-            }
-        }
-        let total: u64 = if kind == b'r' as u8 { len } else { len * 512 };
-        if total == 0 || total > 0x40_0000 || (kind != b'r' as u8 && kind != b'm' as u8) {
-            ep1_send(b"FAILbad xfer");
-        } else {
-            let mut hdr = [0u8; 20];
-            hdr[..4].copy_from_slice(b"OKAY");
-            let hexd = b"0123456789abcdef";
-            let mut v = total;
-            for i in (4..20).rev() {
-                hdr[i] = hexd[(v & 0xf) as usize];
-                v >>= 4;
-            }
-            ep1_send(&hdr);
-            if kind == b'r' as u8 {
-                // v220: vendor-pattern pump stream. Arm bounded windows and
-                // feed <=512 B chunks from service() (a >512 B request into
-                // the non-periodic FIFO is the documented wedge). The pump
-                // feeds the first chunks immediately; the timer-IRQ passes
-                // carry the rest while the host reads.
-                unsafe {
-                    core::ptr::addr_of_mut!(XFER_FEED).write(arg as usize);
-                    core::ptr::addr_of_mut!(XFER_END).write((arg + total) as usize);
-                    core::ptr::addr_of_mut!(XFER_WIN_END).write(arg as usize);
-                    core::ptr::addr_of_mut!(XFER_ON).write(true);
-                }
-                xfer_pump();
-            } else {
-                let mut remain = total;
-                let buf = unsafe { &mut *core::ptr::addr_of_mut!(ADB_LOG_BUF) };
-                while remain > 0 {
-                    let chunk = core::cmp::min(remain, 512) as usize;
-                    let lba = arg + (total - remain) / 512;
-                    if !super::ane_emmc::read_sectors_bytes(lba as u32, 1, &mut buf[..], log) {
-                        break;
-                    }
-                    ep1_send(&buf[..chunk]);
-                    // Keep the loader watchdog fed while the stream holds the CPU.
-                    super::ane::watchdog_kick();
-                    // Wait for the FIFO to drain (the host consumed this chunk's
-                    // transfer) before arming the next one: arming over a pending
-                    // transfer wedges the endpoint (a 112-chunk burst died with
-                    // host Errno 5). Bounded, so a stalled host cannot hang the
-                    // handler forever.
-                    let depth_words = ((rd(DPTXFSIZ1) >> 16) & 0xffff) as usize;
-                    let mut spins = 0u32;
-                    while (((rd(DTXFSTS1) & 0xffff) as usize) < depth_words) && spins < 0x20_0000 {
-                        spins += 1;
-                    }
-                    remain -= chunk as u64;
-                }
-            }
-        }
-        return;
-    }
-
-    #[cfg(fullerene_aarch64_ane)]
-    if let Some(args) = cmd.strip_prefix(b"oem dump ") {
-        // `oem dump <lba-hex> <count-hex>`: read sectors and log them as
-        // "em: dd=" hex lines (2 words per line). BFM forensics: misc @
-        // 0x7C000, bootfail_info @ 0x1E8000, oeminfo @ 0x8000.
-        let mut lba: u32 = 0;
-        let mut count: u32 = 0;
-        let mut it = args.split(|&b| b == b' ');
-        if let Some(a) = it.next() {
-            lba = parse_hex(a) as u32;
-        }
-        if let Some(b) = it.next() {
-            count = parse_hex(b) as u32;
-        }
-        if count == 0 || count > 16 {
-            ep1_send(b"FAILbad range");
-        } else {
-            log("fb: dump_req=", ((lba as u64) << 32) | count as u64);
-            super::ane_emmc::dump_sectors(lba, count, log);
-            ep1_send(b"OKAYdump");
-        }
-        return;
-    }
-
-    #[cfg(fullerene_aarch64_ane)]
-    if cmd == b"oem udmount" {
-        // On-demand userdata mount: crash-prone on the real 20 GB F2FS
-        // (the v102 boot-time attempt crash-looped), so it never runs in
-        // the boot path - a crash here self-limits, the next boot starts
-        // clean and does not remount.
-        log("fb: udm1=", crate::timer::uptime_us());
-        super::ane_emmc::emmc_userdata_mount(log);
-        log("fb: udm2=", crate::timer::uptime_us());
-        ep1_send(b"OKAYudm");
-        return;
-    }
-
-    if cmd == b"oem touch" {
-        // One plain eMMC sector read from the USB command context (LBA 0):
-        // isolates the post-boot read path from the GPT logic.
-        log("fb: ot1=", crate::timer::uptime_us());
-        let mut t = [0u32; 128];
-        let (ok, sts, err) = super::ane_emmc::sdhci_read_probe(0, &mut t, log);
-        log("fb: ot2=", crate::timer::uptime_us());
-        log("fb: ot_ok=", ok as u64);
-        log("fb: ot_sts=", sts as u64);
-        log("fb: ot_err=", err as u64);
-        log("fb: ot_w0=", t[0] as u64);
-        ep1_send(b"OKAYtouch");
-        return;
-    }
-
-    if cmd == b"oem ps1" {
-        log("fb: ps1=", crate::timer::uptime_us());
-        ep1_send(b"OKAYps1");
-        return;
-    }
-
-    if cmd == b"oem ps2" {
-        log("fb: ps2a=", crate::timer::uptime_us());
-        let found = super::ane_emmc::find_partition(b"kernel", log);
-        log("fb: ps2b=", crate::timer::uptime_us());
-        let mut gv = [0u8; 32];
-        let n = fmt_okay_hex(found.map(|f| f.0 as u64).unwrap_or(0), &mut gv);
-        ep1_send(&gv[..n]);
-        return;
-    }
-
-    if cmd == b"oem ps3" {
-        log("fb: ps3a=", crate::timer::uptime_us());
-        let mut gv = [0u8; 32];
-        let n = fmt_okay_hex(0xDEAD_BEEF, &mut gv);
-        log("fb: ps3b=", crate::timer::uptime_us());
-        ep1_send(&gv[..n]);
-        return;
-    }
-
-    if cmd == b"oem ps4" {
-        // The full branch logic, but the read is one sector only.
-        log("fb: ps4a=", crate::timer::uptime_us());
-        let mut t = [0u32; 128];
-        let (ok, _sts, _err) = super::ane_emmc::sdhci_read_probe(0, &mut t, log);
-        log("fb: ps4b=", crate::timer::uptime_us());
-        let mut gv = [0u8; 32];
-        let n = fmt_okay_hex(ok as u64, &mut gv);
-        ep1_send(&gv[..n]);
-        return;
-    }
-
-    if let Some(part) = cmd.strip_prefix(b"erase:") {
-        let mut nm = 0u64;
-        for &b in part.iter().take(8) {
-            nm = (nm << 8) | b as u64;
-        }
-        log("fb: erase_name=", nm);
-        match super::ane_emmc::find_partition(part, log) {
-            None => ep1_send(b"FAILpartition not found"),
-            Some((first, last)) => {
-                log("fb: erase_fr=", ((first as u64) << 32) | last as u64);
-                let (ok, err) = super::ane_emmc::erase_sectors(first, last, log);
-                log("fb: erase_ok=", ok as u64);
-                log("fb: erase_err=", err as u64);
-                if ok {
-                    ep1_send(b"OKAY");
-                } else {
-                    ep1_send(b"FAILerase error");
-                }
-            }
-        }
-        return;
-    }
-
-    let mut reply: &[u8] = b"FAILunknown command";
-    if let Some(name) = cmd.strip_prefix(b"getvar:") {
-        // v331 golf: the variable replies dispatch through the shared
-        // fastboot_dispatch table (the identity strings + the computed
-        // partition-size lookup registered below). The computed path
-        // sends directly and returns.
-        if name == b"max-download-size" {
-            reply = b"OKAYC00000";
-        } else {
-            fb_getvar_io(name);
-            return;
-        }
-    }
-    ep1_send(reply);
-}
 
 /// Advance the paced `oem log` stream by one line (called every service
 /// pass, so the host's reads never coalesce into unusable chunks).
@@ -2205,7 +1626,7 @@ fn fb_log_step() {
 /// v331 golf: the shared reset chain - the watchdog drain, the LPM3 NMI
 /// pulse, and the SP805 fallback. Both reset paths ran these 40 lines
 /// verbatim.
-fn wdog_drain_and_reset() -> ! {
+pub(crate) fn wdog_drain_and_reset() -> ! {
     // Bounded settle (counts only decreasing stretches of WDOGVALUE so
     // the keep-alive cannot fake elapsed time).
     let mut prev = wdog_r(0x004);
@@ -2252,7 +1673,7 @@ pub fn panic_reset_to_bootloader() -> ! {
 
 /// Hand the loader its next boot mode, give the OKAY time to drain, then
 /// reset the SoC through the SP805 the loader already shares with us.
-fn fb_schedule_reboot(cmd: &[u8], log: fn(&str, u64)) {
+pub(crate) fn fb_schedule_reboot(cmd: &[u8], log: fn(&str, u64)) {
     // BOOTLOADER=0x01 / RECOVERY=0x02 / COLDBOOT=0x10 - the same 8-bit codes
     // `reboot_reason_map` in the stock tree maps restart strings to.
     let reason: u8 = if cmd == b"reboot-recovery" {
@@ -2363,7 +1784,7 @@ fn service_ep1(log: fn(&str, u64)) {
     if doep & EPINT_XFERCOMPL != 0 {
         wr(DOEPINT1, EPINT_XFERCOMPL);
         // The OUT transfer completed: the fastboot command's end.
-        fb_poll(log);
+        crate::fastboot_dispatch::poll(log);
         // Ready for the next command chunk.
         wr(DOEPTSIZ1, (1 << 19) | BULK_MPS);
         wr(

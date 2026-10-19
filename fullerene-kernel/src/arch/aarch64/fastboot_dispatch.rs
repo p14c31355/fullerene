@@ -171,3 +171,593 @@ pub const fn config_descriptor(protocol: u8) -> [u8; 32] {
     c[31] = 0;
     c
 }
+
+use crate::adb_dispatch::{anchor_adb, anchor_verb, ADB_LOG_BUF};
+use crate::platform::ane_usb_dev::{
+    adb_dispatch_io, fb_getvar_io, fb_schedule_reboot, rd, xfer_pump, ADB_PENDING, ADB_PENDING_CAP,
+    ADB_PENDING_LEN, ADB_PENDING_READY, DPTXFSIZ1, DTXFSTS1, EP1_CONVERSATIONS, LOG_END,
+    LOG_LINES, LOG_MAIN, XFER_END, XFER_FEED, XFER_ON, XFER_WIN_END,
+};
+use crate::platform::fastboot_session as fb;
+use core::ptr;
+
+/// The fastboot command interpreter: one call per completed EP1 OUT
+/// transfer. Every reply is derived from the command just read, so a
+/// retry is always safe.
+pub fn poll(log: fn(&str, u64)) {
+    // A download in flight owns EP1 OUT: skip command parsing until its
+    // payload is complete, then answer it once and resume.
+    match fb::dl_state() {
+        1 => return,
+        2 => {
+            let len = fb::dl_len();
+            fb::dl_reset();
+            let (w0, wl) = unsafe {
+                let base = fb::dl_data().as_ptr();
+                let mut first = [0u8; 4];
+                let mut last = [0u8; 4];
+                for i in 0..4 {
+                    if i < len {
+                        first[i] = base.add(i).read();
+                    }
+                    if len >= 4 {
+                        last[i] = base.add(len - 4 + i).read();
+                    }
+                }
+                (u32::from_le_bytes(first), u32::from_le_bytes(last))
+            };
+            log("fb: dl_len=", len as u64);
+            log("fb: dl_w0=", w0 as u64);
+            crate::platform::ane_usb_dev::reply_ok(log, "fb: dl_wl=", wl as u64);
+            return;
+        }
+        _ => {}
+    }
+    let len = fb::cmd_len();
+    if len == 0 {
+        return;
+    }
+    // A command arriving while `oem log` streams means the client moved on
+    // (or a new session started); stop the stream so it cannot flood an
+    // endpoint nobody reads. The oem-log handler re-activates it below.
+    unsafe {
+        core::ptr::addr_of_mut!(crate::platform::ane_usb_dev::LOG_ACTIVE).write(false);
+    }
+    // ADB wire path: a host `adb` speaks the binary 24-byte framing whose
+    // header contains NUL bytes, so this check runs on the RAW transfer
+    // length before the fastboot NUL-trim below can cut it short. Text
+    // commands fail the frame magic instantly and fall through untouched.
+    if len >= crate::adb_wire::HEADER_BYTES {
+        let raw = fb::cmd();
+        // The RX FIFO can carry loader-session leftovers in front of our
+        // frame (the same glued-prefix defect the text path anchors around).
+        // Decoding the raw buffer made every CNXN fail the magic check and
+        // slide into the fastboot fallback. Anchor on the ADB header magic
+        // first; a false anchor cannot pass the trailing magic check.
+        let anchored = anchor_adb(raw);
+        match crate::adb_wire::decode(anchored) {
+            Ok(pkt) => {
+                if anchored.len() != raw.len() {
+                    crate::platform::ane_fb::event(b"DEC ANCH");
+                }
+                crate::platform::ane_fb::event(b"DEC OK");
+                // v325: adb_dispatch is the pump's deep path (the CNXN ring
+                // copy + chunked send) - running it from the timer IRQ
+                // collided with the boot thread's exception frame (the
+                // v320-v323 corrupted ELR). From IRQ context, copy the raw
+                // anchored frame into ADB_PENDING and let the next NON-IRQ
+                // service pass (wait loop / SVC boundary) dispatch it.
+                if crate::blackbox::in_irq_context() {
+                    // v326: copy the ANCHORED frame (the stale prefix must
+                    // not ride along - the deferred decode would fail its
+                    // magic check and drop the reply).
+                    let skip = anchored.as_ptr() as usize - raw.as_ptr() as usize;
+                    unsafe {
+                        let src = fb::cmd().as_ptr().add(skip);
+                        let dst = core::ptr::addr_of_mut!(ADB_PENDING) as *mut u8;
+                        let n = anchored.len().min(ADB_PENDING_CAP);
+                        core::ptr::copy_nonoverlapping(src, dst, n);
+                        core::ptr::addr_of_mut!(ADB_PENDING_LEN).write(n);
+                        core::ptr::addr_of_mut!(ADB_PENDING_READY).write(true);
+                    }
+                    crate::platform::ane_fb::event(b"ADB DEFER");
+                } else {
+                    adb_dispatch_io(&pkt);
+                }
+                // v307: a decoded ADB frame is a live conversation - the
+                // v306 quiet detector must stand down from here on.
+                EP1_CONVERSATIONS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                return;
+            }
+            Err(_) => {
+                // Hex clue for the photo ledger: raw length + the first four
+                // bytes (an intact header at offset 0 reads "434E584E").
+                let mut ev = [b' '; 18];
+                ev[0] = b'N';
+                ev[1] = b'G';
+                ev[2] = b' ';
+                let hexd = |v: u8| -> u8 { if v < 10 { b'0' + v } else { b'A' + v - 10 } };
+                ev[3] = hexd(((len >> 4) & 0xf) as u8);
+                ev[4] = hexd((len & 0xf) as u8);
+                ev[5] = b' ';
+                let mut i = 0;
+                while i < 4 {
+                    let b = if i < len { raw[i] } else { 0 };
+                    ev[6 + i * 2] = hexd(b >> 4);
+                    ev[7 + i * 2] = hexd(b & 0xf);
+                    i += 1;
+                }
+                crate::platform::ane_fb::event(&ev);
+            }
+        }
+    }
+    // The command ends at the transfer boundary; when the wire carried a
+    // NUL too, everything past the first NUL is padding/junk and ignored.
+    let mut end = len;
+    unsafe {
+        let buf = fb::cmd().as_ptr();
+        for i in 0..len {
+            if buf.add(i).read() == 0 {
+                end = i;
+                break;
+            }
+        }
+    }
+    if end == 0 {
+        return; // nothing but padding
+    }
+    let cmd = &fb::cmd()[..end];
+    // The core can carry one stale transfer over from the loader's session;
+    // anchor past any glued prefix so the dispatch still matches.
+    let cmd = anchor_verb(cmd);
+    // v336c: the length is consumed HERE - for real this time. v331's
+    // comment claimed it, but the only write sat on the ADB-pending path,
+    // so a fastboot text command stayed "received" for every later service
+    // pass and was re-dispatched over and over. The client read a stale
+    // reply (a `getvar` FAIL arrived for a later `oem log`) and every
+    // variable looked unknown. `cmd` is a slice over the session buffer and the next
+    // RX rewrites that buffer, so zeroing the length now cannot cut this
+    // pass short; the host also waits for the reply before sending again,
+    // so no partial transfer can be dropped here.
+    unsafe {
+        fb::clear_cmd();
+    }
+    unsafe {
+        crate::platform::ane_usb_dev::DBG_FB_DISPATCH = crate::platform::ane_usb_dev::DBG_FB_DISPATCH.wrapping_add(1);
+        crate::platform::ane_usb_dev::DBG_CMD_HEAD = 0;
+        for &b in cmd.iter().take(8) {
+            crate::platform::ane_usb_dev::DBG_CMD_HEAD = (crate::platform::ane_usb_dev::DBG_CMD_HEAD << 8) | b as u64;
+        }
+    }
+    // v307: a dispatched bulk command is a live conversation. The v306 quiet
+    // detector must stand down from here on.
+    EP1_CONVERSATIONS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    log("fb: cmd len=", len as u64);
+    log("fb: cmd8=", unsafe {
+        core::ptr::addr_of!(crate::platform::ane_usb_dev::DBG_CMD_HEAD).read()
+    });
+
+    // The whole `oem log` family streams the ANE's durable text block, whose
+    // addresses are ANE-only (blackbox::TEXT_BLOCK_*). Builds for another
+    // platform compile this branch out and fall through to the unknown-
+    // command reply below.
+    #[cfg(fullerene_aarch64_ane)]
+    if cmd == b"oem log"
+        || cmd == b"oem log full"
+        || cmd == b"oem log raw"
+        || cmd.starts_with(b"oem log main")
+    {
+        // The durable log as INFO lines, one per service pass. Plain
+        // `oem log` streams the last stretch of the fixed copy; `oem log
+        // full` the whole fixed copy (7 KiB - the boot's first ~200 lines
+        // fill it on this platform). `oem log main [hexoff]` streams the
+        // main text block (cap 0xE000) where the later sections (usb /
+        // sd / emmc) actually live. `oem log raw` streams the WHOLE
+        // 0xE000 ring, both sides of `raw` - after the ring wraps, the
+        // pre-wrap content lives in [raw..0xE000) and the plain `main`
+        // stream cannot reach it.
+        let mut main = false;
+        let mut written = crate::blackbox::fixed_log_len();
+        let mut start = 0usize;
+        if cmd.starts_with(b"oem log main") {
+            main = true;
+            // v331: the same computation main_log_len performed (the
+            // durable main block's used length).
+            let raw =
+                unsafe { ptr::read_volatile((crate::blackbox::TEXT_BLOCK_BASE + 4) as *const u32) }
+                    as usize;
+            written = if raw < crate::blackbox::TEXT_BLOCK_CAP as usize {
+                raw
+            } else {
+                0
+            };
+            let rest = &cmd[b"oem log main".len()..];
+            let off = crate::adb_dispatch::parse_hex(rest.strip_prefix(b" ").unwrap_or(rest));
+            start = off.min(written);
+        } else if cmd == b"oem log raw" {
+            main = true;
+            written = crate::blackbox::TEXT_BLOCK_CAP as usize;
+            start = 0;
+        } else if cmd == b"oem log" {
+            // Back up ~12 lines from the end of this boot's content: the
+            // host reads at its own pace, so the default dump is kept short
+            // and `oem log full` exists for everything.
+            let mut pos = written;
+            let mut seen = 0u32;
+            let base =
+                (crate::blackbox::TEXT_BLOCK_BASE + crate::blackbox::FIXED_LOG_OFF) as *const u8;
+            while pos > 0 && seen < 12 {
+                pos -= 1;
+                let b = unsafe { ptr::read_volatile(base.add(pos)) };
+                if b == 0 || b == b'\n' {
+                    seen += 1;
+                }
+            }
+            start = pos;
+        }
+        unsafe {
+            core::ptr::addr_of_mut!(crate::platform::ane_usb_dev::LOG_ACTIVE).write(true);
+            core::ptr::addr_of_mut!(crate::platform::ane_usb_dev::LOG_CURSOR).write(start);
+            core::ptr::addr_of_mut!(LOG_LINES).write(0);
+            core::ptr::addr_of_mut!(LOG_END).write(written);
+            core::ptr::addr_of_mut!(LOG_MAIN).write(main);
+            fb::clear_cmd();
+        }
+        return;
+    }
+    if cmd == b"reboot"
+        || cmd == b"reboot-bootloader"
+        || cmd == b"reboot-fastboot"
+        || cmd == b"reboot-recovery"
+    {
+        // Reply first, then hand the loader its boot mode and reset: a
+        // bootloader reboot lands in the loader's fastboot with no key
+        // combo (the loader reads the PMIC reason register at its start).
+        crate::platform::ane_usb_dev::ep1_send(b"OKAY");
+        fb_schedule_reboot(cmd, log);
+        return;
+    }
+
+    if let Some(rest) = cmd.strip_prefix(b"download:") {
+        let size = crate::adb_dispatch::parse_hex(rest) as usize;
+        if size == 0 || size > fb::DOWNLOAD_MAX {
+            crate::platform::ane_usb_dev::ep1_send(b"FAILbad download size");
+        } else {
+            unsafe {
+                fb::dl_begin(size as usize);
+            }
+            // The fastboot protocol wants "DATA" + the size as eight
+            // uppercase hex digits, then the raw payload follows.
+            let mut reply = [b'0'; 12];
+            reply[..4].copy_from_slice(b"DATA");
+            for i in 0..8 {
+                let nib = ((size >> (28 - 4 * i)) & 0xF) as u8;
+                reply[4 + i] = if nib < 10 {
+                    b'0' + nib
+                } else {
+                    b'A' + nib - 10
+                };
+            }
+            crate::platform::ane_usb_dev::ep1_send(&reply);
+            log("fb: dl_arm=", size as u64);
+        }
+        return;
+    }
+
+    if let Some(part) = cmd.strip_prefix(b"flash:") {
+        let dl_len = fb::dl_len();
+        if dl_len == 0 || fb::dl_state() != 0 {
+            crate::platform::ane_usb_dev::ep1_send(b"FAILno download in progress");
+        } else {
+            let mut nm = 0u64;
+            for &b in part.iter().take(8) {
+                nm = (nm << 8) | b as u64;
+            }
+            log("fb: flash_name=", nm);
+            match crate::platform::ane_emmc::find_partition(part, log) {
+                None => crate::platform::ane_usb_dev::ep1_send(b"FAILpartition not found"),
+                Some((start, _last)) => {
+                    log("fb: flash_lba=", start as u64);
+                    let data = fb::dl_data();
+                    let (ok_s, bad_s) = crate::platform::ane_emmc::write_sectors(start, data, log);
+                    log("fb: flash_ok=", ok_s);
+                    log("fb: flash_bad=", bad_s);
+                    if bad_s == 0 {
+                        crate::platform::ane_usb_dev::ep1_send(b"OKAY");
+                    } else {
+                        // v336j: carry the counts and the first failed
+                        // chunk's status words to the host - the panel and
+                        // the boot log block are both out of reach here.
+                        let mut m = [0u8; 48];
+                        m[..7].copy_from_slice(b"FAILwr ");
+                        let mut o = 7usize;
+                        let mut t = [0u8; 32];
+                        for v in [
+                            ok_s,
+                            bad_s,
+                            crate::platform::ane_emmc::LAST_WR.load(core::sync::atomic::Ordering::Relaxed)
+                                as u64,
+                        ] {
+                            let k = crate::adb_dispatch::fmt_okay_hex(v, &mut t);
+                            let n = k - 6;
+                            m[o..o + n].copy_from_slice(&t[6..k]);
+                            o += n;
+                            m[o] = b',';
+                            o += 1;
+                        }
+                        crate::platform::ane_usb_dev::ep1_send(&m[..o - 1]);
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    #[cfg(fullerene_aarch64_ane)]
+    if cmd == b"oem coldreboot" {
+        // The software cold reboot: HRST_REG0 = AP_S_COLDBOOT (0x00) -
+        // the value the bootloader sees on a true fresh-from-off
+        // power-on (downstream hi6250-reboot.c, verified on the Kirin
+        // 659 family) - then the proven LPM3 NMI reset. The BL's BFM
+        // reads 0x00 as a clean power-on: no failure-count escalation,
+        // no eRecovery routing, and the boot-fail chain-of-custody
+        // restarts. The USB-PHY-warm-state question this targets: if
+        // the enumeration failures track the reset reason rather than
+        // the physical rails, this lane recovers the link without the
+        // physical power hold.
+        log("fb: cold_req=", 1);
+        crate::platform::ane_usb_dev::ep1_send(b"OKAY");
+        unsafe {
+            ptr::write_volatile(crate::platform::ane_usb_dev::PMIC_REASON_ADDR as *mut u8, 0x00);
+        }
+        let back = unsafe { ptr::read_volatile(crate::platform::ane_usb_dev::PMIC_REASON_ADDR as *const u8) };
+        log("fb: cold_hrst=", back as u64);
+        crate::platform::ane_usb_dev::wdog_drain_and_reset();
+    }
+
+    #[cfg(fullerene_aarch64_ane)]
+    if cmd == b"oem crash" {
+        // Deliberate panic for the BFM/escalation test: exercises the v63
+        // panic -> PMIC reset -> loader path on demand. The bootup-keypoint
+        // write has already stamped this boot, so a crash here must NOT
+        // compound into the loader's failure count.
+        log("fb: crash_req=", 1);
+        panic!("oem crash: deliberate");
+    }
+
+    #[cfg(fullerene_aarch64_ane)]
+    if let Some(args) = cmd.strip_prefix(b"oem scan ") {
+        // `oem scan <lba-hex> <count-hex>`: compact non-zero-word scan.
+        let mut lba = 0u32;
+        let mut count = 0u32;
+        let mut it = args.split(|&b| b == b' ');
+        if let Some(a) = it.next() {
+            lba = crate::adb_dispatch::parse_hex(a) as u32;
+        }
+        if let Some(b) = it.next() {
+            count = crate::adb_dispatch::parse_hex(b) as u32;
+        }
+        if count == 0 || count > 256 {
+            crate::platform::ane_usb_dev::ep1_send(b"FAILbad range");
+        } else {
+            log("fb: scan_req=", ((lba as u64) << 32) | count as u64);
+            crate::platform::ane_emmc::scan_sectors(lba, count, log);
+            crate::platform::ane_usb_dev::ep1_send(b"OKAYscan");
+        }
+        return;
+    }
+
+    #[cfg(fullerene_aarch64_ane)]
+    if cmd.starts_with(b"oem ringsave") {
+        // On-demand full-ring persistence from the command context (see
+        // ane_emmc::persist_all for why it must not run from the IRQ).
+        let (ok, bad) = crate::platform::ane_emmc::persist_all(log);
+        log("em: rs_ok=", ok);
+        log("em: rs_bad=", bad);
+        crate::platform::ane_usb_dev::ep1_send(b"OKAYsaved");
+        return;
+    }
+
+    #[cfg(fullerene_aarch64_ane)]
+    if let Some(args) = cmd.strip_prefix(b"oem xfer ") {
+        // `oem xfer r <addr-hex> <len-hex>`    - raw RAM bytes
+        // `oem xfer m <lba-hex> <sectors-hex>` - raw eMMC sectors
+        // Reply `OKAY<16-hex-byte-count>` then stream the payload as raw
+        // bulk packets. The host tool reads them directly, which drains tens
+        // of KiB per second instead of one INFO line per service pass.
+        let mut kind = 0u8;
+        let mut arg = 0u64;
+        let mut len = 0u64;
+        let mut it = args.split(|&b| b == b' ');
+        if let Some(k) = it.next() {
+            kind = k.first().copied().unwrap_or(0);
+            if let Some(a) = it.next() {
+                arg = crate::adb_dispatch::parse_hex(a) as u64;
+            }
+            if let Some(l) = it.next() {
+                len = crate::adb_dispatch::parse_hex(l) as u64;
+            }
+        }
+        let total: u64 = if kind == b'r' as u8 { len } else { len * 512 };
+        if total == 0 || total > 0x40_0000 || (kind != b'r' as u8 && kind != b'm' as u8) {
+            crate::platform::ane_usb_dev::ep1_send(b"FAILbad xfer");
+        } else {
+            let mut hdr = [0u8; 20];
+            hdr[..4].copy_from_slice(b"OKAY");
+            let hexd = b"0123456789abcdef";
+            let mut v = total;
+            for i in (4..20).rev() {
+                hdr[i] = hexd[(v & 0xf) as usize];
+                v >>= 4;
+            }
+            crate::platform::ane_usb_dev::ep1_send(&hdr);
+            if kind == b'r' as u8 {
+                // v220: vendor-pattern pump stream. Arm bounded windows and
+                // feed <=512 B chunks from service() (a >512 B request into
+                // the non-periodic FIFO is the documented wedge). The pump
+                // feeds the first chunks immediately; the timer-IRQ passes
+                // carry the rest while the host reads.
+                unsafe {
+                    core::ptr::addr_of_mut!(XFER_FEED).write(arg as usize);
+                    core::ptr::addr_of_mut!(XFER_END).write((arg + total) as usize);
+                    core::ptr::addr_of_mut!(XFER_WIN_END).write(arg as usize);
+                    core::ptr::addr_of_mut!(XFER_ON).write(true);
+                }
+                xfer_pump();
+            } else {
+                let mut remain = total;
+                let buf = unsafe { &mut *core::ptr::addr_of_mut!(ADB_LOG_BUF) };
+                while remain > 0 {
+                    let chunk = core::cmp::min(remain, 512) as usize;
+                    let lba = arg + (total - remain) / 512;
+                    if !crate::platform::ane_emmc::read_sectors_bytes(lba as u32, 1, &mut buf[..], log) {
+                        break;
+                    }
+                    crate::platform::ane_usb_dev::ep1_send(&buf[..chunk]);
+                    // Keep the loader watchdog fed while the stream holds the CPU.
+                    crate::platform::ane::watchdog_kick();
+                    // Wait for the FIFO to drain (the host consumed this chunk's
+                    // transfer) before arming the next one: arming over a pending
+                    // transfer wedges the endpoint (a 112-chunk burst died with
+                    // host Errno 5). Bounded, so a stalled host cannot hang the
+                    // handler forever.
+                    let depth_words = ((rd(DPTXFSIZ1) >> 16) & 0xffff) as usize;
+                    let mut spins = 0u32;
+                    while (((rd(DTXFSTS1) & 0xffff) as usize) < depth_words) && spins < 0x20_0000 {
+                        spins += 1;
+                    }
+                    remain -= chunk as u64;
+                }
+            }
+        }
+        return;
+    }
+
+    #[cfg(fullerene_aarch64_ane)]
+    if let Some(args) = cmd.strip_prefix(b"oem dump ") {
+        // `oem dump <lba-hex> <count-hex>`: read sectors and log them as
+        // "em: dd=" hex lines (2 words per line). BFM forensics: misc @
+        // 0x7C000, bootfail_info @ 0x1E8000, oeminfo @ 0x8000.
+        let mut lba: u32 = 0;
+        let mut count: u32 = 0;
+        let mut it = args.split(|&b| b == b' ');
+        if let Some(a) = it.next() {
+            lba = crate::adb_dispatch::parse_hex(a) as u32;
+        }
+        if let Some(b) = it.next() {
+            count = crate::adb_dispatch::parse_hex(b) as u32;
+        }
+        if count == 0 || count > 16 {
+            crate::platform::ane_usb_dev::ep1_send(b"FAILbad range");
+        } else {
+            log("fb: dump_req=", ((lba as u64) << 32) | count as u64);
+            crate::platform::ane_emmc::dump_sectors(lba, count, log);
+            crate::platform::ane_usb_dev::ep1_send(b"OKAYdump");
+        }
+        return;
+    }
+
+    #[cfg(fullerene_aarch64_ane)]
+    if cmd == b"oem udmount" {
+        // On-demand userdata mount: crash-prone on the real 20 GB F2FS
+        // (the v102 boot-time attempt crash-looped), so it never runs in
+        // the boot path - a crash here self-limits, the next boot starts
+        // clean and does not remount.
+        log("fb: udm1=", crate::timer::uptime_us());
+        crate::platform::ane_emmc::emmc_userdata_mount(log);
+        log("fb: udm2=", crate::timer::uptime_us());
+        crate::platform::ane_usb_dev::ep1_send(b"OKAYudm");
+        return;
+    }
+
+    if cmd == b"oem touch" {
+        // One plain eMMC sector read from the USB command context (LBA 0):
+        // isolates the post-boot read path from the GPT logic.
+        log("fb: ot1=", crate::timer::uptime_us());
+        let mut t = [0u32; 128];
+        let (ok, sts, err) = crate::platform::ane_emmc::sdhci_read_probe(0, &mut t, log);
+        log("fb: ot2=", crate::timer::uptime_us());
+        log("fb: ot_ok=", ok as u64);
+        log("fb: ot_sts=", sts as u64);
+        log("fb: ot_err=", err as u64);
+        log("fb: ot_w0=", t[0] as u64);
+        crate::platform::ane_usb_dev::ep1_send(b"OKAYtouch");
+        return;
+    }
+
+    if cmd == b"oem ps1" {
+        log("fb: ps1=", crate::timer::uptime_us());
+        crate::platform::ane_usb_dev::ep1_send(b"OKAYps1");
+        return;
+    }
+
+    if cmd == b"oem ps2" {
+        log("fb: ps2a=", crate::timer::uptime_us());
+        let found = crate::platform::ane_emmc::find_partition(b"kernel", log);
+        log("fb: ps2b=", crate::timer::uptime_us());
+        let mut gv = [0u8; 32];
+        let n = crate::adb_dispatch::fmt_okay_hex(found.map(|f| f.0 as u64).unwrap_or(0), &mut gv);
+        crate::platform::ane_usb_dev::ep1_send(&gv[..n]);
+        return;
+    }
+
+    if cmd == b"oem ps3" {
+        log("fb: ps3a=", crate::timer::uptime_us());
+        let mut gv = [0u8; 32];
+        let n = crate::adb_dispatch::fmt_okay_hex(0xDEAD_BEEF, &mut gv);
+        log("fb: ps3b=", crate::timer::uptime_us());
+        crate::platform::ane_usb_dev::ep1_send(&gv[..n]);
+        return;
+    }
+
+    if cmd == b"oem ps4" {
+        // The full branch logic, but the read is one sector only.
+        log("fb: ps4a=", crate::timer::uptime_us());
+        let mut t = [0u32; 128];
+        let (ok, _sts, _err) = crate::platform::ane_emmc::sdhci_read_probe(0, &mut t, log);
+        log("fb: ps4b=", crate::timer::uptime_us());
+        let mut gv = [0u8; 32];
+        let n = crate::adb_dispatch::fmt_okay_hex(ok as u64, &mut gv);
+        crate::platform::ane_usb_dev::ep1_send(&gv[..n]);
+        return;
+    }
+
+    if let Some(part) = cmd.strip_prefix(b"erase:") {
+        let mut nm = 0u64;
+        for &b in part.iter().take(8) {
+            nm = (nm << 8) | b as u64;
+        }
+        log("fb: erase_name=", nm);
+        match crate::platform::ane_emmc::find_partition(part, log) {
+            None => crate::platform::ane_usb_dev::ep1_send(b"FAILpartition not found"),
+            Some((first, last)) => {
+                log("fb: erase_fr=", ((first as u64) << 32) | last as u64);
+                let (ok, err) = crate::platform::ane_emmc::erase_sectors(first, last, log);
+                log("fb: erase_ok=", ok as u64);
+                log("fb: erase_err=", err as u64);
+                if ok {
+                    crate::platform::ane_usb_dev::ep1_send(b"OKAY");
+                } else {
+                    crate::platform::ane_usb_dev::ep1_send(b"FAILerase error");
+                }
+            }
+        }
+        return;
+    }
+
+    let mut reply: &[u8] = b"FAILunknown command";
+    if let Some(name) = cmd.strip_prefix(b"getvar:") {
+        // v331 golf: the variable replies dispatch through the shared
+        // fastboot_dispatch table (the identity strings + the computed
+        // partition-size lookup registered below). The computed path
+        // sends directly and returns.
+        if name == b"max-download-size" {
+            reply = b"OKAYC00000";
+        } else {
+            fb_getvar_io(name);
+            return;
+        }
+    }
+    crate::platform::ane_usb_dev::ep1_send(reply);
+}
+
