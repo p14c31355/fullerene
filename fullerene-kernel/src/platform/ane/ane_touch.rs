@@ -17,6 +17,10 @@
 //! first milestone is a synchronous chip-ID read proving the bus.
 
 use super::ane;
+use crate::platform::common::designware_i2c::{
+    IC_CLR_TX_ABRT, IC_DATA_CMD, IC_DATA_CMD_READ, IC_DATA_CMD_RESTART, IC_DATA_CMD_STOP,
+    IC_STATUS, IC_TX_ABRT_SOURCE,
+};
 use crate::platform::common::mmio::{rd32, wr32};
 use core::sync::atomic::Ordering;
 
@@ -27,12 +31,8 @@ const IC_SS_SCL_LCNT: usize = 0x18;
 const IC_FS_SCL_HCNT: usize = 0x1c;
 const IC_FS_SCL_LCNT: usize = 0x20;
 const IC_ENABLE: usize = 0x6c;
-const IC_STATUS: usize = 0x70;
 const IC_TXFLR: usize = 0x74;
 const IC_RXFLR: usize = 0x78;
-const IC_DATA_CMD: usize = 0x10;
-const IC_CLR_TX_ABRT: usize = 0x54;
-const IC_TX_ABRT_SOURCE: usize = 0x80;
 
 const IC_CON_MASTER: u32 = 1 << 0;
 const IC_CON_SPEED_FAST: u32 = 2 << 1;
@@ -123,6 +123,13 @@ unsafe fn i2c0_master_init() {
 
 /// One I2C write_read transaction (combined format: write the register
 /// pointer, repeated-start, read the data). Returns Err on abort/NACK.
+///
+/// The master is what makes a transaction *end*: the register byte goes out
+/// with STOP suppressed, the first data byte carries RESTART so the bus
+/// turns around, and the last data byte carries STOP. Without that last bit
+/// the controller keeps the bus - the next transaction then aborts before it
+/// starts, which is how a touch controller that is answering perfectly well
+/// can look dead.
 unsafe fn i2c0_write_read(register: u8, out: &mut [u8]) -> Result<(), u32> {
     let base = ane::TOUCH_I2C0_BASE;
     // Wait for the TX FIFO space.
@@ -132,11 +139,16 @@ unsafe fn i2c0_write_read(register: u8, out: &mut [u8]) -> Result<(), u32> {
         }
         core::hint::spin_loop();
     }
-    // Issue: the register pointer byte with STOP suppressed... the DW
-    // combined format: write cmd (no STOP bit flag = bit9 0), then the
-    // read cmds (bit9 = 1 = RESTART for reads).
-    wr32(base, IC_DATA_CMD, register as u32);
-    for slot in out.iter_mut() {
+    // The register pointer: no STOP when a read follows, STOP when this is
+    // the whole transaction.
+    let first = if out.is_empty() {
+        register as u32 | IC_DATA_CMD_STOP
+    } else {
+        register as u32
+    };
+    wr32(base, IC_DATA_CMD, first);
+    let n = out.len();
+    for (i, slot) in out.iter_mut().enumerate() {
         let mut spins = 0u32;
         while rd32(base, IC_TXFLR) >= 8 {
             spins += 1;
@@ -144,7 +156,14 @@ unsafe fn i2c0_write_read(register: u8, out: &mut [u8]) -> Result<(), u32> {
                 return Err(1);
             }
         }
-        wr32(base, IC_DATA_CMD, 0x100); // CMD read with RESTART
+        let mut cmd = IC_DATA_CMD_READ;
+        if i == 0 {
+            cmd |= IC_DATA_CMD_RESTART;
+        }
+        if i + 1 == n {
+            cmd |= IC_DATA_CMD_STOP;
+        }
+        wr32(base, IC_DATA_CMD, cmd);
         let mut spins = 0u32;
         loop {
             if rd32(base, IC_RXFLR) > 0 {
@@ -161,6 +180,16 @@ unsafe fn i2c0_write_read(register: u8, out: &mut [u8]) -> Result<(), u32> {
     if abrt != 0 {
         wr32(base, IC_CLR_TX_ABRT, 0);
         return Err(abrt);
+    }
+    // The STOP takes a few SCL periods to leave; a transaction that starts
+    // while ACTIVITY is still set is refused by the controller.
+    let mut spins = 0u32;
+    while rd32(base, IC_STATUS) & 0x21 != 0 {
+        spins += 1;
+        if spins > 200_000 {
+            return Err(3);
+        }
+        core::hint::spin_loop();
     }
     Ok(())
 }

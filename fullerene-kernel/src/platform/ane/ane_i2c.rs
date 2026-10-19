@@ -43,13 +43,9 @@ const IC_FS_SCL_HCNT: usize = 0x1c;
 const IC_FS_SCL_LCNT: usize = 0x40;
 const IC_SS_SCL_HCNT: usize = 0x8c;
 const IC_SS_SCL_LCNT: usize = 0x11e;
-const IC_DATA_CMD: usize = 0x10;
-const IC_CLR_TX_ABRT: usize = 0x54;
-const IC_TX_ABRT_SOURCE: usize = 0x80;
 const IC_CON_MASTER: u32 = 1 << 0;
 const IC_CON_SPEED_FAST: u32 = 1 << 1;
 const IC_CON_RESTART_EN: u32 = 1 << 5;
-const IC_DATA_CMD_RESTART: u32 = 1 << 10;
 
 /// Gate the bus, release its reset and put both pins in I2C function.
 /// Safe to call twice: the gate and reset writes are idempotent.
@@ -115,7 +111,15 @@ pub unsafe fn read_regs(addr: u16, from: u8, out: &mut [u8]) -> Result<(), u32> 
         }
         core::hint::spin_loop();
     }
-    wr32(I2C4_BASE, IC_DATA_CMD, from as u32);
+    // The register pointer: no STOP when a read follows, STOP when this is
+    // the whole transaction.
+    let first = if out.is_empty() {
+        from as u32 | IC_DATA_CMD_STOP
+    } else {
+        from as u32
+    };
+    wr32(I2C4_BASE, IC_DATA_CMD, first);
+    let n = out.len();
     for (i, slot) in out.iter_mut().enumerate() {
         let mut spins = 0u32;
         while rd32(I2C4_BASE, IC_TXFLR) >= 8 {
@@ -124,8 +128,15 @@ pub unsafe fn read_regs(addr: u16, from: u8, out: &mut [u8]) -> Result<(), u32> 
                 return Err(1);
             }
         }
-        // RESTART on the first byte only; the rest are a plain read burst.
-        let cmd = if i == 0 { IC_DATA_CMD_RESTART } else { 0 };
+        // RESTART on the first byte only (the rest are a plain read burst),
+        // and READ on every byte - `RESTART` alone is a *write* of zero.
+        let mut cmd = IC_DATA_CMD_READ;
+        if i == 0 {
+            cmd |= IC_DATA_CMD_RESTART;
+        }
+        if i + 1 == n {
+            cmd |= IC_DATA_CMD_STOP;
+        }
         wr32(I2C4_BASE, IC_DATA_CMD, cmd);
         let mut spins = 0u32;
         loop {
@@ -143,6 +154,16 @@ pub unsafe fn read_regs(addr: u16, from: u8, out: &mut [u8]) -> Result<(), u32> 
     if abrt != 0 {
         wr32(I2C4_BASE, IC_CLR_TX_ABRT, 0);
         return Err(abrt);
+    }
+    // ACTIVITY / MST_ACTIVITY: a transaction that starts while the previous
+    // STOP is still on the wire is refused by the controller.
+    let mut spins = 0u32;
+    while rd32(I2C4_BASE, IC_STATUS) & 0x21 != 0 {
+        spins += 1;
+        if spins > 200_000 {
+            return Err(3);
+        }
+        core::hint::spin_loop();
     }
     Ok(())
 }

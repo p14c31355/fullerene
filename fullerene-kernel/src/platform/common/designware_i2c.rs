@@ -13,6 +13,22 @@ pub const IC_TXFLR: usize = 0x74;
 pub const IC_RXFLR: usize = 0x78;
 pub const IC_COMP_PARAM_1: usize = 0xf4;
 pub const IC_COMP_VERSION: usize = 0xf8;
+pub const IC_DATA_CMD: usize = 0x10;
+pub const IC_CLR_TX_ABRT: usize = 0x54;
+pub const IC_TX_ABRT_SOURCE: usize = 0x80;
+
+/// IC_DATA_CMD is a command word, not a byte (DW_apb_i2c databook 3.9):
+/// bit 8 asks for a read, bit 9 ends the transfer with a STOP, and bit 10
+/// issues a RESTART before the command.
+///
+/// All three matter. A "read" without bit 8 is a write of zero, a bus that
+/// never sees bit 9 is never released (every later transaction aborts), and
+/// a direction change without bit 10 is not a repeated start. Both the touch
+/// bus and the charger bus are this controller, so the bits are defined
+/// once, here.
+pub const IC_DATA_CMD_READ: u32 = 1 << 8;
+pub const IC_DATA_CMD_STOP: u32 = 1 << 9;
+pub const IC_DATA_CMD_RESTART: u32 = 1 << 10;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ControllerSnapshot {
