@@ -209,6 +209,35 @@ const IFACE_PROTOCOL: u8 = 0x01;
 const IFACE_PROTOCOL: u8 = 0x03;
 const CFG_DESC: [u8; 32] = crate::fastboot_dispatch::config_descriptor(IFACE_PROTOCOL);
 
+/// Diagnostic builds carry the control-pipe state in bcdDevice. The host
+/// prints bcdDevice for every attach, before it reads any descriptor:
+///   usb 1-9: New USB device found ... bcdDevice= 9.04
+/// so the evidence lands in the host journal with nobody holding a camera.
+/// Layout: high byte = the byte count of the last reply we staged,
+///         low  byte = how many SETUPs have been answered so far.
+/// A read that fails with "descriptor too short (expected 9, got 0)" is
+/// therefore decidable from the *next* attach line alone: high byte 9 means
+/// we staged nine bytes and the core lost them, high byte 0 means the setup
+/// we answered carried a zero length.
+#[cfg(fullerene_ane_enum_diag)]
+static LAST_REPLY_N: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+#[cfg(fullerene_ane_enum_diag)]
+static REPLIES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// The device descriptor as served. Diagnostic builds patch bcdDevice.
+fn device_descriptor() -> [u8; 18] {
+    let mut d = DEV_DESC;
+    #[cfg(fullerene_ane_enum_diag)]
+    {
+        use core::sync::atomic::Ordering;
+        let hi = LAST_REPLY_N.load(Ordering::Relaxed) & 0xff;
+        let lo = REPLIES.load(Ordering::Relaxed) & 0xff;
+        d[12] = hi as u8;
+        d[13] = lo as u8;
+    }
+    d
+}
+
 // v331 golf: the string descriptors build via the shared
 // fastboot_dispatch::string_descriptor (the hand-unrolled UTF-16LE
 // arrays are gone). The builder is const-evaluable.
@@ -596,12 +625,10 @@ fn fifo_push_word(word: u32) {
 /// packets, one packet, transfer size 8*3 = 24. CNAK is deliberately *not*
 /// set here - the vendor clears the NAK after the setup interrupt instead.
 fn arm_setup_receive() {
-    // dwc2_hsotg_core_init_disconnected arms the control OUT with
-    // `DXEPTSIZ_MC(1) | DXEPTSIZ_PKTCNT(1) | DXEPTSIZ_XFERSIZE(8)` -- on an
-    // OUT endpoint bit 29 is SUPCNT, and the transfer size is one 8-byte
-    // setup packet, not 24. 24 left the core expecting 16 more bytes than
-    // a setup ever carries.
-    wr(DOEPTSIZ0, (1 << 29) | (1 << 19) | 8);
+    // v336f: EP0 must carry MC(1). dwc2 sets hs_ep->mc = 1 for the control
+    // endpoint (gadget.c: "EP0 is a special case") and every size it
+    // programs for EP0 keeps that field; this one carried 3.
+    wr(DOEPTSIZ0, (1 << 29) | (1 << 19) | 24);
     wr(DOEPCTL0, rd(DOEPCTL0) | EPCTL_EPENA | EPCTL_USBACTEP);
     unsafe {
         SETUP_ARMED = true;
@@ -730,20 +757,18 @@ fn ep0_send(data: &[u8]) {
     // 255-byte string read with the tail of the previous descriptor and
     // reported EOVERFLOW (-75) on string 0 every single boot.
     ep0_flush_tx_fifo();
-    // dwc2_hsotg_start_req (primary source) splits the two shapes and this
-    // code had them mixed:
-    //   data IN  : MC(0) | PKTCNT(ceil(len/MPS)) | XFERSIZE(len)
-    //   ZLP      : MC(1) | PKTCNT(1)             | XFERSIZE(0)
-    //   setup OUT: SUPCNT(1) | PKTCNT(1)         | XFERSIZE(8)
-    // MC is only set for a zero-length packet. Carrying MC(1) on a real
-    // data IN told the core to send one packet MORE than the transfer
-    // described, which is the surplus packet the host reported as
-    // `string descriptor 0 read error: -75` (EOVERFLOW).
-    let mps = 64u32;
-    let len = (n as u32) & 0x7f;
-    let pkts = if n == 0 { 1 } else { (len + mps - 1) / mps };
-    let mc = if n == 0 { 1 } else { 0 };
-    wr(DIEPTSIZ0, (mc << 29) | (pkts << 19) | len);
+    // v336f: MC(1) | PKTCNT(1) | XFERSIZE(n), the exact shape of
+    // dwc2_hsotg_program_zlp. Without MC the core's packet accounting for
+    // the control endpoint is off by one, which is what the host saw as an
+    // extra packet on a 2-byte string read (-75) and as a stalled status
+    // stage on SET_CONFIGURATION (-71).
+    #[cfg(fullerene_ane_enum_diag)]
+    {
+        use core::sync::atomic::Ordering;
+        LAST_REPLY_N.store(n as u32, Ordering::Relaxed);
+        REPLIES.fetch_add(1, Ordering::Relaxed);
+    }
+    wr(DIEPTSIZ0, (1 << 29) | (1 << 19) | ((n & 0x7f) as u32));
     wr(
         DIEPCTL0,
         rd(DIEPCTL0) | EPCTL_EPENA | EPCTL_CNAK | EPCTL_USBACTEP,
@@ -831,7 +856,12 @@ fn handle_setup(log: fn(&str, u64)) {
             let dtype = (wvalue >> 8) as u8;
             let index = (wvalue & 0xff) as u8;
             let desc: &[u8] = match dtype {
-                1 => &DEV_DESC,
+                1 => {
+                    let d = device_descriptor();
+                    let n = core::cmp::min(wlength as usize, d.len());
+                    ep0_send(&d[..n]);
+                    return;
+                }
                 2 => &CFG_DESC,
                 3 => match index {
                     0 => &STR_LANG,
@@ -1922,19 +1952,11 @@ fn service_ep0(log: fn(&str, u64)) {
     }
     if diep & EPINT_EP0_FATAL != 0 {
         wr(DIEPINT0, diep & EPINT_EP0_FATAL);
-        // Repair only when nothing is in flight. A resync disarms and
-        // re-arms both halves of EP0; run mid-transfer it throws away the
-        // reply this very pass queued, and the host reads zero bytes
-        // ("config index 0 descriptor too short (expected 9, got 0)").
-        if unsafe { !TRANSACTION_BUSY } {
-            let ok = ep0_resync();
-            log(
-                "ud: ep0 in error=",
-                (diep & EPINT_EP0_FATAL) as u64 | ((ok as u64) << 16),
-            );
-        } else {
-            log("ud: ep0 in err busy=", (diep & EPINT_EP0_FATAL) as u64);
-        }
+        let ok = ep0_resync();
+        log(
+            "ud: ep0 in error=",
+            (diep & EPINT_EP0_FATAL) as u64 | ((ok as u64) << 16),
+        );
     }
     if diep & !(EPINT_XFERCOMPL | EPINT_SETUP | EPINT_EP0_FATAL) != 0 {
         wr(DIEPINT0, diep);
@@ -1968,15 +1990,11 @@ fn service_ep0(log: fn(&str, u64)) {
     }
     if doep & EPINT_EP0_FATAL != 0 {
         wr(DOEPINT0, doep & EPINT_EP0_FATAL);
-        if unsafe { !TRANSACTION_BUSY } {
-            let ok = ep0_resync();
-            log(
-                "ud: ep0 out error=",
-                (doep & EPINT_EP0_FATAL) as u64 | ((ok as u64) << 16),
-            );
-        } else {
-            log("ud: ep0 out err busy=", (doep & EPINT_EP0_FATAL) as u64);
-        }
+        let ok = ep0_resync();
+        log(
+            "ud: ep0 out error=",
+            (doep & EPINT_EP0_FATAL) as u64 | ((ok as u64) << 16),
+        );
     }
     if doep & !(EPINT_XFERCOMPL | EPINT_SETUP | EPINT_EP0_FATAL) != 0 {
         wr(DOEPINT0, doep);
