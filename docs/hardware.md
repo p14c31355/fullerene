@@ -18,9 +18,10 @@ and where FullereneOS stands with each part. Written 2026-10-20.
 | Wi-Fi / BT | hi1102 | SDIO + UART | untouched |
 | GNSS | `hisi_gps` | modem side | untouched |
 | fingerprint | fpc | SPI | not needed for the goal |
-| keys | `hisilicon,gpio-key` | GPIO | power/volume not yet read |
+| keys | `hisilicon,gpio-key` | gpio25 (per the UDP config) | `oem keys` reads the bank; power is the PMIC |
 | timer | ARM arch timer | `CNTFRQ` | read, but ~10x fast; `oem sof` measures it against the host's 1 ms frames |
 | USB | dwc2 gadget | `0xFF100000`-ish | enumerated responder |
+| sensors | many, see below | i2c0, 0x0D..0x38 | not yet probed; `oem i2cbus 0` finds them |
 
 Notes that matter:
 
@@ -51,3 +52,22 @@ Ordered by what one device session can settle:
 6. `oem i2cbus 0|2|4` maps each live bus by address scan before any driver
    for a part on it is written - that is how the hi1102, the codec and the
    sensors get found without a datasheet.
+## Sensors: the addresses are in the tree, the variant is not
+
+The vendor `sensorhub` node lists each candidate part with its bus, address
+and id register, and the board carries exactly one of each pair. All of them
+sit on **i2c0** - the same bus as the touch controller - so one
+`oem i2cbus 0` scan plus a chip-id read names the parts this unit has.
+
+| sensor | candidates | addr | id register = value |
+|---|---|---|---|
+| accelerometer | ST LIS3DH | 0x18 | 0x0F = 0x33 |
+| accelerometer | Rohm Kionix | 0x1E | 0x0F = 0x15 |
+| magnetometer | AKM AK09911 | 0x0D | 0x00 = 0x48 |
+| ambient light | Rohm BH1745 | 0x38 | 0x40 = 0x0B |
+| proximity | TXC PA224 | 0x1E | 0x01 = 0x10 |
+
+The overlapping addresses (0x1E twice, and 0x38 shared with the touch
+controller) are why this table is a list of candidates rather than a wiring
+diagram: the default config carries several board variants, and the device
+decides. Reading register 0 of each address costs nothing and settles it.
