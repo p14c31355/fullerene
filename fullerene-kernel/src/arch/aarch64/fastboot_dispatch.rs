@@ -596,6 +596,33 @@ pub fn poll(log: fn(&str, u64)) {
     }
 
     #[cfg(fullerene_aarch64_ane)]
+    if cmd == b"oem keys" {
+        // `oem keys`: the three key banks, read-only. Press a key between two
+        // calls and the byte that changed is the pin, without trusting a
+        // board variant's DTS.
+        let (a, b, c) = crate::platform::ane_keys::scan();
+        const HEX: [u8; 16] = *b"0123456789ABCDEF";
+        let mut line = [b' '; 25];
+        line[..5].copy_from_slice(b"keys ");
+        for (i, v) in [a, b, c].iter().enumerate() {
+            let at = 5 + i * 6;
+            line[at] = HEX[(24 + i) as usize / 10];
+            line[at + 1] = b'0' + ((24 + i) % 10) as u8;
+            line[at + 2] = b'=';
+            line[at + 3] = HEX[(v >> 4) as usize];
+            line[at + 4] = HEX[(v & 0xF) as usize];
+            line[at + 5] = b' ';
+        }
+        crate::platform::ane_usb_dev::fb_send_info(&line[..]);
+        log(
+            "fb: keys=",
+            ((a as u64) << 16) | ((b as u64) << 8) | c as u64,
+        );
+        crate::platform::ane_usb_dev::ep1_send(b"OKAYkeys");
+        return;
+    }
+
+    #[cfg(fullerene_aarch64_ane)]
     if let Some(arg) = cmd.strip_prefix(b"oem i2cbus ") {
         // `oem i2cbus <0|2|4>`: address scan of a bus that is already clocked.
         // Reads one byte from register 0 of every 7-bit address and reports

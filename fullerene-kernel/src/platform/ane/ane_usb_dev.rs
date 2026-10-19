@@ -1492,7 +1492,7 @@ impl crate::fastboot_dispatch::FastbootIo for AneFbIo {
 
 /// The registered variable table (the identity strings are the device's
 /// own; partition-size computes via the eMMC GPT lookup).
-fn fb_vars() -> [crate::fastboot_dispatch::VarEntry; 10] {
+fn fb_vars() -> [crate::fastboot_dispatch::VarEntry; 11] {
     use crate::fastboot_dispatch::{VarEntry, VarReply};
     [
         VarEntry {
@@ -1560,6 +1560,20 @@ fn fb_vars() -> [crate::fastboot_dispatch::VarEntry; 10] {
                 let m = fmt_okay_hex(crate::timer::frequency(), &mut gv);
                 out[i..i + m].copy_from_slice(&gv[..m]);
                 i + m
+            }),
+        },
+        VarEntry {
+            name: b"touch",
+            // samples << 32 | max_x << 16 | max_y: what the controller has
+            // actually asserted, so the panel's report box can be set from a
+            // measurement instead of from a comment.
+            reply: VarReply::Computed(|_part, out| {
+                let (mx, my, n) = super::ane_touch::touch_extent();
+                let mut gv = [0u8; 32];
+                let v = ((n as u64) << 32) | ((mx as u64) << 16) | my as u64;
+                let k = fmt_okay_hex(v, &mut gv);
+                out[..k].copy_from_slice(&gv[..k]);
+                k
             }),
         },
         VarEntry {

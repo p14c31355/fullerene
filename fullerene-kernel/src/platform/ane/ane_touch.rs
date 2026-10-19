@@ -258,6 +258,27 @@ pub fn first_point() -> Option<TouchPoint> {
     })
 }
 
+/// The largest x and y the panel has ever reported, packed `x << 16 | y`,
+/// plus a sample count in the high half of a second word.
+///
+/// The panel is 1080x2340 and the driver's comment says the controller
+/// reports a 1080x2280 box; nobody has measured which is true. Rather than
+/// scale by a guess, remember the extent the controller itself asserts and
+/// let `getvar touch` report it - a finger dragged into each corner turns the
+/// question into a number.
+pub static TOUCH_MAX: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+pub static TOUCH_SAMPLES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// (max x, max y, samples) as last reported.
+pub fn touch_extent() -> (u16, u16, u32) {
+    let v = TOUCH_MAX.load(Ordering::Relaxed);
+    (
+        (v >> 16) as u16,
+        (v & 0xFFFF) as u16,
+        TOUCH_SAMPLES.load(Ordering::Relaxed),
+    )
+}
+
 /// Poll the touch IC: read TD_STATUS (0x02), then the point records.
 /// Called from the wait loop every pass (the I2C transaction is ~1 ms
 /// at 400 kHz for 5 points - acceptable at the boot-thread cadence).
@@ -287,6 +308,13 @@ pub unsafe fn poll() {
         let pressed = event <= 1;
         let packed = (x as u32) | (y as u32) << 16 | if pressed { 1 << 31 } else { 0 };
         TOUCH_POINTS[i].store(packed, Ordering::Relaxed);
+        if pressed {
+            let old = TOUCH_MAX.load(Ordering::Relaxed);
+            let mx = ((old >> 16) as u16).max(x);
+            let my = ((old & 0xFFFF) as u16).max(y);
+            TOUCH_MAX.store((mx as u32) << 16 | my as u32, Ordering::Relaxed);
+            TOUCH_SAMPLES.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
