@@ -1136,8 +1136,21 @@ pub fn write_sectors(lba: u32, data: &[u8], log: fn(&str, u64)) -> (u64, u64) {
     let mut ok = 0u64;
     let mut bad = 0u64;
     let total = (data.len() + 511) / 512;
+    // v336d: a flash is a guest in a live boot - it must return. The PIO
+    // write is fast when CMD25 takes, and ~1000x slower when it falls back
+    // to one CMD24 per sector; unbounded, the fallback held the boot thread
+    // (and with it every USB service pass) for as long as the card took.
+    // 150 s covers the whole 24 MB kernel partition at the fallback rate;
+    // past that, report the failure instead of going quiet. The host's
+    // fastboot client then gets a FAIL rather than a silent endpoint.
+    let t0 = crate::timer::uptime_us();
     let mut i = 0usize;
     while i < total {
+        if crate::timer::uptime_us().saturating_sub(t0) > 150_000_000 {
+            log("em: wr_timeout=", i as u64);
+            bad += (total - i) as u64;
+            break;
+        }
         let nblocks = core::cmp::min(CHUNK, total - i);
         let off = i * 512;
         let nbytes = core::cmp::min(nblocks * 512, data.len() - off);
@@ -1163,12 +1176,30 @@ pub fn write_sectors(lba: u32, data: &[u8], log: fn(&str, u64)) -> (u64, u64) {
                 } else {
                     bad += 1;
                 }
+                // v336d: the single-block fallback is the slow lane - one
+                // CMD24 per sector with its own buffer waits. It reported
+                // nothing between chunks, so a fallback that ran for
+                // minutes looked exactly like a dead device.
+                if k % 64 == 0 {
+                    log("em: wr_sb=", k as u64);
+                }
                 k += 1;
             }
+            // v336d: if the first 64 single-sector writes all failed, the
+            // lane is not going to recover mid-chunk; the remaining blocks
+            // count as bad and the caller fails fast (the host waits).
+            if bad >= 64 {
+                log("em: wr_bail=", bad);
+                bad += (total - i - nblocks) as u64;
+                break;
+            }
         }
-        if i % 8192 == 0 {
-            log("em: wr_prog=", i as u64);
-        }
+        // v336d: every chunk reports. A 1.2 MB kernel is ~5 chunks, and a
+        // wedged flash used to leave the panel silent (the old stride of
+        // 8192 sectors is longer than the whole image, so it never printed
+        // once). A flash that stalls must be visible in the same photograph
+        // that shows the stall.
+        log("em: wr_prog=", i as u64);
         i += nblocks;
     }
     (ok, bad)
