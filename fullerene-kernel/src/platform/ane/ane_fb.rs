@@ -697,6 +697,22 @@ fn fill_canvas(x: u32, y: u32, w: u32, h: u32, color: u32) {
 /// every iteration. A counter that climbs is the difference between "the
 /// panel is ours and updating" and "nothing we write is being scanned
 /// out" - and it is visible even in a single photo.
+/// The frequency the firmware programmed into CNTFRQ_EL0, in Hz.
+fn read_cntfrq() -> u64 {
+    let v: u64;
+    unsafe { core::arch::asm!("mrs {}, cntfrq_el0", out(reg) v, options(nomem, nostack)) };
+    v
+}
+
+/// The raw virtual counter - no division, no bookkeeping, just the ticks.
+fn read_cntvct() -> u64 {
+    let v: u64;
+    unsafe {
+        core::arch::asm!("isb", "mrs {}, cntvct_el0", out(reg) v, options(nomem, nostack))
+    };
+    v
+}
+
 pub fn hold_frame(tick: u32, uptime_s: u64, setups: u64, serviced: u64) {
     let canvas: &mut [u32] =
         unsafe { core::slice::from_raw_parts_mut(CANVAS as *mut u32, CANVAS_LEN / 4) };
@@ -707,6 +723,13 @@ pub fn hold_frame(tick: u32, uptime_s: u64, setups: u64, serviced: u64) {
     paint_hex_at_force(1, 8, b"SETUPS", setups);
     paint_hex_at_force(2, 8, b"SERVICE", serviced);
     paint_at_force(3, 8, 24, b"HOLD - PHOTOGRAPH ME NOW");
+    // The clock's own testimony. Every timeout in the tree divides a counter
+    // by a frequency the firmware claims; when those disagree the bookkeeping
+    // is wrong by the ratio. Paint both halves - the claim (CNTFRQ) and the
+    // raw counter - so a photograph settles it instead of a guess.
+    let frq = read_cntfrq();
+    paint_hex_at_force(4, 8, b"CNTFRQ", frq);
+    paint_hex_at_force(5, 8, b"CNTVCT", read_cntvct());
     // Two counters, told apart by colour: white = the hold's own tick,
     // yellow = the kernel's uptime in seconds. Their ratio is the whole
     // measurement - a tick that climbs 60 times while uptime climbs 15 says
