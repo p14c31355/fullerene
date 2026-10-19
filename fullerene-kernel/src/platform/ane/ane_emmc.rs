@@ -25,6 +25,11 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 /// chunk failed, bits 16..32 = the error status word, bits 0..16 = the
 /// normal status word. Reported to the host in the FAIL reply.
 pub static LAST_WR: AtomicU32 = AtomicU32::new(0);
+/// The outcome of the last `write_sectors` call as `ok << 32 | bad`.
+/// A flash from the running kernel has nowhere to print a summary - the
+/// boot log block is full by then - so the counts are kept here and
+/// `fastboot getvar flash` reads them back.
+pub static LAST_FLASH: AtomicU64 = AtomicU64::new(0);
 
 const CRG_BASE: usize = 0xFFF3_5000;
 const SDHCI_BASE: usize = 0xFF39_0000;
@@ -1374,6 +1379,7 @@ pub fn write_sectors(lba: u32, data: &[u8], log: fn(&str, u64)) -> (u64, u64) {
         log("em: wr_prog=", i as u64);
         i += nblocks;
     }
+    LAST_FLASH.store((ok << 32) | (bad & 0xFFFF_FFFF), Ordering::Relaxed);
     (ok, bad)
 }
 
