@@ -193,6 +193,21 @@ pub fn snapshot(index: usize) -> Option<(u16, u16)> {
     Some(((v & 0xFFFF) as u16, ((v >> 16) & 0xFFFF) as u16))
 }
 
+/// The first live contact, in panel pixels, with the press flag intact.
+/// `None` when the controller reported nothing (no probe answered, finger
+/// lifted and no lift record, or an empty read).
+pub fn first_point() -> Option<TouchPoint> {
+    let v = TOUCH_POINTS[0].load(Ordering::Relaxed);
+    if v & 0xFFFF == 0xFFFF {
+        return None;
+    }
+    Some(TouchPoint {
+        x: (v & 0xFFFF) as u16,
+        y: ((v >> 16) & 0xFFFF) as u16,
+        pressed: v & (1 << 31) != 0,
+    })
+}
+
 /// Poll the touch IC: read TD_STATUS (0x02), then the point records.
 /// Called from the wait loop every pass (the I2C transaction is ~1 ms
 /// at 400 kHz for 5 points - acceptable at the boot-thread cadence).

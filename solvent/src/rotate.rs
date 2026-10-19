@@ -50,6 +50,30 @@ pub fn cw90_source(dx: u32, dy: u32, src_h: u32) -> (u32, u32) {
     (dy, src_h.wrapping_sub(1).wrapping_sub(dx))
 }
 
+/// Carry a *panel* touch point back into the *canvas* the shell laid out
+/// in. The scan-out is `cw90_source`, so input runs the same map: with the
+/// landscape canvas (2340x1080) under the portrait panel (1080x2340) a
+/// finger at panel (px, py) means canvas (py, 1080-1-px).
+///
+/// When the two frames coincide (portrait layout) the map is the identity.
+/// The decision is made from the geometry, never from the point, so a
+/// finger near the origin maps the same way as one at the far corner.
+pub fn touch_to_canvas(
+    x: u32,
+    y: u32,
+    panel_w: u32,
+    panel_h: u32,
+    canvas_w: u32,
+    canvas_h: u32,
+) -> (u32, u32) {
+    let clamp = |v: u32, hi: u32| v.min(hi.saturating_sub(1));
+    if canvas_w == 0 || canvas_h == 0 || (panel_w == canvas_w && panel_h == canvas_h) {
+        return (clamp(x, canvas_w), clamp(y, canvas_h));
+    }
+    let (sx, sy) = cw90_source(x, y, canvas_h);
+    (clamp(sx, canvas_w), clamp(sy, canvas_h))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,5 +144,35 @@ mod tests {
         assert_eq!(cw90_source(LH - 1, 0, LH), (0, 0));
         // And the panel's top-left is the landscape bottom-left.
         assert_eq!(cw90_source(0, 0, LH), (0, LH - 1));
+    }
+
+    #[test]
+    fn the_portrait_layout_maps_a_touch_to_itself() {
+        // Same frames: the finger is already where the shell drew.
+        for &(x, y) in &[(0, 0), (500, 100), (1079, 2339)] {
+            assert_eq!(touch_to_canvas(x, y, 1080, 2340, 1080, 2340), (x, y));
+        }
+    }
+
+    #[test]
+    fn the_landscape_layout_carries_the_panel_point_back() {
+        // Panel origin -> canvas bottom-left; panel top-right -> canvas origin.
+        assert_eq!(touch_to_canvas(0, 0, 1080, 2340, LW, LH), (0, LH - 1));
+        assert_eq!(touch_to_canvas(1079, 0, 1080, 2340, LW, LH), (0, 0));
+        // A finger near the panel's bottom-left is the canvas' bottom-right.
+        assert_eq!(
+            touch_to_canvas(0, 2339, 1080, 2340, LW, LH),
+            (LW - 1, LH - 1)
+        );
+    }
+
+    #[test]
+    fn every_touch_lands_inside_the_canvas() {
+        for py in (0..2340).step_by(137) {
+            for px in (0..1080).step_by(71) {
+                let (x, y) = touch_to_canvas(px, py, 1080, 2340, LW, LH);
+                assert!(x < LW && y < LH, "({px},{py}) -> ({x},{y}) escaped");
+            }
+        }
     }
 }

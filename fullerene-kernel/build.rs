@@ -9,6 +9,8 @@ use busybox_build::{BuildOptions, dynamic_glibc_interpreter_path, is_dynamic_gli
 fn main() {
     audit_env_rerun_declarations();
     println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_UFS_EXECUTE");
+    println!("cargo:rerun-if-env-changed=FULLERENE_ANE_ENUM_DIAG");
+    println!("cargo:rerun-if-env-changed=FULLERENE_ANE_PANIC_PEEK");
     println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_UFS_DMA_IDENTITY");
     println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_UFS_DMA_ORIGIN");
     println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_UFS_RATE_B");
@@ -259,6 +261,7 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(fullerene_ane_adb_protocol)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_ane_marks_uart_only)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_ane_enum_diag)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_ane_panic_peek)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_ane_desktop_landscape)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_ane_marks_panel)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_ane_no_timer)");
@@ -477,6 +480,12 @@ fn main() {
             // pipe instead of letting the desktop flush cover the only
             // evidence of where enumeration stopped.
             println!("cargo:rustc-cfg=fullerene_ane_enum_diag");
+        }
+        if env::var_os("FULLERENE_ANE_PANIC_PEEK").is_some() {
+            // Bench build: paint the previous boot's dying words and stop.
+            // A panic that resets the SoC leaves the panel as the only
+            // readable channel, and a held frame can be photographed.
+            println!("cargo:rustc-cfg=fullerene_ane_panic_peek");
         }
         if env::var_os("FULLERENE_ANE_NO_PUTC_WD_TEND").is_some() {
             // v211 experiment: drop the per-console-byte SP805 read

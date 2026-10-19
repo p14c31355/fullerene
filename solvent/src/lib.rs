@@ -177,8 +177,17 @@ pub use window_api::{
 #[cfg(not(target_arch = "xtensa"))]
 pub(crate) use runtime_context::{
     BACK_BUFFER, CURSOR_TIMER_ID, DEFAULT_COLS, DEFAULT_ROWS, FB_DIMS, FRAME_INTERVAL_MS,
-    FRAME_TIMER_ID, GLYPH_H, GLYPH_W, PREV_MOUSE_BUTTONS, TERM_WIN_H, TERM_WIN_W, TSC_PER_MS,
+    FRAME_TIMER_ID, GLYPH_H, GLYPH_W, PANEL_DIMS, PREV_MOUSE_BUTTONS, TERM_WIN_H, TERM_WIN_W,
+    TSC_PER_MS,
 };
+
+/// Publish the physical panel geometry the touch driver reports in.
+///
+/// The shell keeps laying out in `FB_DIMS`; this is only the frame the
+/// digitizer speaks, so the rotation inverse has both sides to work with.
+pub fn set_panel_dims(width: u32, height: u32) {
+    *PANEL_DIMS.lock() = (width, height);
+}
 #[cfg(not(target_arch = "xtensa"))]
 pub(crate) use services::SERVICES;
 #[cfg(not(target_arch = "xtensa"))]

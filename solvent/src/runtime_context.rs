@@ -95,6 +95,11 @@ pub(crate) fn take_klog_live_refresh() -> bool {
 pub(crate) static PREV_MOUSE_BUTTONS: Mutex<u8> = Mutex::new(0);
 pub(crate) static FB_DIMS: Mutex<(u32, u32, u32)> = Mutex::new((1024, 768, 1024));
 
+/// The physical panel's pixel geometry, which the touch driver reports in.
+/// It differs from `FB_DIMS` exactly when the scan-out rotates: the ANE
+/// draws a 2340x1080 canvas onto a 1080x2340 panel.
+pub(crate) static PANEL_DIMS: Mutex<(u32, u32)> = Mutex::new((1080, 2340));
+
 /// Owns Solvent's mutable orchestration state.
 ///
 /// The synchronization domains remain separate because event handlers may

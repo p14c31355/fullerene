@@ -130,6 +130,9 @@ pub fn bring_up() {
     //    keeps it fresh, so solvent's frame pacing and the clock run at
     //    the tick rate of the phone's own timer.
     solvent::set_tsc_per_ms(1000);
+    // The digitizer speaks panel pixels; the canvas may be that panel
+    // turned a quarter. Both frames are declared once, here.
+    solvent::set_panel_dims(ane_fb::WIDTH, ane_fb::HEIGHT);
     solvent::set_render_progress_fn(render_progress);
     uart::puts("D2\n");
     solvent::init();
@@ -209,6 +212,35 @@ pub fn bring_up() {
         ane_fb::flush_panel();
     }
     uart::puts("desktop: done\n");
+}
+
+/// One interactive frame: pump the shell's input state, advance its clock,
+/// and paint the result on the panel.
+///
+/// Called from the wait loop on a touch edge only. A full panel flush is
+/// the expensive part of a frame (roughly 10 MB out), so binding it to the
+/// finger rather than to the loop's spin rate keeps a still screen free.
+pub fn tick_input() {
+    solvent::tick_core(solvent::now_tsc());
+    #[cfg(fullerene_ane_desktop_landscape)]
+    let (width, height) = (ane_fb::HEIGHT, ane_fb::WIDTH);
+    #[cfg(not(fullerene_ane_desktop_landscape))]
+    let (width, height) = (ane_fb::WIDTH, ane_fb::HEIGHT);
+    let canvas = unsafe {
+        slice::from_raw_parts_mut(
+            ane_fb::CANVAS as *mut u32,
+            (width as usize) * (height as usize),
+        )
+    };
+    if let Some(mut framebuffer) = FramebufferGuard::try_new(canvas, width, height, width) {
+        solvent::render(&mut framebuffer);
+    }
+    #[cfg(fullerene_ane_desktop_landscape)]
+    unsafe {
+        ane_fb::flush_panel_rotated();
+    }
+    #[cfg(not(fullerene_ane_desktop_landscape))]
+    ane_fb::flush_panel();
 }
 
 /// Frame allocator adapter: `pages` contiguous frames from the ANE's

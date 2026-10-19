@@ -522,6 +522,11 @@ pub fn flush_row(row: u32) {
     if irq_quiet() {
         return;
     }
+    flush_row_force(row);
+}
+
+/// `flush_row` without the quiet gate, for the enumeration ledger.
+pub fn flush_row_force(row: u32) {
     let y0 = DIAG_Y + (10 + row) * LINE_PITCH;
     let y1 = (y0 + GLYPH_H).min(HEIGHT);
     if y1 <= y0 {
@@ -573,6 +578,12 @@ pub fn paint_at(row: u32, x: u32, cols: usize, text: &[u8]) {
     if desktop_owned() || irq_quiet() {
         return;
     }
+    paint_at_force(row, x, cols, text);
+}
+
+/// `paint_at` without the desktop/quiet gates. Only the enumeration ledger
+/// wants this: it is the record of a boot that may never reach either gate.
+pub fn paint_at_force(row: u32, x: u32, cols: usize, text: &[u8]) {
     let canvas: &mut [u32] =
         unsafe { core::slice::from_raw_parts_mut(CANVAS as *mut u32, CANVAS_LEN / 4) };
     let y = DIAG_Y + (10 + row) * LINE_PITCH;
@@ -713,13 +724,27 @@ pub fn usb_ledger(setups: u64, addr: u64, strings: u64, cfg: u64, wait: u64) {
         (48, &b"WAIT"[..], wait),
     ];
     for (row, label, value) in rows {
-        paint_hex_at(row, 0, label, value);
-        flush_row(row);
+        paint_hex_at_force(row, 0, label, value);
+        flush_row_force(row);
     }
 }
 
 /// `paint_hex` at an explicit x on the right column (rows follow `paint`).
 pub fn paint_hex_at(row: u32, x: u32, label: &[u8], value: u64) {
+    paint_hex_line(row, x, label, value, false);
+}
+
+/// The same line, but it also lands on a panel the desktop has taken over.
+///
+/// The enumeration ledger is the last channel left when a bring-up dies
+/// before the desktop exists, so it cannot share the desktop's gate: a boot
+/// that never gets to `desktop_owned() == false` would otherwise paint the
+/// ledger into a canvas nothing flushes.
+pub fn paint_hex_at_force(row: u32, x: u32, label: &[u8], value: u64) {
+    paint_hex_line(row, x, label, value, true);
+}
+
+fn paint_hex_line(row: u32, x: u32, label: &[u8], value: u64, force: bool) {
     let mut buf = [0u8; 48];
     let mut n = 0;
     for &b in label {
@@ -743,7 +768,11 @@ pub fn paint_hex_at(row: u32, x: u32, label: &[u8], value: u64) {
             n += 1;
         }
     }
-    paint_at(row, x, 24, &buf[..n]);
+    if force {
+        paint_at_force(row, x, 24, &buf[..n]);
+    } else {
+        paint_at(row, x, 24, &buf[..n]);
+    }
 }
 
 /// Cached instrument values: the right-column probes are re-painted on every

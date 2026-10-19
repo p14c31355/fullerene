@@ -1104,6 +1104,25 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         // the rows above the tail window show the last panic file/line, the
         // only fault channel that needs no USB to read.
         platform::ane_fb::report_previous_panic();
+        #[cfg(fullerene_ane_panic_peek)]
+        {
+            // Bench build: the previous boot's dying words are painted and
+            // then held. Panic text is the one channel that needs neither
+            // USB nor a ring read-back, so a boot that only shows it is the
+            // cheapest way to read a failure that resets the SoC.
+            //
+            // The hold is bounded. An unbounded one leaves the phone off
+            // the bus with a dead battery and no way back without a human
+            // press, so after the photo window the panic lane does what a
+            // panic does: hand the device to the loader, which is on the
+            // bus and can take the next image.
+            crate::blackbox::text_puts("PEEK HOLD\n");
+            let deadline = timer::uptime_us().saturating_add(45_000_000);
+            while timer::uptime_us() < deadline {
+                core::hint::spin_loop();
+            }
+            platform::ane_usb_dev::panic_reset_to_bootloader();
+        }
         // Device-side USB: answer the host's control transfers now that the
         // link is up (EP0 + descriptors; fastboot bulk is the next stage).
         platform::ane_usb_dev::init(ane_log);
@@ -1324,6 +1343,22 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
             if platform::ane_usb_dev::usb_attached() {
                 let deadline = timer::uptime_us().saturating_add(6_000_000);
                 let mut served = 0u32;
+                // Paint the ledger from inside the wait: a pipe that never
+                // finishes leaves the hot loop running, so a ledger painted
+                // only after it would never reach the panel.
+                #[cfg(fullerene_aarch64_ane)]
+                fn paint_ledger(served: u32) {
+                    let cfg_word = (platform::ane_usb_dev::usb_config_was_1() as u64)
+                        | ((platform::ane_usb_dev::host_configured() as u64) << 1)
+                        | ((platform::ane_usb_dev::usb_config_value() as u64) << 8);
+                    platform::ane_fb::usb_ledger(
+                        platform::ane_usb_dev::setups_seen() as u64,
+                        platform::ane_usb_dev::address_seen() as u64,
+                        platform::ane_usb_dev::strings_served() as u64,
+                        cfg_word,
+                        served as u64,
+                    );
+                }
                 // ENUMDONE fires at speed detection, before the host reads
                 // a descriptor byte - gate on SET_CONFIGURATION instead.
                 while platform::ane_usb_dev::usb_attached()
@@ -1332,6 +1367,13 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                 {
                     platform::ane_usb_dev::service(ane_log);
                     served = served.wrapping_add(1);
+                    // 79 passes per request at most, so 256 keeps the panel
+                    // within one host retry of the truth without paying the
+                    // flush on every pass.
+                    #[cfg(fullerene_aarch64_ane)]
+                    if served & 0xff == 0 {
+                        paint_ledger(served >> 8);
+                    }
                 }
                 #[cfg(fullerene_aarch64_ane)]
                 {
@@ -1362,6 +1404,10 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                     // ledger on the panel instead of taking the canvas.
                     loop {
                         platform::ane_usb_dev::service(ane_log);
+                        served = served.wrapping_add(1);
+                        if served & 0xff == 0 {
+                            paint_ledger(served >> 8);
+                        }
                     }
                 }
             }
@@ -1427,6 +1473,28 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         #[cfg(fullerene_aarch64_ane)]
         unsafe {
             platform::ane_touch::poll();
+        }
+        // The digitizer publishes panel pixels; the shell lays out in the
+        // canvas. Hand the sample across that boundary here so the
+        // rotation inverse is applied once, in solvent, under test.
+        #[cfg(fullerene_aarch64_ane)]
+        match platform::ane_touch::first_point() {
+            Some(p) => solvent::arch::aarch64::set_touch(p.x, p.y, p.pressed),
+            None => solvent::arch::aarch64::release_touch(),
+        }
+        // A press or a lift is the only thing worth a panel flush: the
+        // shell's pointer follows the finger inside a contact, but the
+        // frame it lives in only changes at the edges.
+        #[cfg(fullerene_aarch64_ane)]
+        {
+            static PREV_PRESSED: core::sync::atomic::AtomicU8 =
+                core::sync::atomic::AtomicU8::new(2);
+            let pressed = platform::ane_touch::first_point().map_or(2, |p| p.pressed as u8);
+            if pressed != 2
+                && PREV_PRESSED.swap(pressed, core::sync::atomic::Ordering::Relaxed) != pressed
+            {
+                desktop::tick_input();
+            }
         }
         // v331t: the launcher's press feedback (a no-op without a point).
         #[cfg(fullerene_aarch64_ane)]
