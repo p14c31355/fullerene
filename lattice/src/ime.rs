@@ -697,6 +697,46 @@ mod tests {
         }
     }
 
+    /// Find a key by its label and return its centre.
+    fn centre_of(kb: &Keyboard, area: Rect, label: &str) -> (i32, i32) {
+        let mut rects = [KeyRect {
+            rect: Rect::new(0, 0, 0, 0),
+            def: &EMPTY_KEY,
+        }; MAX_KEYS];
+        let n = kb.layout(area, &mut rects);
+        let kr = rects[..n]
+            .iter()
+            .find(|kr| kr.def.label == label)
+            .unwrap_or_else(|| panic!("no key {label} among {n} layout keys"));
+        (kr.rect.x + kr.rect.w / 2, kr.rect.y + kr.rect.h / 2)
+    }
+
+    #[test]
+    fn a_typed_word_reaches_the_text_through_the_layout() {
+        // The point of the two halves: a tap lands on a key, the key becomes
+        // an action, the action becomes text.
+        let area = Rect::new(0, 1500, 1080, 700);
+        let mut kb = Keyboard::new();
+        let mut field = Field::new();
+        for label in ["q", "w", "e"] {
+            let (x, y) = centre_of(&kb, area, label);
+            let action = kb.press_at(area, x, y).expect("key under the tap");
+            field.apply(action);
+            kb.release();
+        }
+        assert_eq!(field.text(), "qwe");
+
+        let (x, y) = centre_of(&kb, area, "SHIFT");
+        let action = kb.press_at(area, x, y).expect("shift");
+        field.apply(action);
+        kb.release();
+        let (x, y) = centre_of(&kb, area, "R");
+        let action = kb.press_at(area, x, y).expect("r");
+        field.apply(action);
+        kb.release();
+        assert_eq!(field.text(), "qweR");
+    }
+
     #[test]
     fn a_touch_outside_the_keys_hits_nothing() {
         let kb = Keyboard::new();
