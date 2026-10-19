@@ -73,7 +73,7 @@ fn row2(log: fn(&str, u64), row: u32, label0: &[u8], a: u32) {
 
 /// The card clock the boot actually ended on, packed for `getvar emmc`:
 /// bits 0..8 the field in CLOCK_CONTROL, 8..16 the field the boot
-/// started with, 16..32 one nibble per rung tried, 32..40 the field
+/// started with, 16..40 one nibble per rung tried, 40..48 the field
 /// that failed first. Zero means the probe never ran.
 static CLK_RESULT: AtomicU64 = AtomicU64::new(0);
 static CLK_SAMPLE: AtomicU64 = AtomicU64::new(0);
@@ -115,7 +115,7 @@ pub fn clock_result() -> u64 {
 /// Packed for `getvar emmc`: bits 0..8 the chosen field, 8..16 the field
 /// the boot started with, 16..32 one nibble per rung (0 untried, 1 read,
 /// 2 clock refused, 3 status failed, 4 read failed, 5 read wrong,
-/// 6 reads disagreed), 32..40 the first field that failed. Zero means the
+/// 6 reads disagreed), 40..48 the first field that failed. Zero means the
 /// probe never ran.
 pub fn clock_probe(log: fn(&str, u64)) {
     let base = rd16(SDHCI_BASE, 0x2C) >> 8;
