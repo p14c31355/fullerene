@@ -42,7 +42,25 @@ const IC_STATUS_RFNE: u32 = 1 << 3;
 pub static TOUCH_STAGE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(b'.');
 pub static CHIP_ID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
+/// Busy-wait for about `ms` milliseconds.
+///
+/// The old version counted spin iterations (2000 per "millisecond"), which at
+/// this core's speed is tens of microseconds - so the 200 ms the FocalTech
+/// part requires after reset was really a couple of milliseconds, and the
+/// chip was asked for its id long before its firmware was listening.
+///
+/// The counter is not trustworthy either: `uptime_us` runs about ten times
+/// fast (that is what `oem sof` measures). So ask for ten times the time:
+/// if the counter is wrong in the direction we believe, the wait is right;
+/// if it is right after all, the cost is a second of boot, which is cheaper
+/// than a touchscreen that never answers.
 fn spin(ms: u32) {
+    let want = (ms as u64) * 10_000;
+    let t0 = crate::timer::uptime_us();
+    while crate::timer::uptime_us().saturating_sub(t0) < want {
+        core::hint::spin_loop();
+    }
+    // A floor, in case the counter never advances at all on this path.
     for _ in 0..(ms * 2000) {
         core::hint::spin_loop();
     }
@@ -97,16 +115,21 @@ unsafe fn i2c0_pinmux() {
 unsafe fn i2c0_master_init() {
     let base = ane::TOUCH_I2C0_BASE;
     wr32(base, IC_ENABLE, 0);
-    // 19.2 MHz / 400 kHz: the DW formula for fast mode with the stock
-    // deviation allowance. HCNT/LCNT are register counts of the input
-    // clock period: (19.2e6 / 400e3) = 48 total; the DW default split
-    // for fast mode is ~40/60 duty: hcnt ~ 19, lcnt ~ 29, minus the
-    // hardware minimums. The stock Linux hi6250 values for a 19.2 MHz
-    // input: hcnt=0x1c (28), lcnt=0x40 (64) - conservative and proven.
-    wr32(base, IC_FS_SCL_HCNT, 0x1c);
-    wr32(base, IC_FS_SCL_LCNT, 0x40);
-    wr32(base, IC_SS_SCL_HCNT, 0x8c);
-    wr32(base, IC_SS_SCL_LCNT, 0x11e);
+    // The counters are in units of the controller's input clock, so their
+    // meaning depends on a number this port has two answers for: the DTB
+    // inventory says 19.2 MHz, and the SoC dtsi says clock-rate = 128 MHz
+    // for i2c0. Guessing wrong in the fast direction is what breaks a bus
+    // (counters for 19.2 MHz on a 128 MHz input ask for 1.3 MHz of SCL), so
+    // assume the fastest plausible input and aim at standard mode:
+    // 128 MHz / 100 kHz = 1280 cycles, 40/60 split.
+    //
+    // If the mux turns out to select the divided clock instead, the bus runs
+    // at 1280 cycles of 19.2 MHz = 15 kHz: slow, legal, and still enough for
+    // a chip-id read. Slow is a cost; fast is a failure.
+    wr32(base, IC_FS_SCL_HCNT, 512);
+    wr32(base, IC_FS_SCL_LCNT, 768);
+    wr32(base, IC_SS_SCL_HCNT, 512);
+    wr32(base, IC_SS_SCL_LCNT, 768);
     // Master + fast mode + restart enabled, slave disabled.
     wr32(
         base,

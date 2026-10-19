@@ -85,10 +85,15 @@ pub unsafe fn bring_up(log: fn(&str, u64)) -> bool {
 /// refuses CON writes while enabled.
 unsafe fn master_init(addr: u16) {
     wr32(I2C4_BASE, IC_ENABLE, 0);
-    wr32(I2C4_BASE, IC_FS_SCL_HCNT, 0x1c);
-    wr32(I2C4_BASE, IC_FS_SCL_LCNT, 0x40);
-    wr32(I2C4_BASE, IC_SS_SCL_HCNT, 0x8c);
-    wr32(I2C4_BASE, IC_SS_SCL_LCNT, 0x11e);
+    // Same reasoning as the touch bus: counters are input-clock cycles, and
+    // the dtsi says clock-rate = 120 MHz for i2c4. Programme for that at
+    // standard mode (120 MHz / 100 kHz = 1200 cycles, 40/60) so that a mux
+    // selecting the divided clock gives a slow bus rather than an illegal
+    // one. A charger dump does not care about kHz.
+    wr32(I2C4_BASE, IC_FS_SCL_HCNT, 480);
+    wr32(I2C4_BASE, IC_FS_SCL_LCNT, 720);
+    wr32(I2C4_BASE, IC_SS_SCL_HCNT, 480);
+    wr32(I2C4_BASE, IC_SS_SCL_LCNT, 720);
     wr32(
         I2C4_BASE,
         IC_CON,
