@@ -457,6 +457,32 @@ pub use crate::platform::common::recovery::{boot_heartbeat, boot_recovery_check}
 
 pub static EP1_CONVERSATIONS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
+/// SOF packets seen, and the counter at the first one.
+///
+/// One SOF is one millisecond of the host's time, not ours. `oem sof` reports
+/// both so the counter's real frequency can be computed by division instead
+/// of argued about: `(counter_now - SOF_CTR0) / SOF_COUNT` is ticks per
+/// millisecond, and 1000x that is the true CNTFRQ, whatever firmware claims.
+pub static SOF_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub static SOF_CTR0: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// (frames counted, counter at the first frame, counter now)
+pub fn sof_measure() -> (u64, u64, u64) {
+    use core::sync::atomic::Ordering;
+    (
+        SOF_COUNT.load(Ordering::Relaxed),
+        SOF_CTR0.load(Ordering::Relaxed),
+        crate::timer::counter(),
+    )
+}
+
+/// Start a fresh measurement window.
+pub fn sof_restart() {
+    use core::sync::atomic::Ordering;
+    SOF_COUNT.store(0, Ordering::Relaxed);
+    SOF_CTR0.store(0, Ordering::Relaxed);
+}
+
 /// v307: conversations served this boot (see EP1_CONVERSATIONS).
 pub fn conversations_served() -> u32 {
     EP1_CONVERSATIONS.load(core::sync::atomic::Ordering::Relaxed)
@@ -2218,9 +2244,19 @@ pub fn service(log: fn(&str, u64)) {
         arm_setup_receive();
     }
     // The core wants SOF acknowledged when unmasked; it is masked off, but
-    // clear it defensively so the summary never sticks.
+    // clear it defensively so the summary never sticks. While it is here,
+    // count it: the host's SOF is exactly 1 ms, and it comes from the host
+    // controller rather than from this board's clock tree, so counting SOF
+    // against CNTPCT measures what the counter *actually* runs at. That is
+    // the 10x mystery in `uptime_us`, turned into a number `oem sof` can
+    // report instead of an inference from a deadline that fired early.
     if rd(GINTSTS) & GINT_SOF != 0 {
         wr(GINTSTS, GINT_SOF);
+        let c = crate::timer::counter();
+        if SOF_COUNT.load(Ordering::Relaxed) == 0 {
+            SOF_CTR0.store(c, Ordering::Relaxed);
+        }
+        SOF_COUNT.fetch_add(1, Ordering::Relaxed);
     }
     // v159 EP0-state visibility: one ring line per ~2 s of service passes.
     // v191: the v162 every-tick pump multiplied the pass rate ~100x, so the

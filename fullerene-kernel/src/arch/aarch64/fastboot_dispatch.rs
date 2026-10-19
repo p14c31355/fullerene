@@ -534,6 +534,35 @@ pub fn poll(log: fn(&str, u64)) {
     }
 
     #[cfg(fullerene_aarch64_ane)]
+    if cmd == b"oem sof" || cmd == b"oem sof restart" {
+        // `oem sof`: the host's 1 ms frame against our counter. Two numbers
+        // answer the 10x question by division: frames seen, and the counter
+        // span they cover. `restart` begins a fresh window.
+        if cmd == b"oem sof restart" {
+            crate::platform::ane_usb_dev::sof_restart();
+        }
+        let (n, c0, now) = crate::platform::ane_usb_dev::sof_measure();
+        let span = now.wrapping_sub(c0);
+        const HEX: [u8; 16] = *b"0123456789ABCDEF";
+        let mut line = [b' '; 26];
+        line[..4].copy_from_slice(b"sof ");
+        let mut put = |at: usize, v: u64| {
+            for i in 0..16 {
+                line[at + i] = HEX[((v >> (60 - i * 4)) & 0xF) as usize];
+            }
+        };
+        put(4, n); // frames
+        put(20, span); // counter ticks across those frames
+        crate::platform::ane_usb_dev::fb_send_info(&line[..]);
+        log("fb: sof_n=", n);
+        log("fb: sof_span=", span);
+        let mut ok = [0u8; 32];
+        let l = crate::adb_dispatch::fmt_okay_hex(n, &mut ok);
+        crate::platform::ane_usb_dev::ep1_send(&ok[..l]);
+        return;
+    }
+
+    #[cfg(fullerene_aarch64_ane)]
     if cmd == b"oem hs" || cmd == b"oem hs on" || cmd == b"oem hs off" {
         // `oem hs on|off`: ask the card to switch to high-speed timing and
         // then re-run the clock ladder. CMD6 writes one EXT_CSD byte, so
