@@ -714,6 +714,43 @@ fn ep0_send(data: &[u8]) {
     }
 }
 
+/// Repair a desynchronised control pipe without leaving the bus (v336q).
+///
+/// Everything the responder sends is derived from the SETUP packet it just
+/// read (`handle_setup` matches on `wValue` with no memory of the previous
+/// request), so a wrong reply can only come from a *transfer* that was
+/// already in flight: words left in the TX FIFO, an IN endpoint still
+/// armed, or a STALL the host has not seen cleared. All three are local
+/// fixes, and none of them needs a D+ cycle, so a garble can be repaired
+/// while enumeration carries on.
+pub fn ep0_resync() -> bool {
+    let was = rd(DOEPCTL0);
+    let in_was = rd(DIEPCTL0);
+    ep0_flush_tx_fifo();
+    // Clear STALL and re-arm both halves of EP0 for the next SETUP. EPDIS
+    // only applies while the endpoint is enabled, so gate it on EPENA.
+    let mut c = in_was & !EPCTL_STALL;
+    if c & EPCTL_EPENA != 0 {
+        c |= EPCTL_EPDIS;
+    }
+    wr(DIEPCTL0, c);
+    wr(
+        DIEPCTL0,
+        (c & !EPCTL_EPDIS) | EPCTL_EPENA | EPCTL_CNAK | EPCTL_USBACTEP,
+    );
+    let mut o = was & !EPCTL_STALL;
+    if o & EPCTL_EPENA != 0 {
+        o |= EPCTL_EPDIS;
+    }
+    wr(DOEPCTL0, o);
+    wr(
+        DOEPCTL0,
+        (o & !EPCTL_EPDIS) | EPCTL_EPENA | EPCTL_CNAK | EPCTL_USBACTEP,
+    );
+    // A resync is only meaningful if the pipe still looks alive afterwards.
+    (rd(DIEPCTL0) & EPCTL_EPENA != 0) && (rd(DOEPCTL0) & EPCTL_EPENA != 0)
+}
+
 /// Stall EP0 (both directions) until the next SETUP clears it.
 fn stall_ep0() {
     let c = rd(DIEPCTL0) | EPCTL_EPENA | EPCTL_EPDIS | EPCTL_STALL;

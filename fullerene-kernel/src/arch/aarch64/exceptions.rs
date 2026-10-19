@@ -1019,8 +1019,18 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                         }
                         GARBLE_RETRIES.store(g + 1, Ordering::Relaxed);
                         GARBLE_T0.store(beats, Ordering::Relaxed);
-                        crate::blackbox::text_puts("WD: GARBLE RECONNECT\n");
-                        super::platform::ane_usb_dev::usb_reconnect_begin();
+                        // v336q: repair the pipe in place first. Every reply
+                        // we send is derived from the SETUP just read, so a
+                        // re-armed EP0 with an empty FIFO answers the host's
+                        // next retry correctly; only a pipe that will not
+                        // re-arm needs the bus cycle (and that cycle is what
+                        // loses the enumeration).
+                        if super::platform::ane_usb_dev::ep0_resync() {
+                            crate::blackbox::text_puts("WD: GARBLE RESYNC\n");
+                        } else {
+                            crate::blackbox::text_puts("WD: GARBLE RECONNECT\n");
+                            super::platform::ane_usb_dev::usb_reconnect_begin();
+                        }
                     }
                 }
             }
