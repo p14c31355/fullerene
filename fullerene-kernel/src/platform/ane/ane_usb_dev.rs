@@ -2416,6 +2416,11 @@ fn trace_request(breq: u8, wvalue: u16, wlength: u16) {
 /// a wrap is itself evidence.
 fn trace_request_panel(breq: u8, wvalue: u16, wlength: u16) {
     use core::sync::atomic::{AtomicU32, Ordering};
+    // Only until the host configures us: after that the desktop owns the
+    // canvas and a per-request band copy would flicker over the UI.
+    if unsafe { CONFIGURED } {
+        return;
+    }
     static SLOT: AtomicU32 = AtomicU32::new(0);
     const ROWS: u32 = 8;
     let slot = SLOT.fetch_add(1, Ordering::Relaxed) % ROWS;
