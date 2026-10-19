@@ -1585,9 +1585,18 @@ fn fb_poll(log: fn(&str, u64)) {
     // The core can carry one stale transfer over from the loader's session;
     // anchor past any glued prefix so the dispatch still matches.
     let cmd = anchor_verb(cmd);
-    // v331 golf: the command length is consumed HERE (the handlers work
-    // on the copied slice view; the buffer is stable for this pass, and
-    // the next RX overwrites it). The 20 scattered resets collapse.
+    // v336c: the length is consumed HERE - for real this time. v331's
+    // comment claimed it, but the only write sat on the ADB-pending path,
+    // so a fastboot text command stayed "received" for every later service
+    // pass and was re-dispatched over and over. The client read a stale
+    // reply (a `getvar` FAIL arrived for a later `oem log`) and every
+    // variable looked unknown. `cmd` is a slice over FB_CMD and the next
+    // RX rewrites that buffer, so zeroing the length now cannot cut this
+    // pass short; the host also waits for the reply before sending again,
+    // so no partial transfer can be dropped here.
+    unsafe {
+        core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
+    }
     unsafe {
         DBG_FB_DISPATCH = DBG_FB_DISPATCH.wrapping_add(1);
         DBG_CMD_HEAD = 0;

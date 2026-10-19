@@ -978,23 +978,44 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                 // because the host is retrying a transfer in the gap. Cycles
                 // 1..3 scattered -71/-110 across boots and the fourth took
                 // the panel away entirely (panic L=990 C=29, SETUPS=0x20).
+                // v336b: the quiet test is the whole wire, not SETUPs alone.
+                // A host retrying an enumeration it cannot finish sends bus
+                // resets with no SETUP between them, and a held boot that has
+                // just reached config-1 sits in exactly that gap. Counting
+                // only SETUPs read that gap as "the host abandoned us" and
+                // cycled D+ into a live exchange - cycles 1..3 scattered
+                // -71/-110 across boots, the fourth panicked (L=990 C=29,
+                // SETUPS=0x20). Real garble is silence: no SETUP *and* no
+                // host event at all for the full window.
+                static LAST_EVENTS: AtomicU32 = AtomicU32::new(0);
+                // v336c: giving up inside a hold must not take the panel with
+                // it. Stand down and keep serving; only a boot that is not
+                // documenting a hold resets to the loader.
+                static GARBLE_GAVE_UP: AtomicU32 = AtomicU32::new(0);
                 if !had_conversation
-                    && !super::platform::ane_fb::hold_active()
+                    && GARBLE_GAVE_UP.load(Ordering::Relaxed) == 0
                     && super::platform::ane_usb_dev::usb_config_was_1()
                     && super::platform::ane_usb_dev::strings_served() > 0
                 {
-                    // v305: snapshot the SETUP counter each check pass.
+                    // v305: snapshot the counters each check pass.
                     let now_setups = super::platform::ane_usb_dev::setups_seen();
                     let prev = LAST_SETUP_COUNT.swap(now_setups, Ordering::Relaxed);
-                    let quiet = now_setups == prev;
+                    let now_events = super::platform::ane_usb_dev::host_events();
+                    let prev_events = LAST_EVENTS.swap(now_events, Ordering::Relaxed);
+                    let quiet = now_setups == prev && now_events == prev_events;
                     let g0 = GARBLE_T0.load(Ordering::Relaxed);
                     if g0 == 0 || !quiet {
                         GARBLE_T0.store(beats, Ordering::Relaxed);
                     } else if beats.wrapping_sub(g0) > reconnect_wait_beats {
                         let g = GARBLE_RETRIES.load(Ordering::Relaxed);
                         if g >= reconnect_max {
-                            crate::blackbox::text_puts("WD: GARBLE STUCK\n");
-                            panic!("watchdog: garbled enumeration never recovered");
+                            if super::platform::ane_fb::hold_active() {
+                                GARBLE_GAVE_UP.store(1, Ordering::Relaxed);
+                                crate::blackbox::text_puts("WD: GARBLE GAVEUP\n");
+                            } else {
+                                crate::blackbox::text_puts("WD: GARBLE STUCK\n");
+                                panic!("watchdog: garbled enumeration never recovered");
+                            }
                         }
                         GARBLE_RETRIES.store(g + 1, Ordering::Relaxed);
                         GARBLE_T0.store(beats, Ordering::Relaxed);
