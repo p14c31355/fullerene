@@ -571,6 +571,25 @@ pub fn clear() {
     }
 }
 
+/// Paint why the kernel died, on the panel, big enough and long enough to
+/// read. The panic handler used to write only to the durable text ring and
+/// the loader, so the dying words flashed past between the fault and the
+/// reset. Rows 0-3 of the console strip carry the banner, the file and the
+/// line; the caller holds the screen afterwards.
+pub fn panic_screen(file: &str, line: u32, column: u32) {
+    let name = match file.rfind('/') {
+        Some(slash) => &file[slash + 1..],
+        None => file,
+    };
+    paint_at_force(0, 8, 12, b"* KERNEL PANIC *");
+    paint_at_force(1, 8, name.len().min(40), name.as_bytes());
+    paint_hex_at_force(2, 8, b"LINE", line as u64);
+    paint_hex_at_force(3, 8, b"COL", column as u64);
+    for row in 0..4 {
+        flush_row_force(row);
+    }
+}
+
 /// Paint a text line at an explicit x (the right-column instruments). The
 /// cell band it clears is its own, so it never disturbs the left text rows
 /// painted by the boot report.

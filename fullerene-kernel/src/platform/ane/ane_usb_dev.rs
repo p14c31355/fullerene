@@ -2403,6 +2403,45 @@ fn trace_request(breq: u8, wvalue: u16, wlength: u16) {
     crate::blackbox::text_byte(b' ');
     ring_hex8(wlength as u32);
     crate::blackbox::text_byte(b'\n');
+    trace_request_panel(breq, wvalue, wlength);
+}
+
+/// The same trace, on the panel, in the order the requests arrived.
+///
+/// The ring needs a working USB to read back, which is exactly what a
+/// failing enumeration does not have. A photo of rows 4..12 names the
+/// request that killed the boot: `q=06 wv=0200 wl=0009` is the config
+/// descriptor start read, and whatever follows it is the request the host
+/// gave up on. Eight rows is every request a clean enumeration needs, so
+/// a wrap is itself evidence.
+fn trace_request_panel(breq: u8, wvalue: u16, wlength: u16) {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    static SLOT: AtomicU32 = AtomicU32::new(0);
+    const ROWS: u32 = 8;
+    let slot = SLOT.fetch_add(1, Ordering::Relaxed) % ROWS;
+    let mut buf = [0u8; 32];
+    let mut n = 0;
+    for (i, part, width) in [
+        (b'q', breq as u32, 2u32),
+        (b'w', wvalue as u32, 4),
+        (b'l', wlength as u32, 4),
+    ]
+    .into_iter()
+    {
+        buf[n] = i;
+        n += 1;
+        buf[n] = b'=';
+        n += 1;
+        for k in (0..width).rev() {
+            let d = ((part >> (4 * k)) & 0xf) as u8;
+            buf[n] = if d < 10 { b'0' + d } else { b'A' + d - 10 };
+            n += 1;
+        }
+        buf[n] = b' ';
+        n += 1;
+    }
+    crate::platform::ane_fb::paint_at_force(4 + slot, 8, n, &buf[..n]);
+    crate::platform::ane_fb::flush_row_force(4 + slot);
 }
 
 /// Durable-ring EP0 state dump (v159): GINTSTS, DOEPCTL0, the latch nibble

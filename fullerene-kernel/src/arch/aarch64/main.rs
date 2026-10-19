@@ -1687,6 +1687,19 @@ fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
         uart::put_hex("panic: line=", location.line() as u64);
         uart::put_hex("panic: column=", location.column() as u64);
     }
+    // The panel is the only fault channel on this phone (no serial console
+    // is pinned out), so the dying words go on screen and the screen is
+    // held. Without the hold the text exists for a few hundred milliseconds
+    // between the fault and the loader, which is why every report so far
+    // read "it flashes past". 30 s is enough to photograph and long enough
+    // that the window catcher still sees the loader well inside its wait.
+    if let Some(location) = info.location() {
+        platform::ane_fb::panic_screen(location.file(), location.line(), location.column());
+    }
+    let deadline = timer::uptime_us().saturating_add(30_000_000);
+    while timer::uptime_us() < deadline {
+        core::hint::spin_loop();
+    }
     // Do not park: reset straight into the loader's fastboot (reason
     // BOOTLOADER). Parking lets the watchdog reset us without a reason,
     // which feeds the loader's boot-fail counter and eventually its
