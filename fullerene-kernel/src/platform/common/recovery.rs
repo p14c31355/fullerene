@@ -129,6 +129,10 @@ pub fn boot_recovery_check(beats: u32) {
     if frozen_at == 0 {
         FROZEN_AT.store(beats, Ordering::Relaxed);
         crate::blackbox::text_puts("WD: BOOT FROZEN\n");
+        // The boot thread is the one that stopped, so it cannot report where.
+        // Paint the pass it never returned from from this (pump) context.
+        #[cfg(fullerene_aarch64_ane)]
+        crate::platform::ane_fb::freeze_frame();
         return;
     }
     if beats.wrapping_sub(frozen_at) > 7200 {

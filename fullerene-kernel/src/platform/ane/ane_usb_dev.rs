@@ -1007,9 +1007,30 @@ fn handle_reset(log: fn(&str, u64)) {
     init_ep1(log);
 }
 
+/// True while one context owns the RX FIFO pop window.
+///
+/// Two callers reach pop_rx: the timer pump (IRQ) and the boot thread, both
+/// in every pass. The FIFO is a single cursor: if one takes the status word
+/// and the other takes the data words, RXFLVL stays asserted over an empty
+/// FIFO and the loop below never ends - the boot thread hangs, the pump
+/// lives, and the panel says BOOT FROZEN. That surfaced the first time the
+/// host sent a bulk OUT, because enumeration had never got that far.
+static RX_POP_OWNER: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 /// Pop and act on every RX FIFO status entry (the packet stream).
 fn pop_rx(log: fn(&str, u64)) {
+    use core::sync::atomic::Ordering;
+    // One consumer per window; the other context retries on its next pass.
+    if RX_POP_OWNER.swap(true, Ordering::Acquire) {
+        return;
+    }
+    // A bounded window: even a wedged cursor must not own the boot thread.
+    let mut entries = 0u32;
     while rd(GINTSTS) & GINT_RXFLVL != 0 {
+        entries = entries.wrapping_add(1);
+        if entries > 256 {
+            break;
+        }
         let s = rd(GRXSTSP);
         unsafe {
             DBG_RX_ENTRIES = DBG_RX_ENTRIES.wrapping_add(1);
@@ -1140,6 +1161,7 @@ fn pop_rx(log: fn(&str, u64)) {
             _ => {}
         }
     }
+    RX_POP_OWNER.store(false, Ordering::Release);
 }
 
 /// v184: EP1 diagnostics for the live screen instruments: the IN-endpoint
@@ -2377,6 +2399,29 @@ pub fn service(log: fn(&str, u64)) {
 static PASS_US: [core::sync::atomic::AtomicU32; 8] =
     [const { core::sync::atomic::AtomicU32::new(0) }; 8];
 static PASS_PHASE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// v343: the pass the boot thread never returned from, plus the endpoint
+/// state it left armed.
+///
+/// A frozen boot thread cannot paint - it is the thing that stopped - so the
+/// freeze watchdog (which runs on the pump) asks for this and paints it from
+/// its own context. PHASE names the callee: 1 entry, 2 handle_reset, 3
+/// enumdone, 4 pop_rx, 5 ep0, 6 ep1, 7 pump tail; 0 means the thread was
+/// stuck outside service(), which is a different bug with a different owner.
+pub fn freeze_report() -> [(&'static str, u64); 8] {
+    use core::sync::atomic::Ordering;
+    [
+        ("PHASE", PASS_PHASE.load(Ordering::Relaxed) as u64),
+        ("GINT", rd(GINTSTS) as u64),
+        ("OEPINT", rd(0xb08 as usize) as u64),
+        ("IEPINT", rd(0x908 as usize) as u64),
+        ("DOEPCTL1", rd(DOEPCTL1) as u64),
+        ("DOEPTSIZ1", rd(DOEPTSIZ1) as u64),
+        ("DIEPTSIZ0", rd(DIEPTSIZ0) as u64),
+        ("SETUPS", SETUP_SEEN.load(Ordering::Relaxed) as u64),
+    ]
+}
+
 static PASS_T0: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 fn pass_enter(phase: u32) {

@@ -743,6 +743,31 @@ pub fn hold_frame(tick: u32, uptime_s: u64, setups: u64, serviced: u64) {
     flush_panel();
 }
 
+/// v343: what the boot thread was doing when it stopped.
+///
+/// Painted by the freeze watchdog (pump context) on first detection, because
+/// the boot thread is the thing that is stuck and therefore cannot draw.
+pub fn freeze_frame() {
+    let canvas: &mut [u32] =
+        unsafe { core::slice::from_raw_parts_mut(CANVAS as *mut u32, CANVAS_LEN / 4) };
+    for px in canvas.iter_mut() {
+        *px = HOLD_BG;
+    }
+    paint_at_force(0, 8, 24, b"BOOT THREAD STUCK");
+    for (i, (label, value)) in crate::platform::ane_usb_dev::freeze_report()
+        .iter()
+        .enumerate()
+    {
+        paint_hex_at_force(1 + i as u32, 8, label.as_bytes(), *value);
+    }
+    paint_at_force(9, 8, 20, b"PHOTOGRAPH ME");
+    paint_log_tail_force(34, 8);
+    unsafe {
+        crate::blackbox::cache_clean(CANVAS, CANVAS_LEN);
+    }
+    flush_panel();
+}
+
 /// The durable text ring's tail, on the panel.
 ///
 /// The ring already records every SETUP (`ud: q=...`), but reading it back
