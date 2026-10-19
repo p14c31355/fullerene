@@ -1153,8 +1153,16 @@ pub fn write_sectors(lba: u32, data: &[u8], log: fn(&str, u64)) -> (u64, u64) {
     let t0 = crate::timer::uptime_us();
     let mut i = 0usize;
     while i < total {
-        if crate::timer::uptime_us().saturating_sub(t0) > 150_000_000 {
+        if crate::timer::uptime_us().saturating_sub(t0) > 900_000_000 {
             log("em: wr_timeout=", i as u64);
+            // v336l: carry the elapsed ms in the reply so the achieved
+            // rate can be worked out without another boot.
+            LAST_WR.store(
+                0x4000_0000
+                    | ((crate::timer::uptime_us().saturating_sub(t0) / 1000).min(0x7FFF_FFFF)
+                        as u32),
+                Ordering::Relaxed,
+            );
             bad += (total - i) as u64;
             break;
         }
