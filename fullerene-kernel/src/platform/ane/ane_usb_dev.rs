@@ -638,9 +638,6 @@ fn ep0_send(data: &[u8]) {
         TRANSACTION_BUSY = true;
         IN_WAS_DATA = n > 0;
     }
-    // v302: drain any stale response from the EP0 TX FIFO BEFORE arming the
-    // new one (see ep0_flush_tx_fifo - the one-behind root cause).
-    ep0_flush_tx_fifo();
     // v206: never write TSIZ while a transfer is still armed. While EPENA
     // reads 1 the core ignores TSIZ/EPENA writes - the new xfersize is
     // silently dropped and the OLD size drives the packet (stale-size
@@ -670,6 +667,14 @@ fn ep0_send(data: &[u8]) {
         // machine respond). The USB-zombie lane watches this counter.
         EP0_OK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     }
+    // v332x: drain the EP0 TX FIFO only AFTER the endpoint has stopped.
+    // The order is Linux's (dwc2 gadget: dwc2_hsotg_ep_stop_xfr ->
+    // dwc2_hsotg_txfifo_flush -> load). Flushing while EPENA was still set
+    // pulled the FIFO out from under a transfer the core still owned, which
+    // is the shape that produces a surplus packet: the host answered a
+    // 255-byte string read with the tail of the previous descriptor and
+    // reported EOVERFLOW (-75) on string 0 every single boot.
+    ep0_flush_tx_fifo();
     wr(DIEPTSIZ0, (1 << 19) | ((n & 0x7f) as u32));
     wr(
         DIEPCTL0,
