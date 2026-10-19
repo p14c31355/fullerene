@@ -221,7 +221,12 @@ pub(super) fn recover_lines(log: fn(&str, u64)) {
     log("em: recovered=", rd8(SDHCI_BASE, 0x2F) as u64);
 }
 
-pub(super) fn sdhci_data_read(idx: u16, arg: u32, words: &mut [u32], log: fn(&str, u64)) -> (bool, u32, u32) {
+pub(super) fn sdhci_data_read(
+    idx: u16,
+    arg: u32,
+    words: &mut [u32],
+    log: fn(&str, u64),
+) -> (bool, u32, u32) {
     wait_idle(0x40000, log);
     wr16(SDHCI_BASE, 0x04, 512); // block size 0x200
     wr16(SDHCI_BASE, 0x06, 1); // one block
@@ -281,7 +286,12 @@ pub(super) fn sdhci_data_read(idx: u16, arg: u32, words: &mut [u32], log: fn(&st
 /// it (vendor `sdhci_write_block_pio` + `sdhci_transfer_pio`). The card's
 /// DAT0 programming busy is absorbed by the completion poll. Reports
 /// (complete, normal_int, error_status).
-pub(super) fn sdhci_data_write(idx: u16, arg: u32, words: &[u32], log: fn(&str, u64)) -> (bool, u32, u32) {
+pub(super) fn sdhci_data_write(
+    idx: u16,
+    arg: u32,
+    words: &[u32],
+    log: fn(&str, u64),
+) -> (bool, u32, u32) {
     wr16(SDHCI_BASE, 0x04, 512); // block size 0x200
     wr16(SDHCI_BASE, 0x06, 1); // one block
     wr16(SDHCI_BASE, 0x0C, 0x02); // BLK_CNT_EN, WRITE direction, no DMA

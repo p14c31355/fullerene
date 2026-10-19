@@ -812,4 +812,3 @@ pub fn probe(log: fn(&str, u64), stage: u32) {
     log("em: probe_done=", 1);
     log("em: stage=", stage as u64);
 }
-

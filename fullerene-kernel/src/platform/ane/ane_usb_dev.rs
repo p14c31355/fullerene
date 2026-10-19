@@ -263,21 +263,11 @@ static mut TRANSACTION_BUSY: bool = false;
 /// True when the last queued IN phase carried data (so a status OUT still
 /// follows) - false when it was itself the zero-length status (no follow-up).
 static mut IN_WAS_DATA: bool = false;
-/// The fastboot command line being received on the EP1 bulk OUT endpoint.
-const FB_CMD_MAX: usize = 128;
-static mut FB_CMD: [u8; FB_CMD_MAX] = [0; FB_CMD_MAX];
-static mut FB_CMD_LEN: usize = 0;
+/// The fastboot command line and the download staging area live in
+/// `fastboot_session`: the driver moves bytes, the session decides what
+/// they mean.
+use crate::platform::fastboot_session as fb;
 
-/// Fastboot `download:` staging. The payload lands here whole (the kernel
-/// image is ~11.4 MB, so the area is 12 MiB of .bss) before any write path
-/// consumes it. DL_STATE: 0 idle, 1 receiving, 2 complete-and-unreplied.
-const DOWNLOAD_MAX: usize = 12 << 20;
-static mut DOWNLOAD_BUF: [u8; DOWNLOAD_MAX] = [0; DOWNLOAD_MAX];
-static mut DL_STATE: u8 = 0;
-static mut DL_REMAIN: usize = 0;
-static mut DL_LEN: usize = 0;
-/// Last progress timestamp (uptime_us) for the download timeout in service().
-static mut DL_T0: u64 = 0;
 /// One-time per boot: the first EP1 reply sweeps the core's stale TX FIFO.
 static mut SWEPT_FIRST_REPLY: bool = false;
 
@@ -514,7 +504,7 @@ pub fn diag() -> FbDiag {
             lk_doepctl1: snap[1],
             diepctl1: rd(DIEPCTL1),
             doepctl1: rd(DOEPCTL1),
-            fb_len: core::ptr::addr_of!(FB_CMD_LEN).read() as u32,
+            fb_len: fb::cmd_len() as u32,
             fb_disp: core::ptr::addr_of!(DBG_FB_DISPATCH).read(),
             fb_reply: core::ptr::addr_of!(DBG_FB_REPLY).read(),
             rx_entries: core::ptr::addr_of!(DBG_RX_ENTRIES).read(),
@@ -879,10 +869,7 @@ fn handle_reset(log: fn(&str, u64)) {
     // download so commands flow again. (A stray `download:` whose client
     // bailed used to eat every later command until the next reboot.)
     unsafe {
-        core::ptr::addr_of_mut!(DL_STATE).write(0);
-        core::ptr::addr_of_mut!(DL_REMAIN).write(0);
-        core::ptr::addr_of_mut!(DL_LEN).write(0);
-        core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
+        fb::reset();
     }
     // v159: a bus reset also voids the control-transfer state machine. If
     // the boot thread froze mid-enumeration, TRANSACTION_BUSY could stay
@@ -1019,34 +1006,10 @@ fn pop_rx(log: fn(&str, u64)) {
                         let w = fifo_pop_word();
                         let b = w.to_le_bytes();
                         let take = if n >= 4 { 4 } else { n };
-                        unsafe {
-                            for &byte in b.iter().take(take) {
-                                let remain = core::ptr::addr_of!(DL_REMAIN).read();
-                                if remain > 0 {
-                                    // A download payload owns EP1 OUT until
-                                    // its last byte; the trailing padding of
-                                    // the final word is dropped.
-                                    let len = core::ptr::addr_of!(DL_LEN).read();
-                                    if len < DOWNLOAD_MAX {
-                                        let buf = core::ptr::addr_of_mut!(DOWNLOAD_BUF) as *mut u8;
-                                        buf.add(len).write(byte);
-                                        core::ptr::addr_of_mut!(DL_LEN).write(len + 1);
-                                    }
-                                    core::ptr::addr_of_mut!(DL_T0).write(crate::timer::uptime_us());
-                                    let next = remain - 1;
-                                    core::ptr::addr_of_mut!(DL_REMAIN).write(next);
-                                    if next == 0 {
-                                        core::ptr::addr_of_mut!(DL_STATE).write(2);
-                                    }
-                                } else {
-                                    let len = core::ptr::addr_of!(FB_CMD_LEN).read();
-                                    if len < FB_CMD_MAX {
-                                        let buf = core::ptr::addr_of_mut!(FB_CMD) as *mut u8;
-                                        buf.add(len).write(byte);
-                                        core::ptr::addr_of_mut!(FB_CMD_LEN).write(len + 1);
-                                        DBG_EP1_BYTES = DBG_EP1_BYTES.wrapping_add(1);
-                                    }
-                                }
+                        for &byte in b.iter().take(take) {
+                            fb::take_byte(byte);
+                            unsafe {
+                                DBG_EP1_BYTES = DBG_EP1_BYTES.wrapping_add(1);
                             }
                         }
                         n = n.saturating_sub(4);
@@ -1056,7 +1019,7 @@ fn pop_rx(log: fn(&str, u64)) {
                     // payload, so dispatching there answered every command
                     // with the previous one's reply - the host saw the
                     // product answer for serialno and a FAIL for download:.
-                    if unsafe { core::ptr::addr_of!(DL_REMAIN).read() } == 0 {
+                    if fb::dl_remain() == 0 {
                         fb_poll(log);
                     }
                 } else {
@@ -1533,7 +1496,10 @@ fn fb_vars() -> [crate::fastboot_dispatch::VarEntry; 9] {
                 if let Some((first, last)) = super::ane_emmc::find_partition(part, |tag, v| {
                     super::super::uart::put_hexln(tag, v);
                 }) {
-                    let n = crate::adb_dispatch::fmt_okay_hex_bare(((last - first + 1) as u64) * 512, &mut gv);
+                    let n = crate::adb_dispatch::fmt_okay_hex_bare(
+                        ((last - first + 1) as u64) * 512,
+                        &mut gv,
+                    );
                     out[..n].copy_from_slice(&gv[..n]);
                     n
                 } else {
@@ -1560,13 +1526,13 @@ fn fb_getvar_io(name: &[u8]) {
 fn fb_poll(log: fn(&str, u64)) {
     // A download in flight owns EP1 OUT: skip command parsing until its
     // payload is complete, then answer it once and resume.
-    match unsafe { core::ptr::addr_of!(DL_STATE).read() } {
+    match fb::dl_state() {
         1 => return,
         2 => {
-            let len = unsafe { core::ptr::addr_of!(DL_LEN).read() };
-            unsafe { core::ptr::addr_of_mut!(DL_STATE).write(0) };
+            let len = fb::dl_len();
+            fb::dl_reset();
             let (w0, wl) = unsafe {
-                let base = core::ptr::addr_of!(DOWNLOAD_BUF) as *const u8;
+                let base = fb::dl_data().as_ptr();
                 let mut first = [0u8; 4];
                 let mut last = [0u8; 4];
                 for i in 0..4 {
@@ -1586,7 +1552,7 @@ fn fb_poll(log: fn(&str, u64)) {
         }
         _ => {}
     }
-    let len = unsafe { core::ptr::addr_of!(FB_CMD_LEN).read() };
+    let len = fb::cmd_len();
     if len == 0 {
         return;
     }
@@ -1601,8 +1567,7 @@ fn fb_poll(log: fn(&str, u64)) {
     // length before the fastboot NUL-trim below can cut it short. Text
     // commands fail the frame magic instantly and fall through untouched.
     if len >= crate::adb_wire::HEADER_BYTES {
-        let raw =
-            unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(FB_CMD) as *const u8, len) };
+        let raw = fb::cmd();
         // The RX FIFO can carry loader-session leftovers in front of our
         // frame (the same glued-prefix defect the text path anchors around).
         // Decoding the raw buffer made every CNXN fail the magic check and
@@ -1627,7 +1592,7 @@ fn fb_poll(log: fn(&str, u64)) {
                     // magic check and drop the reply).
                     let skip = anchored.as_ptr() as usize - raw.as_ptr() as usize;
                     unsafe {
-                        let src = (core::ptr::addr_of!(FB_CMD) as *const u8).add(skip);
+                        let src = fb::cmd().as_ptr().add(skip);
                         let dst = core::ptr::addr_of_mut!(ADB_PENDING) as *mut u8;
                         let n = anchored.len().min(ADB_PENDING_CAP);
                         core::ptr::copy_nonoverlapping(src, dst, n);
@@ -1669,7 +1634,7 @@ fn fb_poll(log: fn(&str, u64)) {
     // NUL too, everything past the first NUL is padding/junk and ignored.
     let mut end = len;
     unsafe {
-        let buf = core::ptr::addr_of!(FB_CMD) as *const u8;
+        let buf = fb::cmd().as_ptr();
         for i in 0..len {
             if buf.add(i).read() == 0 {
                 end = i;
@@ -1680,7 +1645,7 @@ fn fb_poll(log: fn(&str, u64)) {
     if end == 0 {
         return; // nothing but padding
     }
-    let cmd = unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(FB_CMD) as *const u8, end) };
+    let cmd = &fb::cmd()[..end];
     // The core can carry one stale transfer over from the loader's session;
     // anchor past any glued prefix so the dispatch still matches.
     let cmd = anchor_verb(cmd);
@@ -1689,12 +1654,12 @@ fn fb_poll(log: fn(&str, u64)) {
     // so a fastboot text command stayed "received" for every later service
     // pass and was re-dispatched over and over. The client read a stale
     // reply (a `getvar` FAIL arrived for a later `oem log`) and every
-    // variable looked unknown. `cmd` is a slice over FB_CMD and the next
+    // variable looked unknown. `cmd` is a slice over the session buffer and the next
     // RX rewrites that buffer, so zeroing the length now cannot cut this
     // pass short; the host also waits for the reply before sending again,
     // so no partial transfer can be dropped here.
     unsafe {
-        core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
+        fb::clear_cmd();
     }
     unsafe {
         DBG_FB_DISPATCH = DBG_FB_DISPATCH.wrapping_add(1);
@@ -1775,7 +1740,7 @@ fn fb_poll(log: fn(&str, u64)) {
             core::ptr::addr_of_mut!(LOG_LINES).write(0);
             core::ptr::addr_of_mut!(LOG_END).write(written);
             core::ptr::addr_of_mut!(LOG_MAIN).write(main);
-            core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
+            fb::clear_cmd();
         }
         return;
     }
@@ -1794,14 +1759,11 @@ fn fb_poll(log: fn(&str, u64)) {
 
     if let Some(rest) = cmd.strip_prefix(b"download:") {
         let size = parse_hex(rest) as usize;
-        if size == 0 || size > DOWNLOAD_MAX {
+        if size == 0 || size > fb::DOWNLOAD_MAX {
             ep1_send(b"FAILbad download size");
         } else {
             unsafe {
-                core::ptr::addr_of_mut!(DL_REMAIN).write(size);
-                core::ptr::addr_of_mut!(DL_LEN).write(0);
-                core::ptr::addr_of_mut!(DL_STATE).write(1);
-                core::ptr::addr_of_mut!(DL_T0).write(crate::timer::uptime_us());
+                fb::dl_begin(size as usize);
             }
             // The fastboot protocol wants "DATA" + the size as eight
             // uppercase hex digits, then the raw payload follows.
@@ -1822,8 +1784,8 @@ fn fb_poll(log: fn(&str, u64)) {
     }
 
     if let Some(part) = cmd.strip_prefix(b"flash:") {
-        let dl_len = unsafe { core::ptr::addr_of!(DL_LEN).read() };
-        if dl_len == 0 || unsafe { core::ptr::addr_of!(DL_STATE).read() } != 0 {
+        let dl_len = fb::dl_len();
+        if dl_len == 0 || fb::dl_state() != 0 {
             ep1_send(b"FAILno download in progress");
         } else {
             let mut nm = 0u64;
@@ -1835,12 +1797,7 @@ fn fb_poll(log: fn(&str, u64)) {
                 None => ep1_send(b"FAILpartition not found"),
                 Some((start, _last)) => {
                     log("fb: flash_lba=", start as u64);
-                    let data = unsafe {
-                        core::slice::from_raw_parts(
-                            core::ptr::addr_of!(DOWNLOAD_BUF) as *const u8,
-                            dl_len,
-                        )
-                    };
+                    let data = fb::dl_data();
                     let (ok_s, bad_s) = super::ane_emmc::write_sectors(start, data, log);
                     log("fb: flash_ok=", ok_s);
                     log("fb: flash_bad=", bad_s);
@@ -2719,7 +2676,7 @@ pub fn service(log: fn(&str, u64)) {
                 if let Some(pkt) = crate::adb_wire::decode(raw).ok() {
                     adb_dispatch_io(&pkt);
                 }
-                core::ptr::addr_of_mut!(FB_CMD_LEN).write(0);
+                fb::clear_cmd();
             }
         }
     }
@@ -2733,14 +2690,12 @@ pub fn service(log: fn(&str, u64)) {
     }
     // A `download:` that stops receiving (client died mid-transfer) must
     // not eat every later command: abort it after ~15 s without a byte.
-    if unsafe { core::ptr::addr_of!(DL_STATE).read() } == 1 {
+    if fb::dl_state() == 1 {
         let now = crate::timer::uptime_us();
-        let t0 = unsafe { core::ptr::addr_of!(DL_T0).read() };
+        let t0 = fb::dl_t0();
         if now.saturating_sub(t0) > 15_000_000 {
             unsafe {
-                core::ptr::addr_of_mut!(DL_STATE).write(0);
-                core::ptr::addr_of_mut!(DL_REMAIN).write(0);
-                core::ptr::addr_of_mut!(DL_LEN).write(0);
+                fb::dl_reset();
             }
             log("fb: dl_timeout=", 1);
         }
