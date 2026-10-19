@@ -1,39 +1,47 @@
-# Status — 2026-10-20 (small hours)
+# Status — 2026-10-19 22:2x (bench night)
 
-## Device
+## Where the hold actually ends
 
-Off-bus, last seen 19:4x. The flashed build is `v331z-panicpeek3`, whose
-hold is unbounded in that binary: it halts before USB and never returns to
-LK, so nothing can be flashed until someone power-cycles it. (The bounded
-45 s hold landed after that image was built; every later build returns to
-LK on its own.)
+The green hold is not being cut by its own loop: the counter stops at
+tick 31 (≈15.5 s) and the panel then turns **red**. A panic screen is
+confirmed on the device. So the hold runs, paints, and *dies* — the
+45 s budget never runs out.
 
-`~/dev/p20-root/watch_flash.sh <image> <hours>` is watching for the window.
-It gates on serial `SCV7N18927000473` **and** product `Fastboot2.0`, flashes
-once, reboots, and dumps the next `journalctl -k usb 1-1` lines to
-`logs/watch_flash.*.log` — so the enumeration evidence is collected even if
-nobody is watching the terminal.
+`v332n-panicred` (md5 `207a581afa8a8e13b9a68227d8654bd4`, commit
+`648aa186`) makes that legible: whole panel red, line number in white
+digits, column in yellow digits, file name small at the top, held for
+uptime 300 s (≈2.0–2.5 min of real time — the SoC clock runs fast).
+
+## The reader's own bug (found tonight, fixed in `acef2a72`)
+
+`report_previous_panic()` scanned the durable block for
+`FULLERENE AARCH64 PANIC`, a marker **nothing ever wrote**, so it
+answered "none found" on every boot since it was written. And when it
+did find a record it painted rows 58–59, below the canvas — invisible
+by construction. The panic handler now calls `blackbox::panic_record`,
+which writes marker, file, line and column; the reader paints the
+previous panic as a green field with the same white/yellow digits, and
+holds for the peek build. One photograph, taken minutes after the fact,
+answers what the last boot died of.
 
 ## Next flash
 
-`artifacts/fullerene-ane-v332b-battery.img` (md5 `cc2fee5dfa5dcc6260c2a3e1c3730a52`)
+`artifacts/fullerene-ane-v332o-prevpanic.img` (md5 `b62b72179038f0270885c4c07a985579`,
+build `FULLERENE_ANE_PANIC_PEEK=1`, commit `acef2a72`).
 
-Contents, in boot order: panic text hold (45 s, then LK on its own), enum
-ledger on the panel, touch → shell input, launcher hit test, battery capsule
-in the status bar. `cargo test -p solvent` 37 passed, kernel suites 29/7/12/
-27/5.
+Flashed 22:18:47. First boot has no record yet (nothing was written
+before this image), so it is expected to be quiet; the second boot —
+the one `watch_flash.sh` is waiting to reflash — is the one that shows
+`PREVIOUS PANIC` with the white line and the yellow column.
 
-## Reading the next panel photograph
+## Ruled out tonight (so they stay ruled out)
 
-| SETUPS | ADDR | reading |
-|---|---|---|
-| 0 | – | the SETUP never reaches `handle_setup` — RX pop / reset ordering, or EP0 armed late |
-| >0 | 0 | first SETUP answered wrongly (`-71`), i.e. a phantom SETUP or a stalled standard request |
-| >0 | >0, CFG=0 | dies between SET_ADDRESS and GET_DESCRIPTOR(config) |
-
-`WAIT` counts passes of the serve loop, so it also tells whether the loop ran
-at all. The battery capsule in the status bar is the second reading: if it
-fills, the PMU path works and the voltage sample is real.
+- `delay_ms` spin cap — fixed in `3ffa7587`, hold now reaches ~15 s.
+- Event ledger overrun — rows 38..57 with `LINE_PITCH = 24` land at
+  y 1598..2054, inside 2340; `render_text` clips both axes.
+- Explicit panics on the enumeration path — the only `panic!` in
+  `ane_usb_dev.rs` is the deliberate `oem crash` handler at 1746.
+- `delay_ticks` — no panic path; it returns, it does not fail.
 
 ## Why `-71` is probably a symptom, not the cause
 
