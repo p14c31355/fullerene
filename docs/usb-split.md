@@ -1,55 +1,43 @@
 # Splitting the ANE USB driver
 
-Written 2026-10-20 while the phone was on the boot loader's fallback image
-and nothing could be flashed. It records the split this file *should* have
-and why it has not happened yet, so the next session does it in one pass
-with a device in reach instead of guessing.
+Updated 2026-10-20 04:00 JST. The original version of this file described a
+move that has since shipped, so this is the state after it.
 
-## What is there now
+## What shipped
 
-`platform/ane/ane_usb_dev.rs` (2833 lines) holds four responsibilities:
+| move | commit | result |
+|---|---|---|
+| fastboot session state (buffers, byte demux) | `8e6d3f1f` → `9b235efe` | `src/fastboot_session.rs`, 147 lines, platform-free |
+| the command interpreter (`fb_poll`) | `2c51a6ee` | `arch/aarch64/fastboot_dispatch.rs`, ~600 lines |
+| the panel diagnostic | earlier | `platform/ane/ane_emmc_diag.rs`, 817 lines |
+| the I2C buses | `46754a26` + `10b5ff1f` | `platform/common/designware_i2c.rs` holds the words |
+
+`platform/ane/ane_usb_dev.rs` is 2350 lines. What is left in it:
 
 | lines (approx) | responsibility | belongs |
 |---|---|---|
-| 1 - 260 | dwc2 register map, endpoint config, PHY | here |
-| 260 - 1050 | RX/TX FIFOs, EP0 control state machine, EP1 bulk | here |
-| 1050 - 1500 | `service()`, enumeration counters, garble/zombie hooks | here |
-| 1520 - 2270 | fastboot protocol: `fb_poll`, `oem *`, reboot reasons | `fastboot_dispatch` |
-| 2270 - 2833 | SP805, PMIC reason, `oem log` streaming, panel hooks | mixed |
+| 1 - 250 | dwc2 register map, endpoint geometry, PHY | here |
+| 250 - 1100 | RX/TX FIFO, EP0 control state machine, EP1 bulk | here |
+| 1100 - 1500 | `service()`, enumeration counters, garble/zombie hooks | here |
+| 1500 - 1900 | `oem log` streaming, `diag()`, panel strip hooks | `ane_debug_lanes` |
+| 1900 - 2350 | SP805 watchdog, PMIC reset reason, reboot scheduling | `ane_reset_lane` |
 
-`fastboot_session.rs` (147 lines) already took the two buffers and the
-byte-level demultiplexing; that was the cheap half of this split and it
-shipped.
+## The next move, and why it has not happened
 
-## The remaining move, and what it needs
+The two remaining cuts are not protocol, they are the transport's opinion
+about debugging: `oem log` streams one line per `service()` pass (the pace
+is a transport concern and must stay with the pump), and the reset lane
+touches SP805 and the PMIC reason register in the same pass that decides
+whether enumeration is alive.
 
-`fb_poll` is ~750 lines and it calls back into the driver for exactly five
-things:
+A move of either is a pure relocation of ~300 lines with no behaviour change,
+which means the only thing that can verify it is a full enumeration and flash
+on hardware. Doing it blind risks the one window the port iterates through,
+so it waits for a device session where `cycle_flash.py` can prove the
+transport still works afterwards - the same rule that governed the two moves
+that did ship.
 
-- `ep1_send(&[u8])`, `reply_ok(tag, value)`, `fb_send_info(text)` - the
-  wire, already `pub(crate)`-shaped
-- `wdog_drain_and_reset()`, `PMIC_REASON_ADDR` - the reset lane
-- `LOG_ACTIVE` / `LOG_CURSOR` - the paced `oem log` stream
-
-So the move is: make those five `pub(crate)`, cut 1520-2270 into
-`fastboot_dispatch.rs` as `pub fn poll(log)`, and have the EP1 OUT path in
-the driver call `crate::fastboot_dispatch::poll(log)` instead of `fb_poll`.
-No behaviour changes, no new state - `fb_poll` already takes everything
-else through `fastboot_session` and `ane_emmc`.
-
-Two things to check when it lands:
-
-1. `oem log` streams one line per `service()` pass, so `LOG_ACTIVE` must
-   stay owned by the driver (the pace is a transport concern) and be
-   exported, not moved.
-2. `panic!("oem crash: deliberate")` must keep its `#[cfg(platform)]`
-   guard; it exists for the boot-failure test.
-
-## Why it waited
-
-A pure move is only verifiable by walking the whole enumeration and flash
-path on hardware. The device spent the night on the loader's fallback
-image, so the move would have been compile-checked and nothing more - and
-the morning's flash window is worth more than a cosmetic diff. The design
-above is small enough to do in one pass with `cycle_flash.py` as the
-verification.
+What has been done instead, while the phone was on its fallback image: every
+change was kept *additive* (new commands, new diagnostics, new pure modules),
+and the three drivers below the USB stack were read against their reference
+implementations rather than refactored.
