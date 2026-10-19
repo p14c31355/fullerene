@@ -228,9 +228,9 @@ pub(crate) use aarch64_runtime::timer;
 // aarch64 module tree refers to it as `crate::blackbox`, so it has to be declared
 // in every crate root that pulls that tree in.
 pub mod adb_wire;
-pub mod fastboot_session;
 pub mod blackbox;
 pub mod cdc_acm;
+pub mod fastboot_session;
 
 // Module declarations
 // ── Drivers (storage, GPU, network) ───────────────────────────────

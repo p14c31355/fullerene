@@ -172,13 +172,13 @@ pub const fn config_descriptor(protocol: u8) -> [u8; 32] {
     c
 }
 
-use crate::adb_dispatch::{anchor_adb, anchor_verb, ADB_LOG_BUF};
-use crate::platform::ane_usb_dev::{
-    adb_dispatch_io, fb_getvar_io, fb_schedule_reboot, rd, xfer_pump, ADB_PENDING, ADB_PENDING_CAP,
-    ADB_PENDING_LEN, ADB_PENDING_READY, DPTXFSIZ1, DTXFSTS1, EP1_CONVERSATIONS, LOG_END,
-    LOG_LINES, LOG_MAIN, XFER_END, XFER_FEED, XFER_ON, XFER_WIN_END,
-};
+use crate::adb_dispatch::{ADB_LOG_BUF, anchor_adb, anchor_verb};
 use crate::fastboot_session as fb;
+use crate::platform::ane_usb_dev::{
+    ADB_PENDING, ADB_PENDING_CAP, ADB_PENDING_LEN, ADB_PENDING_READY, DPTXFSIZ1, DTXFSTS1,
+    EP1_CONVERSATIONS, LOG_END, LOG_LINES, LOG_MAIN, XFER_END, XFER_FEED, XFER_ON, XFER_WIN_END,
+    adb_dispatch_io, fb_getvar_io, fb_schedule_reboot, rd, xfer_pump,
+};
 use core::ptr;
 
 /// The fastboot command interpreter: one call per completed EP1 OUT
@@ -323,10 +323,12 @@ pub fn poll(log: fn(&str, u64)) {
         fb::clear_cmd();
     }
     unsafe {
-        crate::platform::ane_usb_dev::DBG_FB_DISPATCH = crate::platform::ane_usb_dev::DBG_FB_DISPATCH.wrapping_add(1);
+        crate::platform::ane_usb_dev::DBG_FB_DISPATCH =
+            crate::platform::ane_usb_dev::DBG_FB_DISPATCH.wrapping_add(1);
         crate::platform::ane_usb_dev::DBG_CMD_HEAD = 0;
         for &b in cmd.iter().take(8) {
-            crate::platform::ane_usb_dev::DBG_CMD_HEAD = (crate::platform::ane_usb_dev::DBG_CMD_HEAD << 8) | b as u64;
+            crate::platform::ane_usb_dev::DBG_CMD_HEAD =
+                (crate::platform::ane_usb_dev::DBG_CMD_HEAD << 8) | b as u64;
         }
     }
     // v307: a dispatched bulk command is a live conversation. The v306 quiet
@@ -475,7 +477,8 @@ pub fn poll(log: fn(&str, u64)) {
                         for v in [
                             ok_s,
                             bad_s,
-                            crate::platform::ane_emmc::LAST_WR.load(core::sync::atomic::Ordering::Relaxed)
+                            crate::platform::ane_emmc::LAST_WR
+                                .load(core::sync::atomic::Ordering::Relaxed)
                                 as u64,
                         ] {
                             let k = crate::adb_dispatch::fmt_okay_hex(v, &mut t);
@@ -508,9 +511,14 @@ pub fn poll(log: fn(&str, u64)) {
         log("fb: cold_req=", 1);
         crate::platform::ane_usb_dev::ep1_send(b"OKAY");
         unsafe {
-            ptr::write_volatile(crate::platform::ane_usb_dev::PMIC_REASON_ADDR as *mut u8, 0x00);
+            ptr::write_volatile(
+                crate::platform::ane_usb_dev::PMIC_REASON_ADDR as *mut u8,
+                0x00,
+            );
         }
-        let back = unsafe { ptr::read_volatile(crate::platform::ane_usb_dev::PMIC_REASON_ADDR as *const u8) };
+        let back = unsafe {
+            ptr::read_volatile(crate::platform::ane_usb_dev::PMIC_REASON_ADDR as *const u8)
+        };
         log("fb: cold_hrst=", back as u64);
         crate::platform::ane_usb_dev::wdog_drain_and_reset();
     }
@@ -539,7 +547,10 @@ pub fn poll(log: fn(&str, u64)) {
             crate::platform::ane_usb_dev::ep1_send(b"FAILbad range");
             return;
         }
-        log("fb: i2c4_req=", ((addr as u64) << 16) | ((from as u64) << 8) | count as u64);
+        log(
+            "fb: i2c4_req=",
+            ((addr as u64) << 16) | ((from as u64) << 8) | count as u64,
+        );
         let mut bytes = [0u8; 16];
         crate::platform::ane_usb_dev::fb_send_info(b"i2c4 bring-up");
         let live = unsafe { crate::platform::ane_i2c::bring_up(log) };
@@ -678,7 +689,12 @@ pub fn poll(log: fn(&str, u64)) {
                 while remain > 0 {
                     let chunk = core::cmp::min(remain, 512) as usize;
                     let lba = arg + (total - remain) / 512;
-                    if !crate::platform::ane_emmc::read_sectors_bytes(lba as u32, 1, &mut buf[..], log) {
+                    if !crate::platform::ane_emmc::read_sectors_bytes(
+                        lba as u32,
+                        1,
+                        &mut buf[..],
+                        log,
+                    ) {
                         break;
                     }
                     crate::platform::ane_usb_dev::ep1_send(&buf[..chunk]);
@@ -828,4 +844,3 @@ pub fn poll(log: fn(&str, u64)) {
     }
     crate::platform::ane_usb_dev::ep1_send(reply);
 }
-

@@ -73,7 +73,7 @@ fn row2(log: fn(&str, u64), row: u32, label0: &[u8], a: u32) {
 
 /// The card clock the boot actually ended on, packed for `getvar emmc`:
 /// bits 0..8 the field in CLOCK_CONTROL, 8..16 the field the boot
-/// started with, 16..24 the candidates that were tried, 24..32 the field
+/// started with, 16..32 one nibble per rung tried, 32..40 the field
 /// that failed first. Zero means the probe never ran.
 static CLK_RESULT: AtomicU64 = AtomicU64::new(0);
 static CLK_SAMPLE: AtomicU64 = AtomicU64::new(0);
@@ -89,62 +89,94 @@ pub fn clock_result() -> u64 {
 
 /// Climb to the fastest card clock that can still read, using reads only.
 ///
-/// The DTS names the clock tree (`arasan,sdhci` at 0xFF390000, clk_xin
-/// from CRG 0xB4: mux bit2 selects 19.2 MHz/6 or the PLL divider, and
-/// bits 3..6 divide ppll0 1440 MHz or ppll3 1600 MHz), but nothing in
-/// the tree records the sample delay the vendor tunes per speed. Rather
-/// than guess it, try each divider and keep the fastest one whose read
-/// of LBA 0 still returns the MBR signature. A write is never issued
-/// here, so a wrong guess costs a retry, not a card.
+/// Two primary-source facts fix the shape of this ladder:
 ///
-/// Fields are the spec-2.00 divisor: clock = clk_xin / (2 * field), so
-/// 1 = 100 MHz, 2 = 50 MHz, 3 = 33 MHz, 4 = 25 MHz when clk_xin is the
-/// 200 MHz the current 400 kHz setting implies (0xFA = 250 -> /500).
+/// * The card clock is `clk_xin / (2 * field)` (vendor `sdhci_set_clock`,
+///   spec-3.00 divisors are stored halved). The boot's own 0xFA = 250 is
+///   the 400 kHz init clock, so clk_xin is the 200 MHz the vendor probe
+///   programs - which makes field 8 = 12.5 MHz, 6 = 16.7, 5 = 20,
+///   4 = 25, and field 1 = 100 MHz.
+/// * With HS_TIMING still at default speed (JEDEC JESD84-B50 6.6.2) the
+///   card is specified only to 26 MHz. A field above that is not a
+///   faster bus, it is a dead one: the transfer dies and leaves the
+///   controller holding the lines (v336t). The previous ladder started
+///   at field 1 and poisoned every rung behind it - exactly the
+///   all-rungs-failed answer `getvar emmc` gave.
+///
+/// So climb slowly to fast inside the envelope and stop at the first
+/// failure: a clock that fails at 12.5 MHz will not answer at 25. Each
+/// rung is a warm-up command followed by two CMD17 reads that must both
+/// carry the MBR signature and agree. The warm-up is CMD16 (set block
+/// length 512, which the card already is), not CMD13: CMD13 needs the
+/// RCA the loader assigned and nobody told us, while CMD16 takes no RCA
+/// and cannot change the card's state. Nothing is written, and a failed
+/// read leaves the controller reset by `sdhci_data_read`'s recovery.
+///
+/// Packed for `getvar emmc`: bits 0..8 the chosen field, 8..16 the field
+/// the boot started with, 16..32 one nibble per rung (0 untried, 1 read,
+/// 2 clock refused, 3 status failed, 4 read failed, 5 read wrong,
+/// 6 reads disagreed), 32..40 the first field that failed. Zero means the
+/// probe never ran.
 pub fn clock_probe(log: fn(&str, u64)) {
     let base = rd16(SDHCI_BASE, 0x2C) >> 8;
-    // One nibble per candidate field, so a single number says what each
-    // rung did: 0 untried, 1 read, 2 clock refused, 3 first read failed,
-    // 4 second read failed, 5 first read wrong, 6 second read wrong,
-    // 7 the two reads disagreed.
+    // The inherited clock tree, so clk_xin stops being an inference:
+    // 0xB4 bit0 picks PLL0/PLL3, bit2 the divider branch, bits 3..6 the
+    // divider (2^val), and 0x40 is the gate word.
+    log("em: crg40=", rd32(CRG_BASE, 0x40) as u64);
+    log("em: crgb4=", rd32(CRG_BASE, 0xB4) as u64);
+
+    // Slowest first; field 4 is the top of the default-speed envelope.
+    const RUNGS: [u16; 4] = [8, 6, 5, 4];
     let mut code = 0u64;
-    let mut sample = 0u64;
     let mut chosen = 0u64;
     let mut first_fail = 0u64;
-    for field in [1u16, 2, 3, 4, 6, 8] {
-        let slot = (field as u64 - 1) * 4;
+    let mut sample = [0u32; 128];
+    for (i, field) in RUNGS.iter().enumerate() {
+        let slot = (i * 4) as u64;
         let mut set = |c: u64| code |= c << slot;
-        if !emmc_clock_set(field, log) {
+        if !emmc_clock_set(*field, log) {
             set(2);
-            continue;
+            first_fail = *field as u64;
+            break;
+        }
+        let (st, _s, _e, _n) = sdhci_cmd(16, 512, 2, CMD_CRC | CMD_INDEX);
+        if !st {
+            set(3);
+            first_fail = *field as u64;
+            break;
         }
         let mut a = [0u32; 128];
         let (ok_a, _sa, _ea) = sdhci_data_read(17, 0, &mut a, log);
         if !ok_a {
-            set(3);
-            if first_fail == 0 {
-                first_fail = field as u64;
-            }
-            continue;
+            set(4);
+            first_fail = *field as u64;
+            break;
+        }
+        if (a[127] & 0xFFFF) != 0xAA55 {
+            set(5);
+            first_fail = *field as u64;
+            break;
         }
         let mut b = [0u32; 128];
         let (ok_b, _sb, _eb) = sdhci_data_read(17, 0, &mut b, log);
         if !ok_b {
             set(4);
-        } else if (a[127] & 0xFFFF) != 0xAA55 {
-            set(5);
-        } else if (b[127] & 0xFFFF) != 0xAA55 {
-            set(6);
-        } else if a[0] != b[0] {
-            set(7);
-        } else {
-            set(1);
-            chosen = field as u64;
+            first_fail = *field as u64;
             break;
         }
-        if first_fail == 0 {
-            first_fail = field as u64;
-            sample = ((a[0] as u64) << 32) | a[1] as u64;
+        if (b[127] & 0xFFFF) != 0xAA55 {
+            set(5);
+            first_fail = *field as u64;
+            break;
         }
+        if a[0] != b[0] {
+            set(6);
+            first_fail = *field as u64;
+            break;
+        }
+        set(1);
+        chosen = *field as u64;
+        sample = a;
     }
     if chosen == 0 {
         // Nothing climbed: go back to what the boot had and make sure it
@@ -164,9 +196,12 @@ pub fn clock_probe(log: fn(&str, u64)) {
         let (ok, _s, _e) = sdhci_data_read(17, 0, &mut m, log);
         log("em: clk_keep=", ((ok as u64) << 8) | chosen);
     }
-    CLK_SAMPLE.store(sample, Ordering::Relaxed);
+    CLK_SAMPLE.store(
+        ((sample[0] as u64) << 32) | sample[1] as u64,
+        Ordering::Relaxed,
+    );
     CLK_RESULT.store(
-        chosen | (base as u64) << 8 | code << 16 | first_fail << 56,
+        chosen | (base as u64) << 8 | code << 16 | first_fail << 32,
         Ordering::Relaxed,
     );
     log("em: clk_res=", clock_result());
@@ -395,8 +430,15 @@ pub(super) fn emmc_clock_set(field: u16, log: fn(&str, u64)) -> bool {
         }
     }
     wr16(SDHCI_BASE, 0x2C, (field << 8) | 0x01 | 0x04);
+    // Vendor `sdhci_set_clock` lets the new clock tick before anything is
+    // asked of the card (`mdelay(1)`, and a NEIGH_DELAY quirk that guards
+    // the internal-clock reset path). This loop asked for 2 ms of
+    // `uptime_us`, but that counter runs about ten times the wall clock
+    // (v336 series: a 900 s deadline fired at 85 s), so the real wait was
+    // a fifth of a millisecond. Ask for the vendor millisecond with the
+    // same tenfold slack and the wait is never short.
     let t0 = crate::timer::uptime_us();
-    while crate::timer::uptime_us().saturating_sub(t0) < 2000 {}
+    while crate::timer::uptime_us().saturating_sub(t0) < 20_000 {}
     log(
         "em: clk_set=",
         ((stable as u64) << 32) | ((field as u64) << 8) | (rd16(SDHCI_BASE, 0x2C) as u64),

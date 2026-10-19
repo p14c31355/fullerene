@@ -1019,8 +1019,7 @@ fn pop_rx(log: fn(&str, u64)) {
                         let b = w.to_le_bytes();
                         let take = if n >= 4 { 4 } else { n };
                         for &byte in b.iter().take(take) {
-                            let payload =
-                                fb::take_byte(byte, crate::timer::uptime_us());
+                            let payload = fb::take_byte(byte, crate::timer::uptime_us());
                             if payload {
                                 // First byte of a payload starts the clock,
                                 // its last byte stops it. The host times the
@@ -1567,7 +1566,6 @@ pub(crate) fn fb_getvar_io(name: &[u8]) {
     let mut out = [0u8; 64];
     crate::fastboot_dispatch::getvar_dispatch(&mut io, &vars, name, &mut out);
 }
-
 
 /// Advance the paced `oem log` stream by one line (called every service
 /// pass, so the host's reads never coalesce into unusable chunks).
