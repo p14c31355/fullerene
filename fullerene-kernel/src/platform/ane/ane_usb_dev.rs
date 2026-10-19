@@ -582,7 +582,14 @@ fn ep0_zlp_in() {
 /// mis-consume the following packets, which derailed the enumeration right
 /// at the first config descriptor read (host journal: -71).
 fn ep0_status_out() {
-    wr(DOEPTSIZ0, (3 << 29) | (1 << 19) | 64);
+    // The status stage of a control-IN transfer is an OUT zero-length packet.
+    // Primary source (dwc2 gadget.c: dwc2_hsotg_program_zlp) programs exactly
+    // MC(1) | PKTCNT(1) | XFERSIZE(0) - no SUPCNT. This used to write
+    // SUPCNT=3 with XFERSIZE=64, which is the *setup* shape: the core then
+    // waits for 64 bytes that never arrive, the status stage never completes,
+    // TRANSACTION_BUSY stays latched and the next SETUP is never re-armed.
+    // The host sees the following control transfer die as EPROTO (-71).
+    wr(DOEPTSIZ0, (1 << 19) | 0);
     wr(
         DOEPCTL0,
         rd(DOEPCTL0) | EPCTL_EPENA | EPCTL_CNAK | EPCTL_USBACTEP,

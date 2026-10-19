@@ -736,10 +736,60 @@ pub fn hold_frame(tick: u32, uptime_s: u64, setups: u64, serviced: u64) {
     big_digits(tick as u64, 120, 820, 24, 0xFFFF_FFFF);
     big_digits(uptime_s, 120, 1080, 20, 0xFFFF_E040);
     usb_fail_banner(setups, serviced);
+    paint_log_tail_force(34, 12);
     unsafe {
         crate::blackbox::cache_clean(CANVAS, CANVAS_LEN);
     }
     flush_panel();
+}
+
+/// The durable text ring's tail, on the panel.
+///
+/// The ring already records every SETUP (`ud: q=...`), but reading it back
+/// needs a working USB - the exact thing a failing enumeration does not
+/// have. Painting the tail means the boot that died leaves its own last
+/// words on the screen, so the next photograph names the request the host
+/// gave up on instead of the one we assume it sent.
+fn paint_log_tail_force(row0: u32, want: usize) {
+    const MAXL: usize = 16;
+    let cap = crate::blackbox::TEXT_BLOCK_CAP as usize;
+    let mut len =
+        unsafe { core::ptr::read_volatile((crate::blackbox::TEXT_BLOCK_BASE + 4) as *const u32) }
+            as usize;
+    if len > cap {
+        len = cap;
+    }
+    if len == 0 {
+        return;
+    }
+    let base = (crate::blackbox::TEXT_BLOCK_BASE + 12) as *const u8;
+    // Walk back from the end, collecting the start of each completed line.
+    let mut starts = [0usize; MAXL];
+    let mut n = 0usize;
+    let mut pos = len;
+    while pos > 0 && n < want.min(MAXL) {
+        pos -= 1;
+        if unsafe { core::ptr::read_volatile(base.add(pos)) } == b'\n' && pos + 1 < len {
+            starts[n] = pos + 1;
+            n += 1;
+        }
+    }
+    for k in 0..n {
+        let s = starts[n - 1 - k];
+        let mut line = [b' '; 40];
+        for (i, cell) in line.iter_mut().enumerate() {
+            let p = s + i;
+            if p >= len {
+                break;
+            }
+            let b = unsafe { core::ptr::read_volatile(base.add(p)) };
+            if b == b'\n' || b == b'\r' || b == 0 {
+                break;
+            }
+            *cell = if (0x20..0x7f).contains(&b) { b } else { b'.' };
+        }
+        paint_at_force(row0 + k as u32, 8, 40, &line);
+    }
 }
 
 /// Paint a text line at an explicit x (the right-column instruments). The
