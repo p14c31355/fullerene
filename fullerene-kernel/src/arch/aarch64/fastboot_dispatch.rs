@@ -596,6 +596,47 @@ pub fn poll(log: fn(&str, u64)) {
     }
 
     #[cfg(fullerene_aarch64_ane)]
+    if cmd == b"oem sensors" {
+        // `oem sensors`: one INFO line per candidate in the DTS table, with
+        // the id byte that came back. A part that reads its expected id is
+        // the part that is fitted; the rest are the other board variants.
+        crate::platform::ane_usb_dev::fb_send_info(b"sensors");
+        for (name, addr, reg, want) in crate::platform::ane_sensors::CANDIDATES {
+            let got = crate::platform::ane_sensors::read_id(addr, reg);
+            let mut line = [b' '; 40];
+            let n = name.len().min(12);
+            line[..n].copy_from_slice(&name.as_bytes()[..n]);
+            let mut at = n;
+            line[at] = b' ';
+            at += 1;
+            const HEX: [u8; 16] = *b"0123456789ABCDEF";
+            line[at] = HEX[((addr >> 4) & 0xF) as usize];
+            line[at + 1] = HEX[(addr & 0xF) as usize];
+            line[at + 2] = b'/';
+            match got {
+                Some(v) => {
+                    line[at + 3] = HEX[(v >> 4) as usize];
+                    line[at + 4] = HEX[(v & 0xF) as usize];
+                    line[at + 5] = if v == want { b'*' } else { b'.' };
+                    at += 6;
+                }
+                None => {
+                    line[at + 3] = b'-';
+                    line[at + 4] = b'-';
+                    at += 5;
+                }
+            }
+            crate::platform::ane_usb_dev::fb_send_info(&line[..at]);
+        }
+        let mask = crate::platform::ane_sensors::identify();
+        log("fb: sensors=", mask as u64);
+        let mut ok = [0u8; 32];
+        let l = crate::adb_dispatch::fmt_okay_hex(mask as u64, &mut ok);
+        crate::platform::ane_usb_dev::ep1_send(&ok[..l]);
+        return;
+    }
+
+    #[cfg(fullerene_aarch64_ane)]
     if cmd == b"oem keys" {
         // `oem keys`: the three key banks, read-only. Press a key between two
         // calls and the byte that changed is the pin, without trusting a
@@ -667,11 +708,32 @@ pub fn poll(log: fn(&str, u64)) {
     }
 
     #[cfg(fullerene_aarch64_ane)]
-    if let Some(args) = cmd.strip_prefix(b"oem i2c4 ") {
-        // `oem i2c4 <addr> <from> <count>`: read-only dump on the charger
-        // bus (hi6522 at 0x6B, fsa9685 at 0x25). Nothing is written to the
-        // target, so an unknown register map is not a hazard here - the
-        // dump is how the map gets learned.
+    let i2c_call = cmd
+        .strip_prefix(b"oem i2c ")
+        .map(|a| (0u8, a))
+        .or_else(|| cmd.strip_prefix(b"oem i2c4 ").map(|a| (4u8, a)));
+    if let Some((hint, args)) = i2c_call {
+        // `oem i2c <bus> <addr> <from> <count>` reads any clocked bus;
+        // `oem i2c4 <addr> <from> <count>` is the same call with the bus
+        // fixed, kept because it is what the runbooks already say.
+        //
+        // Read-only: an unknown register map is not a hazard when nothing is
+        // written, and dumping is how the map gets learned (hi6522 at 0x6B,
+        // fsa9685 at 0x25, the sensors on i2c0).
+        let (bus, args) = if hint == 0 {
+            let mut it = args.splitn(2, |&b| b == b' ');
+            let b = it
+                .next()
+                .map(crate::adb_dispatch::parse_hex)
+                .unwrap_or(0xff) as u8;
+            (b, it.next().unwrap_or(b""))
+        } else {
+            (hint, args)
+        };
+        let Some(base) = crate::platform::ane_i2c::bus_base(bus) else {
+            crate::platform::ane_usb_dev::ep1_send(b"FAILno such bus");
+            return;
+        };
         let mut it = args.split(|&b| b == b' ');
         let addr = it.next().map(crate::adb_dispatch::parse_hex).unwrap_or(0) as u16;
         let from = it.next().map(crate::adb_dispatch::parse_hex).unwrap_or(0) as u8;
@@ -685,20 +747,30 @@ pub fn poll(log: fn(&str, u64)) {
             ((addr as u64) << 16) | ((from as u64) << 8) | count as u64,
         );
         let mut bytes = [0u8; 16];
-        crate::platform::ane_usb_dev::fb_send_info(b"i2c4 bring-up");
-        let live = unsafe { crate::platform::ane_i2c::bring_up(log) };
+        // Only i2c4 has to be brought up by us; i2c0 and i2c2 are clocked
+        // by the loader (the touch bus and the PMIC's, which works).
+        let live = if bus == 4 {
+            crate::platform::ane_usb_dev::fb_send_info(b"i2c4 bring-up");
+            unsafe { crate::platform::ane_i2c::bring_up(log) }
+        } else {
+            true
+        };
         if !live {
             // The reset never released: touching the controller now is the
             // unclocked-peripheral read that stalls this fabric.
             crate::platform::ane_usb_dev::fb_send_info(b"i2c4 reset stuck");
-            crate::platform::ane_usb_dev::ep1_send(b"FAILi2c4 reset");
+            crate::platform::ane_usb_dev::ep1_send(b"FAILi2c reset");
             return;
         }
-        let r = unsafe { crate::platform::ane_i2c::read_regs(addr, from, &mut bytes[..count]) };
+        let r = unsafe {
+            crate::platform::ane_i2c::read_regs_at(base, addr, from, &mut bytes[..count])
+        };
         match r {
             Ok(()) => {
                 let mut line = [b' '; 72];
-                line[..5].copy_from_slice(b"i2c4 ");
+                line[..3].copy_from_slice(b"i2c");
+                line[3] = b'0' + (bus % 10);
+                line[4] = b' ';
                 let mut at = 5;
                 const HEX: [u8; 16] = *b"0123456789ABCDEF";
                 at += {
@@ -723,7 +795,10 @@ pub fn poll(log: fn(&str, u64)) {
             }
             Err(e) => {
                 let mut line = [b' '; 40];
-                line[..6].copy_from_slice(b"i2c4 !");
+                line[..3].copy_from_slice(b"i2c");
+                line[3] = b'0' + (bus % 10);
+                line[4] = b' ';
+                line[5] = b'!';
                 const HEX: [u8; 16] = *b"0123456789ABCDEF";
                 let mut i = 6;
                 for sh in [28u32, 24, 20, 16, 12, 8, 4, 0] {
@@ -731,7 +806,7 @@ pub fn poll(log: fn(&str, u64)) {
                     i += 1;
                 }
                 crate::platform::ane_usb_dev::fb_send_info(&line[..i]);
-                crate::platform::ane_usb_dev::ep1_send(b"FAILi2c4");
+                crate::platform::ane_usb_dev::ep1_send(b"FAILi2c");
             }
         }
         return;

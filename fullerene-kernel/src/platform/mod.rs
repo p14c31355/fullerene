@@ -39,6 +39,9 @@ pub mod ane_i2c;
 #[path = "ane/ane_keys.rs"]
 pub mod ane_keys;
 
+#[path = "ane/ane_sensors.rs"]
+pub mod ane_sensors;
+
 #[path = "ane/ane_touch.rs"]
 pub mod ane_touch;
 #[path = "ane/ane_usb_dev.rs"]
