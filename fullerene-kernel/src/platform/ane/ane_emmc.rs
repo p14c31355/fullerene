@@ -19,7 +19,7 @@
 
 use super::common::mmio::{rd8, rd16, rd32, wr8, wr16, wr32};
 use super::common::pmic::pmic_rd;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// v336j: the first failed multi-block chunk of a flash - bit31 = the
 /// chunk failed, bits 16..32 = the error status word, bits 0..16 = the
@@ -852,9 +852,97 @@ pub fn probe(log: fn(&str, u64), stage: u32) {
         super::ane_fb::paint(42, &l);
     }
 
+    // v336n: the ladder above stops at the first rung it finds; this
+    // climbs to the fastest divider that still reads and leaves the
+    // result where `getvar emmc` can report it.
+    clock_probe(log);
+
     super::ane_fb::flush_panel();
     log("em: probe_done=", 1);
     log("em: stage=", stage as u64);
+}
+
+/// The card clock the boot actually ended on, packed for `getvar emmc`:
+/// bits 0..8 the field in CLOCK_CONTROL, 8..16 the field the boot
+/// started with, 16..24 the candidates that were tried, 24..32 the field
+/// that failed first. Zero means the probe never ran.
+static CLK_RESULT: AtomicU64 = AtomicU64::new(0);
+
+/// What the clock ladder settled on (see `clock_probe`).
+pub fn clock_result() -> u64 {
+    CLK_RESULT.load(Ordering::Relaxed)
+}
+
+/// Climb to the fastest card clock that can still read, using reads only.
+///
+/// The DTS names the clock tree (`arasan,sdhci` at 0xFF390000, clk_xin
+/// from CRG 0xB4: mux bit2 selects 19.2 MHz/6 or the PLL divider, and
+/// bits 3..6 divide ppll0 1440 MHz or ppll3 1600 MHz), but nothing in
+/// the tree records the sample delay the vendor tunes per speed. Rather
+/// than guess it, try each divider and keep the fastest one whose read
+/// of LBA 0 still returns the MBR signature. A write is never issued
+/// here, so a wrong guess costs a retry, not a card.
+///
+/// Fields are the spec-2.00 divisor: clock = clk_xin / (2 * field), so
+/// 1 = 100 MHz, 2 = 50 MHz, 3 = 33 MHz, 4 = 25 MHz when clk_xin is the
+/// 200 MHz the current 400 kHz setting implies (0xFA = 250 -> /500).
+pub fn clock_probe(log: fn(&str, u64)) {
+    let base = rd16(SDHCI_BASE, 0x2C) >> 8;
+    let mut tried = 0u64;
+    let mut chosen = 0u64;
+    let mut first_fail = 0u64;
+    for field in [1u16, 2, 3, 4, 6, 8] {
+        tried |= 1 << (field as u64);
+        if !emmc_clock_set(field, log) {
+            if first_fail == 0 {
+                first_fail = field as u64;
+            }
+            continue;
+        }
+        let mut a = [0u32; 128];
+        let (ok_a, _sa, _ea) = sdhci_data_read(17, 0, &mut a, log);
+        let mut b = [0u32; 128];
+        let (ok_b, _sb, _eb) = sdhci_data_read(17, 0, &mut b, log);
+        let good = ok_a
+            && ok_b
+            && (a[127] & 0xFFFF) == 0xAA55
+            && (b[127] & 0xFFFF) == 0xAA55
+            && a[0] == b[0];
+        log(
+            "em: clk_try=",
+            ((field as u64) << 32) | ((good as u64) << 8) | ok_a as u64,
+        );
+        if good {
+            chosen = field as u64;
+            break;
+        }
+        if first_fail == 0 {
+            first_fail = field as u64;
+        }
+    }
+    if chosen == 0 {
+        // Nothing climbed: go back to what the boot had and make sure it
+        // still reads, so the flash path is never left on a dead clock.
+        let _ = emmc_clock_set(base, log);
+        let mut m = [0u32; 128];
+        let (ok, _s, _e) = sdhci_data_read(17, 0, &mut m, log);
+        let good = ok && (m[127] & 0xFFFF) == 0xAA55;
+        log("em: clk_back=", ((good as u64) << 8) | base as u64);
+        if !good {
+            log("em: clk_dead=", 1);
+        }
+    } else {
+        // One more read on the clock we are keeping: the flash path runs
+        // minutes later, and this is the only proof it was still good.
+        let mut m = [0u32; 128];
+        let (ok, _s, _e) = sdhci_data_read(17, 0, &mut m, log);
+        log("em: clk_keep=", ((ok as u64) << 8) | chosen);
+    }
+    CLK_RESULT.store(
+        chosen | (base as u64) << 8 | tried << 16 | first_fail << 24,
+        Ordering::Relaxed,
+    );
+    log("em: clk_res=", clock_result());
 }
 
 /// Recover the command path after a timeout/error: the SDHCI spec requires

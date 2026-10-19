@@ -65,10 +65,17 @@ pub fn getvar_dispatch(
     }
     for entry in vars {
         if entry.name == name {
-            if let VarReply::Static(reply) = entry.reply {
-                io.bulk_send(reply);
-                return true;
+            match entry.reply {
+                VarReply::Static(reply) => io.bulk_send(reply),
+                // A computed variable never takes arguments: it reports
+                // the board's own state (`emmc` reports the clock the
+                // boot settled on).
+                VarReply::Computed(f) => {
+                    let n = f(name, out);
+                    io.bulk_send(&out[..n]);
+                }
             }
+            return true;
         }
     }
     io.bulk_send(b"FAILunknown variable");
