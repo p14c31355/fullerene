@@ -1103,9 +1103,9 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         // Previous boot's dying words (the durable block survives reboots):
         // the rows above the tail window show the last panic file/line, the
         // only fault channel that needs no USB to read.
-        platform::ane_fb::report_previous_panic();
+        let _prev_panic = platform::ane_fb::report_previous_panic();
         #[cfg(fullerene_ane_panic_peek)]
-        {
+        if _prev_panic {
             // Bench build: the previous boot's dying words are painted and
             // then held long enough to photograph (the panic text is small
             // and a glance is not evidence). The record lives in the durable
@@ -1115,12 +1115,14 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
             // The hold ends by continuing the boot rather than resetting:
             // one flash then answers both questions (what the last boot's
             // panic said, and whether the battery numbers are sane).
-            crate::blackbox::text_puts("PEEK HOLD 30S\n");
-            // 300 s of uptime, not 30: the clock runs well ahead of real time on
-            // this board (the panic that ends a 15 s hold resets the loader only
-            // ~12 real seconds after the screen goes up), so the dying words need a
-            // window measured against the same clock they are timed with.
-            let deadline = timer::uptime_us().saturating_add(300_000_000);
+            crate::blackbox::text_puts("PEEK HOLD\n");
+            // 1200 s of uptime, not 30: the clock runs well ahead of real time
+            // on this board (the panic that ends a 15 s hold resets the loader
+            // only ~12 real seconds after the screen goes up), so the dying
+            // words need a window measured against the same clock they are
+            // timed with. 300 s turned out to be about two minutes of real
+            // time - long enough to miss if nobody was standing there.
+            let deadline = timer::uptime_us().saturating_add(1_200_000_000);
             while timer::uptime_us() < deadline {
                 core::hint::spin_loop();
             }
