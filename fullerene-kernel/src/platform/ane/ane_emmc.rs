@@ -1404,6 +1404,27 @@ fn pack_words(words: &mut [u32; 128], data: &[u8]) {
 /// `data` (blocks*512 bytes available), then the CMD12 stop the card needs
 /// to close the burst. Transfer mode = BLK_CNT_EN | MULTI_BLOCK (0x22).
 /// Reports (complete, normal_int, error_status).
+/// v336s: a multi-block write programs flash cells for a long time after
+/// the last block has left the host, and the card holds DAT0 low until it
+/// is done. The controller reports that as DAT_INHIBIT (PRESENT_STATE bit
+/// 1) plus CMD_INHIBIT (bit 0). A CMD25 issued into that window gets no
+/// response at all and fails as CMD_TIMEOUT - which is exactly what killed
+/// the last 436 sectors of a 1.2 MB flash while the two full chunks before
+/// it went through.
+fn wait_idle(limit: u32, log: fn(&str, u64)) -> bool {
+    for n in 0..limit {
+        let ps = rd32(SDHCI_BASE, 0x24);
+        if ps & 0x3 == 0 {
+            return true;
+        }
+        if n & 0xFFF == 0 {
+            crate::platform::common::recovery::boot_heartbeat();
+        }
+    }
+    log("em: idle_timeout=", rd32(SDHCI_BASE, 0x24) as u64);
+    false
+}
+
 fn sdhci_data_write_multi(
     idx: u16,
     arg: u32,
@@ -1411,6 +1432,9 @@ fn sdhci_data_write_multi(
     data: &[u8],
     log: fn(&str, u64),
 ) -> (bool, u32, u32) {
+    // v336s: never start a data phase while the card is still programming
+    // the previous one.
+    wait_idle(0x20_0000, log);
     wr16(SDHCI_BASE, 0x04, 512);
     wr16(SDHCI_BASE, 0x06, blocks);
     // v336e: TIMEOUT_CONTROL (0x2E) was never programmed, so it sat at its
@@ -1481,6 +1505,9 @@ fn sdhci_data_write_multi(
         ((d12 as u64) << 32) | ((s12 & 0xFFFF) as u64),
     );
     log("em: c25_d12e=", e12 as u64);
+    // v336s: let the card finish programming before the next chunk asks.
+    let idle = wait_idle(0x100_0000, log);
+    log("em: c25_idle=", idle as u64);
     (sts & 0x2 != 0, sts, err)
 }
 
