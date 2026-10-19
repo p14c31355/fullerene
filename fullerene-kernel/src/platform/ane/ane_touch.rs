@@ -286,40 +286,40 @@ pub unsafe fn poll() {
     if TOUCH_STAGE.load(Ordering::Relaxed) != b'C' {
         return; // the chip never answered the probe
     }
-    let mut status = [0u8; 1];
-    if i2c0_write_read(0x02, &mut status).is_err() {
+    // One transaction for the whole frame. The register block is
+    // TD_STATUS (0x02) followed by five six-byte point records, so reading
+    // 0x00..0x1E gives the status and every point in one START/STOP pair.
+    // The old shape read the status and then each point separately, which
+    // re-programmed the controller up to six times per pass.
+    let mut frame = [0u8; 0x1F];
+    if i2c0_write_read(0x00, &mut frame).is_err() {
         return;
     }
-    // TD_STATUS (0x02) carries the number of active points in its low nibble
-    // on the FT5x06 family; the old code took bits 6..4, which read as zero
-    // on every real report and would have hidden every touch even once the
-    // bus worked.
-    let count = (status[0] & 0x0F) as usize;
+    // TD_STATUS carries the number of active points in its low nibble on the
+    // FT5x06 family; bits 6..4 read as zero on a real report and would hide
+    // every touch.
+    let count = (frame[0x02] & 0x0F) as usize;
     let count = count.min(5);
     for slot in TOUCH_POINTS.iter() {
         slot.store(0xFFFF_FFFF, Ordering::Relaxed);
     }
+    let mut live = 0usize;
     for i in 0..count {
-        // Each point record: 6 bytes from 0x03 + i*6.
-        let mut rec = [0u8; 6];
-        if i2c0_write_read((0x03 + i as u8 * 6) as u8, &mut rec).is_err() {
-            return;
-        }
+        let at = 0x03 + i * 6;
+        let rec = &frame[at..at + 6];
         let event = (rec[0] >> 6) & 0x3;
-        // Big-endian coordinates with the top two bits of the first byte as
-        // the event: x = be16(buf) & 0x0fff, y = be16(buf + 2) & 0x0fff
-        // (`edt_ft5x06_ts_isr` in mainline).
-        let x = (((rec[0] & 0x0f) as u16) << 8) | rec[1] as u16;
-        let y = (((rec[2] & 0x0f) as u16) << 8) | rec[3] as u16;
-        // 0 = down, 1 = up, 2 = contact, 3 = reserved. The old code read this
-        // as "0 press, 1 contact, 2 lift", so a finger lifted upwards was
-        // held as a press and a real move was a lift.
+        // 0 = down, 1 = up, 2 = contact, 3 = reserved (`edt_ft5x06_ts_isr`).
         if event == 3 {
             continue; // reserved: this slot holds nothing
         }
+        // Big-endian coordinates with the top two bits of the first byte as
+        // the event: x = be16(buf) & 0x0fff, y = be16(buf + 2) & 0x0fff.
+        let x = (((rec[0] & 0x0f) as u16) << 8) | rec[1] as u16;
+        let y = (((rec[2] & 0x0f) as u16) << 8) | rec[3] as u16;
         let pressed = event != 1;
         let packed = (x as u32) | (y as u32) << 16 | if pressed { 1 << 31 } else { 0 };
-        TOUCH_POINTS[i].store(packed, Ordering::Relaxed);
+        TOUCH_POINTS[live].store(packed, Ordering::Relaxed);
+        live += 1;
         if pressed {
             let old = TOUCH_MAX.load(Ordering::Relaxed);
             let mx = ((old >> 16) as u16).max(x);
