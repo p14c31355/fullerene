@@ -26,11 +26,9 @@ const BANK26: usize = 0xfff0_f000;
 
 /// (gpio24, gpio25, gpio26) data registers, low 8 bits each.
 pub fn scan() -> (u8, u8, u8) {
-    unsafe {
-        (
-            rd32(BANK24, PL061_DATA) as u8,
-            rd32(BANK25, PL061_DATA) as u8,
-            rd32(BANK26, PL061_DATA) as u8,
-        )
-    }
+    (
+        rd32(BANK24, PL061_DATA) as u8,
+        rd32(BANK25, PL061_DATA) as u8,
+        rd32(BANK26, PL061_DATA) as u8,
+    )
 }
