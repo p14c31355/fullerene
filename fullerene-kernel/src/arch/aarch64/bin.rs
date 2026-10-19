@@ -20,6 +20,8 @@ mod cdc_acm;
 pub(crate) mod fastboot_dispatch;
 #[path = "../../fastboot_session.rs"]
 pub(crate) mod fastboot_session;
+#[path = "../../touch_report.rs"]
+pub(crate) mod touch_report;
 
 pub(crate) use runtime::platform;
 pub(crate) use runtime::timer;

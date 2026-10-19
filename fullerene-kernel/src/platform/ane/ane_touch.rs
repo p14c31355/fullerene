@@ -287,44 +287,26 @@ pub unsafe fn poll() {
     if TOUCH_STAGE.load(Ordering::Relaxed) != b'C' {
         return; // the chip never answered the probe
     }
-    // One transaction for the whole frame. The register block is
-    // TD_STATUS (0x02) followed by five six-byte point records, so reading
-    // 0x00..0x1E gives the status and every point in one START/STOP pair.
-    // The old shape read the status and then each point separately, which
-    // re-programmed the controller up to six times per pass.
-    let mut frame = [0u8; 0x1F];
-    if i2c0_write_read(0x00, &mut frame).is_err() {
+    // One transaction for the whole frame: the status byte and all five
+    // six-byte records are contiguous from 0x00, so a single START/STOP pair
+    // fetches everything. The protocol itself is parsed above the platform,
+    // where the host can test it (`crate::touch_report`).
+    let mut frame = [0u8; crate::touch_report::FRAME_LEN];
+    if i2c0_write_read(crate::touch_report::FRAME_REG, &mut frame).is_err() {
         return;
     }
-    // TD_STATUS carries the number of active points in its low nibble on the
-    // FT5x06 family; bits 6..4 read as zero on a real report and would hide
-    // every touch.
-    let count = (frame[0x02] & 0x0F) as usize;
-    let count = count.min(5);
     for slot in TOUCH_POINTS.iter() {
         slot.store(0xFFFF_FFFF, Ordering::Relaxed);
     }
-    let mut live = 0usize;
-    for i in 0..count {
-        let at = 0x03 + i * 6;
-        let rec = &frame[at..at + 6];
-        let event = (rec[0] >> 6) & 0x3;
-        // 0 = down, 1 = up, 2 = contact, 3 = reserved (`edt_ft5x06_ts_isr`).
-        if event == 3 {
-            continue; // reserved: this slot holds nothing
-        }
-        // Big-endian coordinates with the top two bits of the first byte as
-        // the event: x = be16(buf) & 0x0fff, y = be16(buf + 2) & 0x0fff.
-        let x = (((rec[0] & 0x0f) as u16) << 8) | rec[1] as u16;
-        let y = (((rec[2] & 0x0f) as u16) << 8) | rec[3] as u16;
-        let pressed = event != 1;
-        let packed = (x as u32) | (y as u32) << 16 | if pressed { 1 << 31 } else { 0 };
+    let (n, points) = crate::touch_report::parse(&frame);
+    for (live, point) in points[..n].iter().enumerate() {
+        let Some(p) = point else { continue };
+        let packed = (p.x as u32) | (p.y as u32) << 16 | if p.pressed { 1 << 31 } else { 0 };
         TOUCH_POINTS[live].store(packed, Ordering::Relaxed);
-        live += 1;
-        if pressed {
+        if p.pressed {
             let old = TOUCH_MAX.load(Ordering::Relaxed);
-            let mx = ((old >> 16) as u16).max(x);
-            let my = ((old & 0xFFFF) as u16).max(y);
+            let mx = ((old >> 16) as u16).max(p.x);
+            let my = ((old & 0xFFFF) as u16).max(p.y);
             TOUCH_MAX.store((mx as u32) << 16 | my as u32, Ordering::Relaxed);
             TOUCH_SAMPLES.fetch_add(1, Ordering::Relaxed);
         }

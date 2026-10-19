@@ -13,3 +13,4 @@ pub mod arch;
 pub mod blackbox;
 pub mod cdc_acm;
 pub mod fastboot_session;
+pub mod touch_report;

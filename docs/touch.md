@@ -63,9 +63,12 @@ Against `edt-ft5x06.c` (v6.6), which is the reference for this report layout:
   press.
 
 Each point record is six bytes: `XH XL YH YL weight area`, with the
-coordinate in the low 12 bits. `poll()` now reads `0x00..0x1E` in **one**
-transaction (status plus five records) instead of six, and skips reserved
-slots rather than inventing a point for them.
+coordinate in the low 12 bits. The records start at `0x03`, so five of them
+end at `0x20` - the frame is **33** bytes, not the 31 an off-by-two first
+read. `poll()` now fetches `0x00..0x20` in one transaction instead of six,
+and the parsing lives in `fullerene-kernel/src/touch_report.rs`, above the
+platform, with tests: the count nibble, the three events, reserved slots and
+a short frame are all checked on the host.
 
 ## The bus timing is deliberately conservative
 
