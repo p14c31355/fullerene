@@ -701,6 +701,39 @@ pub fn poll(log: fn(&str, u64)) {
     }
 
     #[cfg(fullerene_aarch64_ane)]
+    if cmd == b"oem touch" {
+        // `oem touch`: one frame, parsed, printed. The first question when the
+        // panel has never answered is whether the controller reports fingers
+        // at all - this answers it without needing the shell to react.
+        const HEX: [u8; 16] = *b"0123456789ABCDEF";
+        let mut line = [b' '; 40];
+        match unsafe { crate::platform::ane_touch::frame() } {
+            Some((n, points)) => {
+                line[..6].copy_from_slice(b"touch ");
+                line[6] = b'0' + (n as u8 % 10);
+                let mut at = 8;
+                if let Some(p) = points[0] {
+                    for (label, v) in [(b'x', p.x), (b'y', p.y)] {
+                        line[at] = label;
+                        line[at + 1] = b'=';
+                        for k in 0..4 {
+                            line[at + 2 + k] = HEX[((v >> (12 - k * 4)) & 0xF) as usize];
+                        }
+                        line[at + 6] = b' ';
+                        at += 7;
+                    }
+                }
+                crate::platform::ane_usb_dev::fb_send_info(&line[..at]);
+                let mut ok = [0u8; 32];
+                let l = crate::adb_dispatch::fmt_okay_hex(n as u64, &mut ok);
+                crate::platform::ane_usb_dev::ep1_send(&ok[..l]);
+            }
+            None => crate::platform::ane_usb_dev::ep1_send(b"FAILtouch"),
+        }
+        return;
+    }
+
+    #[cfg(fullerene_aarch64_ane)]
     if cmd == b"oem keys" {
         // `oem keys`: the three key banks, read-only. Press a key between two
         // calls and the byte that changed is the pin, without trusting a

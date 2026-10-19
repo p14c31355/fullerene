@@ -310,6 +310,23 @@ pub unsafe fn poll() {
     }
 }
 
+/// Read one frame and parse it, without touching the published snapshot.
+///
+/// `oem touch` uses this: it answers "does the controller report fingers at
+/// all" without waiting for the shell to react, which is the first question
+/// when the panel has never answered.
+///
+/// # Safety
+/// MMIO on the live i2c0 controller.
+pub unsafe fn frame() -> Option<(
+    usize,
+    [Option<crate::touch_report::Point>; crate::touch_report::MAX_POINTS],
+)> {
+    let mut buf = [0u8; crate::touch_report::FRAME_LEN];
+    i2c0_write_read(crate::touch_report::FRAME_REG, &mut buf).ok()?;
+    Some(crate::touch_report::parse(&buf))
+}
+
 /// The touch bring-up stage: returns true when the chip answered.
 pub unsafe fn probe() -> bool {
     TOUCH_STAGE.store(b'R', Ordering::Relaxed);
