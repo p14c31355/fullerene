@@ -37,6 +37,13 @@ pub fn boot_heartbeat() {
 fn usb_zombie_check(beats: u32) {
     static LAST_OK: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
     static ZOMBIE_AT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    // A hold is not a zombie: EP0 is silent because the boot is parked on
+    // purpose. Resetting here would throw away the evidence the hold exists
+    // to show - exactly what happened at 22:29 tonight (blackbox.rs:1184).
+    if crate::blackbox::panel_hold() {
+        ZOMBIE_AT.store(0, Ordering::Relaxed);
+        return;
+    }
     let ok = EP0_OK.load(Ordering::Relaxed);
     let last = LAST_OK.load(Ordering::Relaxed);
     if ok != last {

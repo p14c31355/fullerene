@@ -1415,7 +1415,15 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                     // before a camera could reach it.
                     platform::ane_fb::event(b"STG ENUM-HOLD-45S");
                     platform::ane_fb::set_hold_active(true);
+                    // Keep the control pipe alive while the panel shows the
+                    // countdown. A hold that parks the boot without calling
+                    // service() is not a diagnostic, it is a sabotage: the
+                    // host's very first GET_DESCRIPTOR timed out (-110) at
+                    // 22:27 tonight because this loop had the CPU and EP0 was
+                    // never read. Serve every iteration, and leave the moment
+                    // the host finishes configuring us.
                     for i in 0..90 {
+                        platform::ane_usb_dev::service(ane_log);
                         platform::ane_fb::hold_frame(
                             i + 1,
                             timer::uptime_us() / 1_000_000,
@@ -1426,7 +1434,10 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                         if i % 10 == 9 {
                             platform::ane_fb::event(b"TICK10");
                         }
-                        timer::delay_ms(500);
+                        if platform::ane_usb_dev::host_configured() {
+                            break;
+                        }
+                        timer::delay_ms(250);
                     }
                     platform::ane_fb::set_hold_active(false);
                 }

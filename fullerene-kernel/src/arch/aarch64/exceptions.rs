@@ -890,6 +890,19 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                     // for enumeration on its behalf.
                     && super::platform::ane::usb_pump_on()
                     && !host_talking;
+                // A reconnect that has begun must always finish. The pull-up is
+                // down and no other code will raise it, so this cannot live
+                // inside `watchdog_applies`: a hold (or a closed pump window)
+                // starting mid-reconnect used to strand D+ low for the rest of
+                // the boot, which is what the zombie watchdog then saw at
+                // 22:27 tonight and answered by resetting to the loader.
+                if RC_STATE.load(Ordering::Relaxed) == 1
+                    && beats.wrapping_sub(RC_T0.load(Ordering::Relaxed)) > 10
+                {
+                    super::platform::ane_usb_dev::usb_reconnect_end();
+                    RC_STATE.store(0, Ordering::Relaxed);
+                    S0.store(beats, Ordering::Relaxed); // restart the wait
+                }
                 if watchdog_applies {
                     if S0.load(Ordering::Relaxed) == 0 {
                         S0.store(beats, Ordering::Relaxed);
@@ -897,13 +910,8 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                     if !WAIT_LOGGED.swap(true, Ordering::Relaxed) {
                         crate::blackbox::text_puts("WD: USB WAIT\n");
                     }
-                    if RC_STATE.load(Ordering::Relaxed) == 1 {
-                        if beats.wrapping_sub(RC_T0.load(Ordering::Relaxed)) > 10 {
-                            super::platform::ane_usb_dev::usb_reconnect_end();
-                            RC_STATE.store(0, Ordering::Relaxed);
-                            S0.store(beats, Ordering::Relaxed); // restart the wait
-                        }
-                    } else if beats.wrapping_sub(S0.load(Ordering::Relaxed)) > reconnect_wait_beats
+                    if RC_STATE.load(Ordering::Relaxed) == 0
+                        && beats.wrapping_sub(S0.load(Ordering::Relaxed)) > reconnect_wait_beats
                     {
                         let r = RETRIES.load(Ordering::Relaxed);
                         if r >= reconnect_max {

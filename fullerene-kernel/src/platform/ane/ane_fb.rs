@@ -83,14 +83,12 @@ fn irq_quiet() -> bool {
 /// show evidence that cannot be shown any other way, so nothing may end it
 /// early - least of all a watchdog whose stated job is recovery, not
 /// diagnosis.
-pub static HOLD_ACTIVE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-
 pub fn hold_active() -> bool {
-    HOLD_ACTIVE.load(core::sync::atomic::Ordering::Relaxed)
+    crate::blackbox::panel_hold()
 }
 
 pub fn set_hold_active(active: bool) {
-    HOLD_ACTIVE.store(active, core::sync::atomic::Ordering::Relaxed);
+    crate::blackbox::set_panel_hold(active);
 }
 
 const TEXT_X: u32 = 8;

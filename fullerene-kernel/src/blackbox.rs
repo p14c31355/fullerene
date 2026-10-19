@@ -1208,6 +1208,21 @@ pub fn watchdog_check(now_us: u64) {
 
 /// Append a plain string to the durable text ring (upper-cased on the way in,
 /// like every other console byte).
+/// True while a deliberate panel hold owns this boot. Every watchdog in the
+/// tree asks this before doing anything drastic: a hold exists so that
+/// evidence no other mechanism can show stays on the panel long enough to be
+/// photographed, and a reset to the loader is the one thing that destroys it.
+pub static PANEL_HOLD: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+pub fn set_panel_hold(active: bool) {
+    PANEL_HOLD.store(active, core::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn panel_hold() -> bool {
+    PANEL_HOLD.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn text_puts(message: &str) {
     for &b in message.as_bytes() {
         text_byte(b);
