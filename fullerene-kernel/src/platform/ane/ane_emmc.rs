@@ -121,6 +121,28 @@ pub fn clock_result() -> u64 {
 /// 2 clock refused, 3 status failed, 4 read failed, 5 read wrong,
 /// 6 reads disagreed), 40..48 the first field that failed. Zero means the
 /// probe never ran.
+/// Set one clock divider field and prove it with a read pair, without
+/// climbing a ladder or writing to the card. The reply packs
+/// `ok<<32 | code<<8 | register 0x2C`, so `oem clk 8` answers "did this
+/// divider work" in one command instead of one reboot.
+pub fn clock_try(field: u16, log: fn(&str, u64)) -> u64 {
+    if !emmc_clock_set(field, log) {
+        return (2u64 << 8) | rd16(SDHCI_BASE, 0x2C) as u64;
+    }
+    let mut a = [0u32; 128];
+    let (ok_a, _sa, _ea) = sdhci_data_read(17, 0, &mut a, log);
+    if !ok_a {
+        return (4u64 << 8) | rd16(SDHCI_BASE, 0x2C) as u64;
+    }
+    let mut b = [0u32; 128];
+    let (ok_b, _sb, _eb) = sdhci_data_read(17, 0, &mut b, log);
+    if !ok_b {
+        return (4u64 << 8) | rd16(SDHCI_BASE, 0x2C) as u64;
+    }
+    let code = if a[0] != b[0] { 6u64 } else { 1 };
+    ((code == 1) as u64) << 32 | (code << 8) | rd16(SDHCI_BASE, 0x2C) as u64
+}
+
 pub fn clock_probe(log: fn(&str, u64)) {
     let base = rd16(SDHCI_BASE, 0x2C) >> 8;
     CLK_BASE_FIELD.store(base, Ordering::Relaxed);
@@ -135,6 +157,18 @@ pub fn clock_probe(log: fn(&str, u64)) {
     // the card it may run high speed - see `switch_hs`.
     const RUNGS: [u16; 6] = [8, 6, 5, 4, 3, 2];
     let rungs = if hs_mode() { &RUNGS[..] } else { &RUNGS[..4] };
+    // The old success test required 0xAA55 at byte 510 of LBA 0. That is a
+    // property of the card's contents, not of the clock: if the first block
+    // is blank, every rung "fails" and the ladder never climbs. Measure the
+    // reference at the clock the boot already trusted first, and only hold
+    // later rungs to the signature when the reference itself has it.
+    let mut reference = [0u32; 128];
+    let (ref_ok, _rs, _re) = sdhci_data_read(17, 0, &mut reference, log);
+    let has_sig = ref_ok && (reference[127] & 0xFFFF) == 0xAA55;
+    log(
+        "em: clk_ref=",
+        ((ref_ok as u64) << 9) | ((has_sig as u64) << 8) | reference[0] as u64 & 0xff,
+    );
     let mut code = 0u64;
     let mut chosen = 0u64;
     let mut first_fail = 0u64;
@@ -160,7 +194,7 @@ pub fn clock_probe(log: fn(&str, u64)) {
             first_fail = *field as u64;
             break;
         }
-        if (a[127] & 0xFFFF) != 0xAA55 {
+        if has_sig && (a[127] & 0xFFFF) != 0xAA55 {
             set(5);
             first_fail = *field as u64;
             break;
@@ -172,7 +206,7 @@ pub fn clock_probe(log: fn(&str, u64)) {
             first_fail = *field as u64;
             break;
         }
-        if (b[127] & 0xFFFF) != 0xAA55 {
+        if has_sig && (b[127] & 0xFFFF) != 0xAA55 {
             set(5);
             first_fail = *field as u64;
             break;
@@ -192,7 +226,7 @@ pub fn clock_probe(log: fn(&str, u64)) {
         let _ = emmc_clock_set(base, log);
         let mut m = [0u32; 128];
         let (ok, _s, _e) = sdhci_data_read(17, 0, &mut m, log);
-        let good = ok && (m[127] & 0xFFFF) == 0xAA55;
+        let good = ok && (!has_sig || (m[127] & 0xFFFF) == 0xAA55);
         log("em: clk_back=", ((good as u64) << 8) | base as u64);
         if !good {
             log("em: clk_dead=", 1);

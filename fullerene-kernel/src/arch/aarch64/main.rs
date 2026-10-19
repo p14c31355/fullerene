@@ -1363,7 +1363,15 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                 // Ask for sixty counter-seconds to get the six real ones
                 // the comment always meant; the loop still leaves the
                 // instant the host configures us.
-                let deadline = timer::uptime_us().saturating_add(60_000_000);
+                // The window must be an idle window, not a boot-relative
+                // one: a host that is still sending setups (a retried
+                // string read, a reset, a second GET_DESCRIPTOR) is a host
+                // that is still working. The photo of the parked screen
+                // showed SETUPS=0x17 with never a SET_CONFIGURATION - we
+                // gave up one request short while the host was still
+                // talking. Slide the deadline forward on every new setup.
+                let mut deadline = timer::uptime_us().saturating_add(60_000_000);
+                let mut last_setups = platform::ane_usb_dev::setups_seen();
                 let mut served = 0u32;
                 // Paint the ledger from inside the wait: a pipe that never
                 // finishes leaves the hot loop running, so a ledger painted
@@ -1389,6 +1397,11 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                 {
                     platform::ane_usb_dev::service(ane_log);
                     crate::platform::common::recovery::boot_heartbeat();
+                    let seen = platform::ane_usb_dev::setups_seen();
+                    if seen != last_setups {
+                        last_setups = seen;
+                        deadline = timer::uptime_us().saturating_add(60_000_000);
+                    }
                     served = served.wrapping_add(1);
                     // 79 passes per request at most, so 256 keeps the panel
                     // within one host retry of the truth without paying the

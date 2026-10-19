@@ -160,6 +160,15 @@ const EPCTL_USBACTEP: u32 = 1 << 15;
 
 const EPINT_XFERCOMPL: u32 = 1 << 0;
 const EPINT_SETUP: u32 = 1 << 3;
+/// dwc2 DOEPINT/DIEPINT error bits. A babble means we put more on the wire
+/// than the host asked for (INEPSIZ overcount or a stale FIFO); BNA means
+/// the core gave up on the buffer. Either one leaves EP0 armed but deaf -
+/// the host sees `string descriptor 0 read error: -75` and never sends
+/// SET_CONFIGURATION, which is exactly the parked screen we photographed.
+const EPINT_AHBERR: u32 = 1 << 2;
+const EPINT_BNA: u32 = 1 << 7;
+const EPINT_BABBLE: u32 = 1 << 9;
+const EPINT_EP0_FATAL: u32 = EPINT_AHBERR | EPINT_BNA | EPINT_BABBLE;
 
 // ---- GRXSTSP fields (hw.h) -------------------------------------------------
 
@@ -1901,7 +1910,15 @@ fn service_ep0(log: fn(&str, u64)) {
     if diep & EPINT_SETUP != 0 {
         wr(DIEPINT0, EPINT_SETUP);
     }
-    if diep & !(EPINT_XFERCOMPL | EPINT_SETUP) != 0 {
+    if diep & EPINT_EP0_FATAL != 0 {
+        wr(DIEPINT0, diep & EPINT_EP0_FATAL);
+        let ok = ep0_resync();
+        log(
+            "ud: ep0 in error=",
+            (diep & EPINT_EP0_FATAL) as u64 | ((ok as u64) << 16),
+        );
+    }
+    if diep & !(EPINT_XFERCOMPL | EPINT_SETUP | EPINT_EP0_FATAL) != 0 {
         wr(DIEPINT0, diep);
     }
     let doep = rd(DOEPINT0);
@@ -1931,7 +1948,15 @@ fn service_ep0(log: fn(&str, u64)) {
             handle_setup(log);
         }
     }
-    if doep & !(EPINT_XFERCOMPL | EPINT_SETUP) != 0 {
+    if doep & EPINT_EP0_FATAL != 0 {
+        wr(DOEPINT0, doep & EPINT_EP0_FATAL);
+        let ok = ep0_resync();
+        log(
+            "ud: ep0 out error=",
+            (doep & EPINT_EP0_FATAL) as u64 | ((ok as u64) << 16),
+        );
+    }
+    if doep & !(EPINT_XFERCOMPL | EPINT_SETUP | EPINT_EP0_FATAL) != 0 {
         wr(DOEPINT0, doep);
     }
 }

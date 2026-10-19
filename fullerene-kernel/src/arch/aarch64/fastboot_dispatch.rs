@@ -594,6 +594,21 @@ pub fn poll(log: fn(&str, u64)) {
         return;
     }
 
+    if let Some(arg) = cmd.strip_prefix(b"oem clk ") {
+        // `oem clk <field>`: one divider, one read pair, one answer. This is
+        // the instrument the ladder needed: the divisor is a single number,
+        // so it can be bisected on a live device instead of by rebooting
+        // into a ladder that only reports its first failure.
+        let field = crate::adb_dispatch::parse_hex(arg.trim_ascii()) as u16;
+        log("fb: clk_req=", field as u64);
+        crate::platform::ane_usb_dev::fb_send_info(b"clk");
+        let v = crate::platform::ane_emmc::clock_try(field, log);
+        let mut line = [0u8; 32];
+        let n = crate::adb_dispatch::fmt_okay_hex(v, &mut line);
+        crate::platform::ane_usb_dev::ep1_send(&line[..n]);
+        return;
+    }
+
     #[cfg(fullerene_aarch64_ane)]
     if cmd == b"oem hs" || cmd == b"oem hs on" || cmd == b"oem hs off" {
         // `oem hs on|off`: ask the card to switch to high-speed timing and
