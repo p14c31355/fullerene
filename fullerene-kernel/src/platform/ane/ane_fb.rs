@@ -34,6 +34,10 @@ const CANVAS_LEN: usize = (WIDTH as usize) * (HEIGHT as usize) * 4;
 /// The boot console uses a restrained dark palette so diagnostic values stay
 /// readable without competing with the desktop that follows it.
 const BG: u32 = 0xFF07_1019;
+/// The enumeration hold paints this instead of the boot background: a green
+/// field nothing else in the boot draws, so "is the panel ours right now?"
+/// answers itself in one photograph.
+const HOLD_BG: u32 = 0xFF0A_2A12;
 const PANEL: u32 = 0xFF10_1D2A;
 const PANEL_ALT: u32 = 0xFF14_2637;
 const GRID: u32 = 0xFF1D_384A;
@@ -604,6 +608,29 @@ pub fn usb_fail_banner(setups: u64, serviced: u64) {
     flush_row_force(49);
     flush_row_force(50);
     flush_row_force(51);
+}
+
+/// Take the panel for the enumeration hold: a solid field, the banner at
+/// the top, and the boot report below it.
+///
+/// The band flushes alone were not enough to tell "the panel is ours and
+/// the text is there" from "the panel is showing something else": both
+/// look like text that disappears. A whole-screen colour is unambiguous.
+pub fn hold_begin(setups: u64, serviced: u64) {
+    let canvas: &mut [u32] =
+        unsafe { core::slice::from_raw_parts_mut(CANVAS as *mut u32, CANVAS_LEN / 4) };
+    for px in canvas.iter_mut() {
+        *px = HOLD_BG;
+    }
+    unsafe {
+        crate::blackbox::cache_clean(CANVAS, CANVAS_LEN);
+    }
+    paint_at_force(0, 8, 19, b"USB NEVER CONFIGURED");
+    paint_hex_at_force(1, 8, b"SETUPS", setups);
+    paint_hex_at_force(2, 8, b"SERVICE", serviced);
+    paint_at_force(3, 8, 24, b"HOLD - PHOTOGRAPH ME NOW");
+    usb_fail_banner(setups, serviced);
+    flush_panel();
 }
 
 /// Paint a text line at an explicit x (the right-column instruments). The

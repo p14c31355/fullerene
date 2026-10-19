@@ -2414,16 +2414,17 @@ fn trace_request(breq: u8, wvalue: u16, wlength: u16) {
 /// descriptor start read, and whatever follows it is the request the host
 /// gave up on. Eight rows is every request a clean enumeration needs, so
 /// a wrap is itself evidence.
-fn trace_request_panel(breq: u8, wvalue: u16, wlength: u16) {
-    use core::sync::atomic::{AtomicU32, Ordering};
-    // Only until the host configures us: after that the desktop owns the
-    // canvas and a per-request band copy would flicker over the UI.
-    if unsafe { CONFIGURED } {
-        return;
-    }
-    static SLOT: AtomicU32 = AtomicU32::new(0);
-    const ROWS: u32 = 8;
-    let slot = SLOT.fetch_add(1, Ordering::Relaxed) % ROWS;
+/// The last eight SETUPs, kept so the panel copy can be restored.
+/// Packed (bRequest << 32) | (wValue << 16) | wLength; slot 0 is "never
+/// seen" and renders nothing.
+static TRACE: [core::sync::atomic::AtomicU64; 8] =
+    [const { core::sync::atomic::AtomicU64::new(0) }; 8];
+static TRACE_N: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+fn trace_render(slot: u32, packed: u64) {
+    let breq = (packed >> 32) as u8;
+    let wvalue = (packed >> 16) as u16;
+    let wlength = packed as u16;
     let mut buf = [0u8; 32];
     let mut n = 0;
     for (i, part, width) in [
@@ -2447,6 +2448,37 @@ fn trace_request_panel(breq: u8, wvalue: u16, wlength: u16) {
     }
     crate::platform::ane_fb::paint_at_force(4 + slot, 8, n, &buf[..n]);
     crate::platform::ane_fb::flush_row_force(4 + slot);
+}
+
+/// Redraw the panel copy of the SETUP trace.
+///
+/// The held screen has to survive whatever the boot does to the canvas
+/// behind it, so the hold repaints from this record instead of trusting
+/// that the first paint is still there.
+pub fn repaint_trace() {
+    use core::sync::atomic::Ordering;
+    let seen = TRACE_N.load(Ordering::Relaxed).min(8);
+    for slot in 0..seen {
+        let packed = TRACE[slot as usize].load(Ordering::Relaxed);
+        if packed != 0 {
+            trace_render(slot, packed);
+        }
+    }
+}
+
+fn trace_request_panel(breq: u8, wvalue: u16, wlength: u16) {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    // Only until the host configures us: after that the desktop owns the
+    // canvas and a per-request band copy would flicker over the UI.
+    if unsafe { CONFIGURED } {
+        return;
+    }
+    const ROWS: u32 = 8;
+    let packed = ((breq as u64) << 32) | ((wvalue as u64) << 16) | wlength as u64;
+    let seen = TRACE_N.fetch_add(1, Ordering::Relaxed);
+    let slot = seen % ROWS;
+    TRACE[slot as usize].store(packed, Ordering::Relaxed);
+    trace_render(slot, packed);
 }
 
 /// Durable-ring EP0 state dump (v159): GINTSTS, DOEPCTL0, the latch nibble
