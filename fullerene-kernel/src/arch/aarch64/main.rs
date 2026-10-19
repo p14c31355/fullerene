@@ -1447,12 +1447,29 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                     // the ledger, which is the only evidence of where the
                     // control pipe stopped. Keep serving and keep the
                     // ledger on the panel instead of taking the canvas.
+                    // The hold flag is what keeps the enumeration watchdog
+                    // from resetting us into the loader: a diagnostic build
+                    // that gets reset five seconds after the first failure
+                    // has no diagnostic in it. Stay on the panel, keep
+                    // serving EP0, and repaint the ledger every pass so the
+                    // q= rows and the ring tail can be photographed at
+                    // leisure.
+                    let mut tick = 0u64;
                     loop {
                         platform::ane_usb_dev::service(ane_log);
                         served = served.wrapping_add(1);
-                        if served & 0xff == 0 {
-                            paint_ledger(served >> 8);
+                        tick = tick.wrapping_add(1);
+                        platform::ane_fb::set_hold_active(true);
+                        platform::ane_fb::hold_frame(
+                            (tick & 0xffff) as u32,
+                            timer::uptime_us() / 1_000_000,
+                            platform::ane_usb_dev::setups_seen() as u64,
+                            served as u64,
+                        );
+                        if served & 0x3f == 0 {
+                            paint_ledger(served >> 6);
                         }
+                        timer::delay_ms(250);
                     }
                 }
             }
@@ -1751,10 +1768,23 @@ fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
     // this board (the panic that ends a 15 s hold resets the loader only
     // ~12 real seconds after the screen goes up), so the dying words need a
     // window measured against the same clock they are timed with.
+    // A diagnostic build does not get to throw its own evidence away: the
+    // reset into the loader wipes the panel, and the ring needs a working
+    // USB to read back, which is the thing under test. Spin here forever
+    // instead, feeding the loader's SP805 through the timer tick.
+    #[cfg(fullerene_ane_enum_diag)]
+    {
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+    #[cfg(not(fullerene_ane_enum_diag))]
     let deadline = timer::uptime_us().saturating_add(300_000_000);
+    #[cfg(not(fullerene_ane_enum_diag))]
     while timer::uptime_us() < deadline {
         core::hint::spin_loop();
     }
+    #[cfg(not(fullerene_ane_enum_diag))]
     // Do not park: reset straight into the loader's fastboot (reason
     // BOOTLOADER). Parking lets the watchdog reset us without a reason,
     // which feeds the loader's boot-fail counter and eventually its
