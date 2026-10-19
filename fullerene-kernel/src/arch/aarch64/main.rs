@@ -1761,8 +1761,28 @@ fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
     // between the fault and the loader, which is why every report so far
     // read "it flashes past". 30 s is enough to photograph and long enough
     // that the window catcher still sees the loader well inside its wait.
+    // A diagnostic build keeps the green hold screen instead of the red
+    // panic screen: the ledger, the banner and the ring tail are the data,
+    // and the red screen paints over all of them.
+    #[cfg(not(fullerene_ane_enum_diag))]
     if let Some(location) = info.location() {
         platform::ane_fb::panic_screen(location.file(), location.line(), location.column());
+    }
+    #[cfg(fullerene_ane_enum_diag)]
+    {
+        platform::ane_fb::set_hold_active(true);
+        let mut beat: u32 = 0;
+        loop {
+            platform::ane_fb::hold_frame(
+                beat,
+                timer::uptime_us() / 1_000_000,
+                platform::ane_usb_dev::setups_seen() as u64,
+                0,
+            );
+            platform::ane_usb_dev::repaint_trace();
+            beat = beat.wrapping_add(1);
+            timer::delay_ms(250);
+        }
     }
     // 300 s of uptime, not 30: the clock runs well ahead of real time on
     // this board (the panic that ends a 15 s hold resets the loader only

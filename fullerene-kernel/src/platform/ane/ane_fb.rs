@@ -812,6 +812,12 @@ fn log_line_matters(at: &dyn Fn(usize) -> u8, s: usize, e: usize) -> bool {
     if at(s) == b'W' && at(s + 1) == b'D' && at(s + 2) == b':' {
         return true;
     }
+    // The panic record: "FULLERENE AARCH64 PANIC" and "FILE <path>". They sit
+    // at the very end of the ring, so without them the tail always ends just
+    // before the thing that killed the boot.
+    if at(s) == b'F' && (at(s + 1) == b'U' || at(s + 1) == b'I') {
+        return true;
+    }
     if !(at(s) == b'u' && at(s + 1) == b'd' && at(s + 2) == b':') {
         return false;
     }
