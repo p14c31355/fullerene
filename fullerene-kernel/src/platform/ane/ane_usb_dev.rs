@@ -1014,6 +1014,14 @@ fn pop_rx(log: fn(&str, u64)) {
                         }
                         n = n.saturating_sub(4);
                     }
+                    // v336g: dispatch where the bytes were actually popped.
+                    // The OUTDONE word for a fastboot command trails its
+                    // payload, so dispatching there answered every command
+                    // with the previous one's reply - the host saw the
+                    // product answer for serialno and a FAIL for download:.
+                    if unsafe { core::ptr::addr_of!(DL_REMAIN).read() } == 0 {
+                        fb_poll(log);
+                    }
                 } else {
                     // EP0 data/status OUT bytes: drain so the FIFO does not wedge.
                     let mut n = bcnt;
