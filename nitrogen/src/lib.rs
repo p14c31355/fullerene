@@ -30,6 +30,7 @@ extern crate alloc;
 
 // Infrastructure modules shared by every architecture.
 pub mod arch;
+pub mod contacts;
 pub mod debug;
 pub mod driver_context;
 pub mod error;
