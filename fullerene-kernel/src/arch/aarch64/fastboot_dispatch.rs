@@ -625,6 +625,29 @@ pub fn poll(log: fn(&str, u64)) {
     }
 
     #[cfg(fullerene_aarch64_ane)]
+    if cmd == b"oem accel" {
+        // `oem accel`: identify, configure, and read one sample. The writes
+        // only happen after WHO_AM_I said LIS3DH.
+        const HEX: [u8; 16] = *b"0123456789ABCDEF";
+        let id = unsafe { crate::platform::ane_accel::start() }.unwrap_or(0);
+        let mut line = [b'0'; 36];
+        line[..6].copy_from_slice(b"accel ");
+        line[6] = HEX[(id >> 4) as usize];
+        line[7] = HEX[(id & 0xF) as usize];
+        crate::platform::ane_usb_dev::fb_send_info(&line[..8]);
+        match unsafe { crate::platform::ane_accel::read() } {
+            Some((x, y, z)) => {
+                let packed = (x as u16 as u64) << 32 | (y as u16 as u64) << 16 | z as u16 as u64;
+                let mut ok = [0u8; 32];
+                let n = crate::adb_dispatch::fmt_okay_hex(packed, &mut ok);
+                crate::platform::ane_usb_dev::ep1_send(&ok[..n]);
+            }
+            None => crate::platform::ane_usb_dev::ep1_send(b"FAILaccel"),
+        }
+        return;
+    }
+
+    #[cfg(fullerene_aarch64_ane)]
     if cmd == b"oem sensors" {
         // `oem sensors`: one INFO line per candidate in the DTS table, with
         // the id byte that came back. A part that reads its expected id is

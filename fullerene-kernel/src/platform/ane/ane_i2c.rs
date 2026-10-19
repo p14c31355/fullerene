@@ -213,3 +213,41 @@ pub fn hex_row(out: &mut [u8], at: usize, bytes: &[u8]) -> usize {
     }
     i
 }
+
+/// Write one register on any of the buses above.
+///
+/// The port has no write path to any device whose register map it does not
+/// know, so this exists for the one case where it does: an accelerometer that
+/// was identified by its WHO_AM_I first (`ane_accel`). The last byte carries
+/// STOP; without it the transaction never ends and the next one is refused.
+///
+/// # Safety
+/// MMIO on a bus the caller knows is clocked.
+pub unsafe fn write_reg_at(base: usize, addr: u16, reg: u8, value: u8) -> Result<(), u32> {
+    master_init_at(base, addr);
+    for b in [reg as u32, value as u32 | IC_DATA_CMD_STOP] {
+        let mut spins = 0u32;
+        while rd32(base, IC_TXFLR) >= 8 {
+            spins += 1;
+            if spins > 100_000 {
+                return Err(1);
+            }
+            core::hint::spin_loop();
+        }
+        wr32(base, IC_DATA_CMD, b);
+    }
+    let abrt = rd32(base, IC_TX_ABRT_SOURCE);
+    if abrt != 0 {
+        wr32(base, IC_CLR_TX_ABRT, 0);
+        return Err(abrt);
+    }
+    let mut spins = 0u32;
+    while rd32(base, IC_STATUS) & 0x21 != 0 {
+        spins += 1;
+        if spins > 200_000 {
+            return Err(3);
+        }
+        core::hint::spin_loop();
+    }
+    Ok(())
+}
