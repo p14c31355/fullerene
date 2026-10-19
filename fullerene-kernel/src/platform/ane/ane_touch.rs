@@ -279,9 +279,10 @@ pub fn touch_extent() -> (u16, u16, u32) {
     )
 }
 
-/// Poll the touch IC: read TD_STATUS (0x02), then the point records.
-/// Called from the wait loop every pass (the I2C transaction is ~1 ms
-/// at 400 kHz for 5 points - acceptable at the boot-thread cadence).
+/// Poll the touch IC: one read of 0x00..0x1E carries TD_STATUS and all five
+/// six-byte point records. Called from the wait loop every pass; at a real
+/// bus speed the whole frame is under a millisecond, and the bus timing is
+/// programmed conservatively (see `i2c0_master_init`).
 pub unsafe fn poll() {
     if TOUCH_STAGE.load(Ordering::Relaxed) != b'C' {
         return; // the chip never answered the probe
