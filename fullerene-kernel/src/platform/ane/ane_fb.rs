@@ -763,33 +763,68 @@ fn paint_log_tail_force(row0: u32, want: usize) {
         return;
     }
     let base = (crate::blackbox::TEXT_BLOCK_BASE + 12) as *const u8;
-    // Walk back from the end, collecting the start of each completed line.
+    let at = |i: usize| unsafe { core::ptr::read_volatile(base.add(i)) };
+    // Walk back from the end, keeping only the lines that name a control
+    // transfer or a watchdog. The ring is otherwise flooded by the IRQ
+    // heartbeat (`IQ: us=... n=...` every 1024 beats), which buries the one
+    // line that matters a dozen rows deep.
     let mut starts = [0usize; MAXL];
+    let mut ends = [0usize; MAXL];
     let mut n = 0usize;
+    let mut end = len;
     let mut pos = len;
     while pos > 0 && n < want.min(MAXL) {
         pos -= 1;
-        if unsafe { core::ptr::read_volatile(base.add(pos)) } == b'\n' && pos + 1 < len {
-            starts[n] = pos + 1;
-            n += 1;
+        if at(pos) == b'\n' {
+            let s = pos + 1;
+            if log_line_matters(&at, s, end) {
+                starts[n] = s;
+                ends[n] = end;
+                n += 1;
+            }
+            end = pos;
         }
     }
     for k in 0..n {
-        let s = starts[n - 1 - k];
+        let (s, e) = (starts[n - 1 - k], ends[n - 1 - k]);
         let mut line = [b' '; 40];
         for (i, cell) in line.iter_mut().enumerate() {
             let p = s + i;
-            if p >= len {
+            if p >= e {
                 break;
             }
-            let b = unsafe { core::ptr::read_volatile(base.add(p)) };
-            if b == b'\n' || b == b'\r' || b == 0 {
+            let b = at(p);
+            if b == b'\r' || b == 0 {
                 break;
             }
             *cell = if (0x20..0x7f).contains(&b) { b } else { b'.' };
         }
         paint_at_force(row0 + k as u32, 8, 40, &line);
     }
+}
+
+/// Whether a ring line is one a wedged enumeration asked for: the SETUP
+/// trace (`ud: q=...`), the EP0 state dump (`ud: ...`), or a watchdog note.
+fn log_line_matters(at: &dyn Fn(usize) -> u8, s: usize, e: usize) -> bool {
+    if e < s + 3 {
+        return false;
+    }
+    if at(s) == b'W' && at(s + 1) == b'D' && at(s + 2) == b':' {
+        return true;
+    }
+    if !(at(s) == b'u' && at(s + 1) == b'd' && at(s + 2) == b':') {
+        return false;
+    }
+    let mut i = s;
+    while i + 1 < e {
+        if at(i) == b'q' && at(i + 1) == b'=' {
+            return true;
+        }
+        i += 1;
+    }
+    // An `ud:` line without a q= is a state dump, and those are the other
+    // half of the answer: they carry GINTSTS / DOEPCTL0 / DOEPTSIZ0.
+    true
 }
 
 /// Paint a text line at an explicit x (the right-column instruments). The
