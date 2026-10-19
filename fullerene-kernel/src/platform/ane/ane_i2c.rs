@@ -103,12 +103,6 @@ unsafe fn master_init_at(base: usize, addr: u16) {
     wr32(base, IC_ENABLE, 1);
 }
 
-/// Read `count` bytes starting at `from`. One transaction: register
-/// pointer write, repeated start, then that many reads.
-pub unsafe fn read_regs(addr: u16, from: u8, out: &mut [u8]) -> Result<(), u32> {
-    read_regs_at(I2C4_BASE, addr, from, out)
-}
-
 /// The buses this port may touch, by number. i2c0 is the touch bus and i2c2
 /// the PMIC's (both are already clocked by the loader - that is how the
 /// battery reads at all); i2c4 is the one this module brings up itself.

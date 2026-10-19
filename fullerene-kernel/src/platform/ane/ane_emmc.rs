@@ -18,7 +18,6 @@
 //! (an unclocked peripheral read can stall this fabric).
 
 use super::common::mmio::{rd8, rd16, rd32, wr8, wr16, wr32};
-use super::common::pmic::pmic_rd;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// v336j: the first failed multi-block chunk of a flash - bit31 = the

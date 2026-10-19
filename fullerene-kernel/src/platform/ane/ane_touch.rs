@@ -35,9 +35,6 @@ const IC_ENABLE: usize = 0x6c;
 const IC_TXFLR: usize = 0x74;
 const IC_RXFLR: usize = 0x78;
 
-const IC_STATUS_TFNF: u32 = 1 << 1;
-const IC_STATUS_RFNE: u32 = 1 << 3;
-
 /// The touch bring-up state for the ring/strip.
 pub static TOUCH_STAGE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(b'.');
 pub static CHIP_ID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
