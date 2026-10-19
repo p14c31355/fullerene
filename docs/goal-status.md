@@ -79,7 +79,7 @@ Three states, and they mean exactly what they say:
 |---|---|---|
 | device mode / fastboot | works | enumeration, getvar, flash, erase, reboot to LK |
 | ADB | works | the shell reaches the device over it when the kernel is up |
-| host mode / Type-C | not started | dwc2 host mode is a separate bring-up |
+| host mode / Type-C | investigation only | `hisi_usb@ff100000` is the only usb node: the dwc2 core can do host (HPRT), but the DTS names no OTG id pin, no CC controller and no VBUS switch. The role is probably the charger IC's, so `docs/charger.md`'s dump comes first |
 
 ## What this table refuses to claim
 
