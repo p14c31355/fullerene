@@ -77,6 +77,12 @@ fn usb_zombie_check(beats: u32) {
     }
 }
 
+/// v343g: the responder's own way back to the loader. The USB pass lanes
+/// live above this module, so they cannot call the private scheduler.
+pub fn request_loader_reset(marker: &str) {
+    schedule_loader_reset(marker);
+}
+
 /// The one place that schedules the v63 loader reset. The callers pass
 /// the ring marker; the reset itself is the platform's panic path.
 fn schedule_loader_reset(marker: &str) {

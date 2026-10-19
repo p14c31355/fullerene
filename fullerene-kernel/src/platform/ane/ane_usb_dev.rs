@@ -2389,6 +2389,9 @@ pub fn service(log: fn(&str, u64)) {
     // the abandoned arming state is reset to idle (ep0_resync is idle-gated)
     // and the guard is reassigned to the live context.
     static SERVICE_REFUSED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    // v343g: how many times the pump had to take a pass away from a parked
+    // boot thread. A run of them cannot be a slow pass.
+    static TAKEOVERS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
     if IN_SERVICE.swap(true, Ordering::Acquire) {
         let refused = SERVICE_REFUSED.fetch_add(1, Ordering::Relaxed) + 1;
         if refused < 64 || !crate::blackbox::in_irq_context() {
@@ -2398,6 +2401,17 @@ pub fn service(log: fn(&str, u64)) {
         // run this pass instead.
         ep0_resync();
         log("usb: pass_takeover=", refused as u64);
+        // v343g: one takeover means the boot thread is parked inside USB.
+        // A run of them means it will stay parked, the host cannot get
+        // through, and the unattended loop has nothing to catch - so hand
+        // the loader back instead of cycling D+ until the battery dies.
+        // A long storage operation owns the pass legitimately; it marks
+        // itself busy and stands this lane down.
+        let t = TAKEOVERS.fetch_add(1, Ordering::Relaxed) + 1;
+        if t >= 12 && !crate::platform::common::recovery::busy() {
+            TAKEOVERS.store(0, Ordering::Relaxed);
+            crate::platform::common::recovery::request_loader_reset("WD: USB PASS HANDOFF\n");
+        }
     }
     SERVICE_REFUSED.store(0, Ordering::Relaxed);
     // A `download:` that stops receiving (client died mid-transfer) must
