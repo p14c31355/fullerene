@@ -1422,6 +1422,10 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                     // 22:27 tonight because this loop had the CPU and EP0 was
                     // never read. Serve every iteration, and leave the moment
                     // the host finishes configuring us.
+                    // The hold is our only window, so the host must be able to see us
+                    // during it: a reconnect_begin from a watchdog drops D+ and
+                    // nothing in this loop used to raise it again.
+                    platform::ane_usb_dev::usb_reconnect_end();
                     for i in 0..90 {
                         platform::ane_usb_dev::service(ane_log);
                         platform::ane_fb::hold_frame(
@@ -1456,6 +1460,10 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                     // leisure.
                     let mut tick = 0u64;
                     loop {
+                        // Same reason as the hold above: a watchdog may have
+                        // dropped D+ earlier, and this loop is the last chance
+                        // to be seen by the host.
+                        platform::ane_usb_dev::usb_reconnect_end();
                         platform::ane_usb_dev::service(ane_log);
                         served = served.wrapping_add(1);
                         tick = tick.wrapping_add(1);
