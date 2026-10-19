@@ -11,6 +11,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_UFS_EXECUTE");
     println!("cargo:rerun-if-env-changed=FULLERENE_ANE_ENUM_DIAG");
     println!("cargo:rerun-if-env-changed=FULLERENE_ANE_PANIC_PEEK");
+    println!("cargo:rerun-if-env-changed=FULLERENE_ANE_NO_CLKPROBE");
     println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_UFS_DMA_IDENTITY");
     println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_UFS_DMA_ORIGIN");
     println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_UFS_RATE_B");
@@ -480,6 +481,13 @@ fn main() {
             // pipe instead of letting the desktop flush cover the only
             // evidence of where enumeration stopped.
             println!("cargo:rustc-cfg=fullerene_ane_enum_diag");
+        }
+        if env::var_os("FULLERENE_ANE_NO_CLKPROBE").is_some() {
+            // Bench build: skip the card-clock ladder. If the PHY bring-up
+            // or a faster divider wedges the controller, this image still
+            // boots and still enumerates, so the time is not lost in a
+            // hang that needs a key press to escape.
+            println!("cargo:rustc-cfg=fullerene_ane_no_clkprobe");
         }
         if env::var_os("FULLERENE_ANE_PANIC_PEEK").is_some() {
             // Bench build: paint the previous boot's dying words and stop.

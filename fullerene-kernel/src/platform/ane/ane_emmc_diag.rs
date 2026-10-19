@@ -806,7 +806,10 @@ pub fn probe(log: fn(&str, u64), stage: u32) {
     // v336n: the ladder above stops at the first rung it finds; this
     // climbs to the fastest divider that still reads and leaves the
     // result where `getvar emmc` can report it.
+    #[cfg(not(fullerene_ane_no_clkprobe))]
     clock_probe(log);
+    #[cfg(fullerene_ane_no_clkprobe)]
+    log("em: clk_probe=skipped", 1);
 
     super::ane_fb::flush_panel();
     log("em: probe_done=", 1);
