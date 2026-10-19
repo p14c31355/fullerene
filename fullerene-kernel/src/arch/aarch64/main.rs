@@ -1153,7 +1153,7 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         // clocks/reset/rail, read the controller identity, run the vendor
         // reset toggle + SDHCI software reset and clock re-init, then the
         // first card commands (CMD0/CMD1).
-        platform::ane_emmc::probe(ane_log, 3);
+        platform::ane_emmc_diag::probe(ane_log, 3);
         // v197: attach only now - the whole bring-up above ran with the
         // device soft-disconnected (usb_bringup step 10), so the host's
         // fresh enumeration meets an armed responder and the live

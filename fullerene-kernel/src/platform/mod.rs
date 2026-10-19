@@ -30,6 +30,8 @@ pub mod ane_battery;
 pub mod ane_dwmmc;
 #[path = "ane/ane_emmc.rs"]
 pub mod ane_emmc;
+#[path = "ane/ane_emmc_diag.rs"]
+pub mod ane_emmc_diag;
 #[path = "ane/ane_fb.rs"]
 pub mod ane_fb;
 #[path = "ane/ane_touch.rs"]
