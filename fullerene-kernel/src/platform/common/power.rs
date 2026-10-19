@@ -113,8 +113,8 @@ pub mod ocv {
 
 #[cfg(test)]
 mod tests {
-    use super::ocv::{self, bracket_temp, OcvTable, COLS, ROWS};
     use super::BatteryState;
+    use super::ocv::{self, COLS, OcvTable, ROWS, bracket_temp};
 
     /// A small ladder with the shape of the vendor table: 100 % down to 1 %,
     /// two temperature columns only (cold, warm) so the maths is checkable

@@ -660,7 +660,7 @@ pub fn event(tag: &[u8]) {
 /// above the tail window. The block lives in reserved DRAM and survives the
 /// reboot, so the previous kernel's panic file/line is what a photo of the
 /// next boot shows - the one channel that needs no USB to read.
-pub fn report_previous_panic() {
+pub fn report_previous_panic() -> bool {
     const BASE: usize = crate::blackbox::TEXT_BLOCK_BASE as usize;
     const CAP: usize = crate::blackbox::TEXT_BLOCK_CAP as usize;
     let needle = b"FULLERENE AARCH64 PANIC";
@@ -681,7 +681,7 @@ pub fn report_previous_panic() {
     }
     if found == usize::MAX {
         crate::blackbox::text_puts("PREV-PANIC: none found\n");
-        return;
+        return false;
     }
     // The marker is followed by "PANIC: FILE=... LINE=0X..." (upper-cased on
     // the way into the ring); copy a printable run and paint two rows.
@@ -704,6 +704,7 @@ pub fn report_previous_panic() {
         flush_row(59);
     }
     crate::blackbox::text_puts("PREV-PANIC painted rows 58-59\n");
+    true
 }
 
 /// Paint the enumeration ledger: five rows under the event ledger.

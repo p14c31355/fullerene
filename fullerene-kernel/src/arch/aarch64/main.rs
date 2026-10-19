@@ -1107,21 +1107,19 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         #[cfg(fullerene_ane_panic_peek)]
         {
             // Bench build: the previous boot's dying words are painted and
-            // then held. Panic text is the one channel that needs neither
-            // USB nor a ring read-back, so a boot that only shows it is the
-            // cheapest way to read a failure that resets the SoC.
+            // then held long enough to photograph (the panic text is small
+            // and a glance is not evidence). The record lives in the durable
+            // block, so it is still there next boot - this build is a
+            // deliberate instrument, not the daily driver.
             //
-            // The hold is bounded. An unbounded one leaves the phone off
-            // the bus with a dead battery and no way back without a human
-            // press, so after the photo window the panic lane does what a
-            // panic does: hand the device to the loader, which is on the
-            // bus and can take the next image.
-            crate::blackbox::text_puts("PEEK HOLD\n");
-            let deadline = timer::uptime_us().saturating_add(45_000_000);
+            // The hold ends by continuing the boot rather than resetting:
+            // one flash then answers both questions (what the last boot's
+            // panic said, and whether the battery numbers are sane).
+            crate::blackbox::text_puts("PEEK HOLD 30S\n");
+            let deadline = timer::uptime_us().saturating_add(30_000_000);
             while timer::uptime_us() < deadline {
                 core::hint::spin_loop();
             }
-            platform::ane_usb_dev::panic_reset_to_bootloader();
         }
         // Device-side USB: answer the host's control transfers now that the
         // link is up (EP0 + descriptors; fastboot bulk is the next stage).

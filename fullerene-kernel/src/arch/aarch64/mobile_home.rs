@@ -199,10 +199,62 @@ impl HomeLayout {
 /// (`platform::ane_battery`), two byte reads, so it is re-sampled on every
 /// repaint.  A pack whose voltage cannot be read leaves the capsule empty
 /// rather than inventing a percentage.
+///
+/// A 3x5 digit bitmap, one byte per row, bit 2 = leftmost column. Big
+/// enough to scale up into the status bar without dragging in the glyph
+/// path (the first light deliberately avoided the font engine).
+const DIGITS: [[u8; 5]; 10] = [
+    [0b111, 0b101, 0b101, 0b101, 0b111], // 0
+    [0b010, 0b110, 0b010, 0b010, 0b111], // 1
+    [0b111, 0b001, 0b111, 0b100, 0b111], // 2
+    [0b111, 0b001, 0b111, 0b001, 0b111], // 3
+    [0b101, 0b101, 0b111, 0b001, 0b001], // 4
+    [0b111, 0b100, 0b111, 0b001, 0b111], // 5
+    [0b111, 0b100, 0b111, 0b101, 0b111], // 6
+    [0b111, 0b001, 0b001, 0b001, 0b001], // 7
+    [0b111, 0b101, 0b111, 0b101, 0b111], // 8
+    [0b111, 0b101, 0b111, 0b001, 0b111], // 9
+];
+
+/// Blit one scaled digit. Returns the width it consumed.
+fn draw_digit(fb: &mut [u32], fb_w: u32, fb_h: u32, x: u32, y: u32, d: u8, s: u32, c: u32) -> u32 {
+    let glyph = DIGITS[(d % 10) as usize];
+    for (row, bits) in glyph.iter().enumerate() {
+        for col in 0..3u32 {
+            if bits & (1 << (2 - col)) == 0 {
+                continue;
+            }
+            fill_rect(fb, fb_w, fb_h, x + col * s, y + row as u32 * s, s, s, c);
+        }
+    }
+    3 * s
+}
+
+/// The charge as two digits, drawn inside the capsule: a dark drop shadow
+/// first so the number stays legible over the green / amber / red fill.
+fn draw_percent(fb: &mut [u32], fb_w: u32, fb_h: u32, x: u32, y: u32, pct: u32, s: u32) {
+    let pct = pct.min(100);
+    let tens = (pct / 10) as u8;
+    let ones = (pct % 10) as u8;
+    let gap = s;
+    let shadow = 0xFF00_00_00u32;
+    // Shadow (2 px at s=4), then the glyph in white.
+    let mut cx = x;
+    if pct >= 10 {
+        cx += draw_digit(fb, fb_w, fb_h, cx + 1, y + 2, tens, s, shadow) + gap;
+    }
+    let _ = draw_digit(fb, fb_w, fb_h, cx + 1, y + 2, ones, s, shadow);
+    let mut cx = x;
+    if pct >= 10 {
+        cx += draw_digit(fb, fb_w, fb_h, cx, y, tens, s, 0xFFFF_FFFF) + gap;
+    }
+    let _ = draw_digit(fb, fb_w, fb_h, cx, y, ones, s, 0xFFFF_FFFF);
+}
+
 fn draw_battery(fb: &mut [u32], fb_w: u32, fb_h: u32, l: &HomeLayout) {
     let state = crate::platform::ane_battery::state();
-    let w = 46u32;
-    let h = 20u32;
+    let w = 62u32;
+    let h = 32u32;
     let x = fb_w.saturating_sub(l.margin + w);
     let y = l.notch_h + (l.bar_h - l.notch_h).saturating_sub(h) / 2;
     let outline: u32 = 0xFF8A_94_A0;
@@ -227,6 +279,14 @@ fn draw_battery(fb: &mut [u32], fb_w: u32, fb_h: u32, l: &HomeLayout) {
         0xFFE0_40_40
     };
     fill_rect(fb, fb_w, fb_h, x + 2, y + 2, filled, h - 4, color);
+
+    // The number, centred in the capsule (2 digits at scale 4 = 28x20).
+    let pct = (permille.min(1000) as u32 + 5) / 10;
+    let s = 4u32;
+    let text_w = if pct >= 10 { 2 * (3 * s) + s } else { 3 * s };
+    let tx = x + 2 + (inner - text_w) / 2;
+    let ty = y + 2 + (h - 4 - 5 * s) / 2;
+    draw_percent(fb, fb_w, fb_h, tx, ty, pct, s);
 }
 
 /// Render the phone home screen onto the canvas. Every color/position

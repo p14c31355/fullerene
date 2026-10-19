@@ -6,7 +6,7 @@
 //! per-LSB units and both charge ladders are copied from those two places.
 
 use crate::platform::common::pmic;
-use crate::platform::common::power::{ocv, BatteryState};
+use crate::platform::common::power::{BatteryState, ocv};
 
 const REG_V_OUT: usize = 0x1F4;
 #[allow(dead_code)]
@@ -21,11 +21,7 @@ fn reg16(reg: usize) -> u16 {
 
 fn sample(reg: usize) -> Option<u16> {
     let raw = reg16(reg);
-    if raw & INVALID != 0 {
-        None
-    } else {
-        Some(raw)
-    }
+    if raw & INVALID != 0 { None } else { Some(raw) }
 }
 
 /// Pack voltage in millivolts.  1 LSB = 24 * 100 * 1000 / 10661 uV = 225.12 uV.
