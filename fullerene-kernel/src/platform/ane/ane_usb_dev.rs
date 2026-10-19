@@ -271,16 +271,23 @@ static FROZEN_TR: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64:
 ///
 /// `fs::read_vfs_path` appends one byte per step ('1','2','e','3'..), so the
 /// last byte names the step the pass was in when it stopped. Packed as
-/// (count << 32) | the first eight bytes, little endian.
+/// (count << 32) | the last eight trail bytes, newest byte low.
 fn trail_word() -> u64 {
     const BASE: usize = 0x348d_e800;
+    const CAP: u32 = 32;
     unsafe {
-        let cnt = core::ptr::read_volatile(BASE as *const u32) as u64;
+        let cnt = core::ptr::read_volatile(BASE as *const u32).min(CAP) as u64;
+        // The newest step is what names the park, so pack the *tail* of the
+        // trail (the last eight bytes), newest byte in the low position.
+        let start = if cnt > 8 { cnt - 8 } else { 0 };
         let mut bytes = 0u64;
-        let mut i = 0;
+        let mut i = 0u64;
         while i < 8 {
-            let b = core::ptr::read_volatile((BASE + 4 + i) as *const u8) as u64;
-            bytes |= b << (8 * i);
+            let at = start + i;
+            if at < cnt {
+                let b = core::ptr::read_volatile((BASE + 4 + at as usize) as *const u8) as u64;
+                bytes |= b << (8 * i);
+            }
             i += 1;
         }
         (cnt << 32) | bytes
