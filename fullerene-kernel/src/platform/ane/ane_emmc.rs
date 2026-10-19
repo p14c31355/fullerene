@@ -1147,25 +1147,13 @@ pub fn write_sectors(lba: u32, data: &[u8], log: fn(&str, u64)) -> (u64, u64) {
     // write is fast when CMD25 takes, and ~1000x slower when it falls back
     // to one CMD24 per sector; unbounded, the fallback held the boot thread
     // (and with it every USB service pass) for as long as the card took.
-    // 150 s covers the whole 24 MB kernel partition at the fallback rate;
-    // past that, report the failure instead of going quiet. The host's
-    // fastboot client then gets a FAIL rather than a silent endpoint.
-    let t0 = crate::timer::uptime_us();
+    // v336m: the loop is bounded by the work, not by a clock. A deadline
+    // here used uptime_us, and that counter runs about ten times fast on
+    // this board (1271 "s" elapsed during an 85 s write), so it cut a
+    // write that was making steady progress. Every chunk now lands or
+    // fails fast on its own polls, and the host hears the result.
     let mut i = 0usize;
     while i < total {
-        if crate::timer::uptime_us().saturating_sub(t0) > 900_000_000 {
-            log("em: wr_timeout=", i as u64);
-            // v336l: carry the elapsed ms in the reply so the achieved
-            // rate can be worked out without another boot.
-            LAST_WR.store(
-                0x4000_0000
-                    | ((crate::timer::uptime_us().saturating_sub(t0) / 1000).min(0x7FFF_FFFF)
-                        as u32),
-                Ordering::Relaxed,
-            );
-            bad += (total - i) as u64;
-            break;
-        }
         // v336i: a flash is progress. Without this the frozen-boot lane
         // reads the minutes a 24 MB partition takes as a dead boot and
         // resets the machine in the middle of the write.
