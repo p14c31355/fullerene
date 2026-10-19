@@ -110,3 +110,38 @@ Measured rate: 512 KiB in 85 s, i.e. ~6 KB/s, which is ~8x below the
 400 kHz wire rate. The card clock is still the init clock; raising it
 is the next real speedup, and it needs the vendor clock plan for the
 Arasan block at 0xFF390000 rather than a guess.
+
+## The eMMC clock (2026-10-20 01:30 JST)
+
+The card runs at the 400 kHz initialisation clock, and the dividers above
+it never held. The reason is not the divider: the Arasan PHY at
+`0xFF390000 + 0x430` was never powered. The vendor's
+`sdhci_of_arasan_platform_init` is explicit about the order - enable the
+resistor trim, clear `DLL_TRIM_ICP`, set it to `0x4`, set `PDB`, wait for
+`PHY_STATUS.CALDONE`, then wait for `EXR_NINST` to drop - and only a PHY
+that has completed that sequence can sample a clock above the init rate.
+We now do the same, plus the steady-state push-pull setting
+(`PHY_CTRL2 = 0x003FF7FC`, command open drain off, 40 ohm drive strength
+from the board's `drv-strength = <4 4>`).
+
+The clock probe that found this is part of the image: it walks
+100 / 50 / 33 / 25 MHz, reads LBA 0 twice at each and keeps the fastest
+divider that returns the MBR unchanged, falling back to the field the
+boot started with. `fastboot getvar emmc` reports the outcome as nibbles
+- one per candidate - so a failed rung says *how* it failed (clock did
+not settle, command error, data error, magic mismatch, unstable) instead
+of just "slower".
+
+Before the PHY fix the probe reported `0x015EFA00`: no rung held, base
+field `0xFA`. That is the measurement that pointed here.
+
+## Repairing a garble without losing enumeration
+
+Every reply the responder sends is derived from the SETUP packet it just
+read - `handle_setup` switches on `wValue` with no memory of the previous
+request - so a wrong reply can only come from a transfer that was
+already in flight. `ep0_resync` therefore flushes the TX FIFO, clears
+STALL on both halves of EP0 and re-arms them. The garble detector tries
+that first and only cycles D+ when the pipe refuses to re-arm; the host
+retries a GET_DESCRIPTOR on its own, and a correctly answered retry
+recovers the identity without re-enumeration.
