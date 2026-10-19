@@ -269,3 +269,37 @@ stay separable.
 What this does not explain yet: why earlier builds with the same 0.6 s window
 did enumerate. The difference between them and this one is the clock ladder
 running before the attach, which is exactly why the noladder image exists.
+
+## 2026-10-20 07:0x / v343: a parked pass disarmed USB, and the freeze record left the panel
+
+The 06:26 photograph read `PHASE 0` / `VFSOPEN OK` / `BOOT FROZEN`, which
+settles the question the panel was built for: the boot thread is parked
+outside `service()`. What the photograph could not show is where, and the
+state it left behind was worse than the park itself.
+
+`IN_SERVICE` in `ane_usb_dev::service` is mutual exclusion between the boot
+thread and the timer pump, not a lock. A boot thread parked *inside* a pass
+never releases it, so every pump entry returned immediately and the device
+stopped answering SETUP outright - the host journal becomes a storm of
+`Device not responding to setup address` / `Cannot enable. Maybe the USB cable
+is bad?` with a fresh device number every few seconds, and the phone never
+reaches the loader, so an unattended loop has nothing to catch.
+
+Three changes, all in `cf9e3676` and `4eedd2e5`:
+
+- after 64 consecutive refusals from IRQ context the pump resets the abandoned
+  arming state (`ep0_resync`) and takes the pass over (`usb: pass_takeover=`)
+- the timer handler publishes ELR to `blackbox::IRQ_PC`; freeze detection
+  captures it plus the trail word, and the *manufacturer* string renders
+  `Fullerene P<16 hex>T<16 hex>`, so the suspended PC can be read from
+  `journalctl -k   | grep Manufacturer` instead of a photograph
+- twelve takeovers with no storage operation busy hands the loader back
+
+`~/dev/p20-root/lk_loop.sh` now runs as the systemd user unit
+`ane-lk-loop.service` and reads its target from `~/dev/p20-root/NEXT_IMG` on
+every cycle, so a boot landing in the loader is flashed without a session.
+
+What is still blocked: the phone that produced this record runs the v343c
+*diagnostic* build, which parks on panic - so the no-button loader lane never
+completes and the D+ storm continues. It needs one power cycle; the loop then
+flashes `v343g-handoff` (`afec7275a19a751a`) on its own.
