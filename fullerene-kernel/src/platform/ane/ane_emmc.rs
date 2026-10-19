@@ -743,6 +743,13 @@ pub fn probe(log: fn(&str, u64), stage: u32) {
         log("em: hs_cc0=", cc0 as u64);
         log("em: hs_hc0=", hc0 as u64);
 
+        // v336p: the vendor's `sdhci_of_arasan_platform_init`: the PHY has
+        // to be powered and its resistor calibration finished before any
+        // clock above the 400 kHz initialisation rate can be sampled. We
+        // had been skipping it entirely, which is why every faster divider
+        // read back garbage.
+        phy_init(log);
+
         // Rung 1: 25 MHz, still 1-bit / default timing.
         let mut r_ok = emmc_clock_set(4, log);
         if r_ok {
@@ -867,8 +874,13 @@ pub fn probe(log: fn(&str, u64), stage: u32) {
 /// started with, 16..24 the candidates that were tried, 24..32 the field
 /// that failed first. Zero means the probe never ran.
 static CLK_RESULT: AtomicU64 = AtomicU64::new(0);
+static CLK_SAMPLE: AtomicU64 = AtomicU64::new(0);
 
 /// What the clock ladder settled on (see `clock_probe`).
+pub fn clock_sample() -> u64 {
+    CLK_SAMPLE.load(Ordering::Relaxed)
+}
+
 pub fn clock_result() -> u64 {
     CLK_RESULT.load(Ordering::Relaxed)
 }
@@ -888,36 +900,48 @@ pub fn clock_result() -> u64 {
 /// 200 MHz the current 400 kHz setting implies (0xFA = 250 -> /500).
 pub fn clock_probe(log: fn(&str, u64)) {
     let base = rd16(SDHCI_BASE, 0x2C) >> 8;
-    let mut tried = 0u64;
+    // One nibble per candidate field, so a single number says what each
+    // rung did: 0 untried, 1 read, 2 clock refused, 3 first read failed,
+    // 4 second read failed, 5 first read wrong, 6 second read wrong,
+    // 7 the two reads disagreed.
+    let mut code = 0u64;
+    let mut sample = 0u64;
     let mut chosen = 0u64;
     let mut first_fail = 0u64;
     for field in [1u16, 2, 3, 4, 6, 8] {
-        tried |= 1 << (field as u64);
+        let slot = (field as u64 - 1) * 4;
+        let mut set = |c: u64| code |= c << slot;
         if !emmc_clock_set(field, log) {
+            set(2);
+            continue;
+        }
+        let mut a = [0u32; 128];
+        let (ok_a, _sa, _ea) = sdhci_data_read(17, 0, &mut a, log);
+        if !ok_a {
+            set(3);
             if first_fail == 0 {
                 first_fail = field as u64;
             }
             continue;
         }
-        let mut a = [0u32; 128];
-        let (ok_a, _sa, _ea) = sdhci_data_read(17, 0, &mut a, log);
         let mut b = [0u32; 128];
         let (ok_b, _sb, _eb) = sdhci_data_read(17, 0, &mut b, log);
-        let good = ok_a
-            && ok_b
-            && (a[127] & 0xFFFF) == 0xAA55
-            && (b[127] & 0xFFFF) == 0xAA55
-            && a[0] == b[0];
-        log(
-            "em: clk_try=",
-            ((field as u64) << 32) | ((good as u64) << 8) | ok_a as u64,
-        );
-        if good {
+        if !ok_b {
+            set(4);
+        } else if (a[127] & 0xFFFF) != 0xAA55 {
+            set(5);
+        } else if (b[127] & 0xFFFF) != 0xAA55 {
+            set(6);
+        } else if a[0] != b[0] {
+            set(7);
+        } else {
+            set(1);
             chosen = field as u64;
             break;
         }
         if first_fail == 0 {
             first_fail = field as u64;
+            sample = ((a[0] as u64) << 32) | a[1] as u64;
         }
     }
     if chosen == 0 {
@@ -938,8 +962,9 @@ pub fn clock_probe(log: fn(&str, u64)) {
         let (ok, _s, _e) = sdhci_data_read(17, 0, &mut m, log);
         log("em: clk_keep=", ((ok as u64) << 8) | chosen);
     }
+    CLK_SAMPLE.store(sample, Ordering::Relaxed);
     CLK_RESULT.store(
-        chosen | (base as u64) << 8 | tried << 16 | first_fail << 24,
+        chosen | (base as u64) << 8 | code << 16 | first_fail << 56,
         Ordering::Relaxed,
     );
     log("em: clk_res=", clock_result());
@@ -1081,6 +1106,48 @@ fn sdhci_data_write(idx: u16, arg: u32, words: &[u32], log: fn(&str, u64)) -> (b
 /// clock, then the vendor's settle delay ("need to wait 8 sd clk before a
 /// new command" - 1 ms, missing in the v93 attempt that killed the first
 /// post-switch read).
+/// The PHY block at 0x430..0x443 (vendor `include/linux/mmc/sdhci.h`):
+/// power it up, let the resistor trim settle, then switch from open-drain
+/// to the push-pull drive the eMMC bus needs. Values are the vendor's own
+/// (`sdhci_of_arasan_PHY_init` / `sdhci_disable_open_drain`) plus
+/// `drv-strength = <4 4>` from hisi_6250_mmc.dtsi, i.e. 40 ohm.
+fn phy_init(log: fn(&str, u64)) {
+    let base = rd32(SDHCI_BASE, 0x430);
+    if base == 0xFFFF_FFFF {
+        log("em: phy_none=", base as u64);
+        return;
+    }
+    log("em: phy0=", base as u64);
+    let mut r = base | (0x1 << 16); // EN_RTRIM
+    r &= !(0xFFu32 << 8); // DLL_TRIM_ICP
+    r |= 0x4 << 8;
+    wr32(SDHCI_BASE, 0x430, r);
+
+    r |= 0x1 << 25; // PDB: power the PHY
+    wr32(SDHCI_BASE, 0x430, r);
+    let mut n = 0u64;
+    while n < 0x4000 && rd32(SDHCI_BASE, 0x440) & (0x1 << 6) == 0 {
+        n += 1;
+    }
+    log("em: phy_cal=", n);
+    let mut m = 0u64;
+    while m < 0x10 && rd32(SDHCI_BASE, 0x440) & 0x1 != 0 {
+        m += 1;
+    }
+    log("em: phy_exr=", m);
+
+    // Push-pull bus, so open drain goes off and the data/cmd pull-ups go
+    // on (vendor writes 0x003FF7FC to PHY_CTRL2 for exactly this).
+    let mut r = rd32(SDHCI_BASE, 0x430);
+    r &= !0x1; // ODEN_CMD
+    r &= !(0x7u32 << 22); // DR_TY
+    r |= 4 << 22; // 40 ohm
+    wr32(SDHCI_BASE, 0x430, r);
+    wr32(SDHCI_BASE, 0x434, 0x003F_F7FC);
+    log("em: phy1=", rd32(SDHCI_BASE, 0x430) as u64);
+    log("em: phy2=", rd32(SDHCI_BASE, 0x434) as u64);
+}
+
 fn emmc_clock_set(field: u16, log: fn(&str, u64)) -> bool {
     wr16(SDHCI_BASE, 0x2C, 0);
     wr16(SDHCI_BASE, 0x2C, (field << 8) | 0x01);

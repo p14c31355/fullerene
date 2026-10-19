@@ -1435,7 +1435,7 @@ impl crate::fastboot_dispatch::FastbootIo for AneFbIo {
 
 /// The registered variable table (the identity strings are the device's
 /// own; partition-size computes via the eMMC GPT lookup).
-fn fb_vars() -> [crate::fastboot_dispatch::VarEntry; 7] {
+fn fb_vars() -> [crate::fastboot_dispatch::VarEntry; 8] {
     use crate::fastboot_dispatch::{VarEntry, VarReply};
     [
         VarEntry {
@@ -1463,6 +1463,15 @@ fn fb_vars() -> [crate::fastboot_dispatch::VarEntry; 7] {
             reply: VarReply::Computed(|_name, out| {
                 let mut b = [0u8; 32];
                 let n = fmt_okay_hex(super::ane_emmc::clock_result(), &mut b);
+                out[..n].copy_from_slice(&b[..n]);
+                n
+            }),
+        },
+        VarEntry {
+            name: b"emmcraw",
+            reply: VarReply::Computed(|_name, out| {
+                let mut b = [0u8; 32];
+                let n = fmt_okay_hex(super::ane_emmc::clock_sample(), &mut b);
                 out[..n].copy_from_slice(&b[..n]);
                 n
             }),
