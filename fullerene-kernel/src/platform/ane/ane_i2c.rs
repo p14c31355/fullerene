@@ -83,32 +83,61 @@ pub unsafe fn bring_up(log: fn(&str, u64)) -> bool {
 
 /// Program the controller for a 7-bit target. Disable first: the DW core
 /// refuses CON writes while enabled.
-unsafe fn master_init(addr: u16) {
-    wr32(I2C4_BASE, IC_ENABLE, 0);
+unsafe fn master_init_at(base: usize, addr: u16) {
+    wr32(base, IC_ENABLE, 0);
     // Same reasoning as the touch bus: counters are input-clock cycles, and
     // the dtsi says clock-rate = 120 MHz for i2c4. Programme for that at
     // standard mode (120 MHz / 100 kHz = 1200 cycles, 40/60) so that a mux
     // selecting the divided clock gives a slow bus rather than an illegal
     // one. A charger dump does not care about kHz.
-    wr32(I2C4_BASE, IC_FS_SCL_HCNT, 480);
-    wr32(I2C4_BASE, IC_FS_SCL_LCNT, 720);
-    wr32(I2C4_BASE, IC_SS_SCL_HCNT, 480);
-    wr32(I2C4_BASE, IC_SS_SCL_LCNT, 720);
+    wr32(base, IC_FS_SCL_HCNT, 480);
+    wr32(base, IC_FS_SCL_LCNT, 720);
+    wr32(base, IC_SS_SCL_HCNT, 480);
+    wr32(base, IC_SS_SCL_LCNT, 720);
     wr32(
         I2C4_BASE,
         IC_CON,
         IC_CON_MASTER | IC_CON_SLAVE_DISABLE | IC_CON_RESTART_EN | IC_CON_SPEED_FAST,
     );
-    wr32(I2C4_BASE, IC_TAR, (addr as u32) & 0x3ff);
-    wr32(I2C4_BASE, IC_ENABLE, 1);
+    wr32(base, IC_TAR, (addr as u32) & 0x3ff);
+    wr32(base, IC_ENABLE, 1);
 }
 
 /// Read `count` bytes starting at `from`. One transaction: register
 /// pointer write, repeated start, then that many reads.
 pub unsafe fn read_regs(addr: u16, from: u8, out: &mut [u8]) -> Result<(), u32> {
-    master_init(addr);
+    read_regs_at(I2C4_BASE, addr, from, out)
+}
+
+/// The buses this port may touch, by number. i2c0 is the touch bus and i2c2
+/// the PMIC's (both are already clocked by the loader - that is how the
+/// battery reads at all); i2c4 is the one this module brings up itself.
+pub const BUS_I2C0: usize = 0xffd7_1000;
+pub const BUS_I2C2: usize = 0xffd7_3000;
+pub const BUS_I2C4: usize = I2C4_BASE;
+
+pub const fn bus_base(index: u8) -> Option<usize> {
+    match index {
+        0 => Some(BUS_I2C0),
+        2 => Some(BUS_I2C2),
+        4 => Some(BUS_I2C4),
+        _ => None,
+    }
+}
+
+/// Does anything answer at `addr` on `base`? A one-byte read of register 0:
+/// a device that NACKs its address aborts before any data moves, so this is
+/// safe on a bus whose map is unknown.
+pub unsafe fn probe_at(base: usize, addr: u16) -> bool {
+    let mut one = [0u8; 1];
+    read_regs_at(base, addr, 0, &mut one).is_ok()
+}
+
+/// `read_regs` for any of the buses above.
+pub unsafe fn read_regs_at(base: usize, addr: u16, from: u8, out: &mut [u8]) -> Result<(), u32> {
+    master_init_at(base, addr);
     for _ in 0..100_000 {
-        if rd32(I2C4_BASE, IC_TXFLR) < 8 {
+        if rd32(base, IC_TXFLR) < 8 {
             break;
         }
         core::hint::spin_loop();
@@ -120,11 +149,11 @@ pub unsafe fn read_regs(addr: u16, from: u8, out: &mut [u8]) -> Result<(), u32> 
     } else {
         from as u32
     };
-    wr32(I2C4_BASE, IC_DATA_CMD, first);
+    wr32(base, IC_DATA_CMD, first);
     let n = out.len();
     for (i, slot) in out.iter_mut().enumerate() {
         let mut spins = 0u32;
-        while rd32(I2C4_BASE, IC_TXFLR) >= 8 {
+        while rd32(base, IC_TXFLR) >= 8 {
             spins += 1;
             if spins > 100_000 {
                 return Err(1);
@@ -139,11 +168,11 @@ pub unsafe fn read_regs(addr: u16, from: u8, out: &mut [u8]) -> Result<(), u32> 
         if i + 1 == n {
             cmd |= IC_DATA_CMD_STOP;
         }
-        wr32(I2C4_BASE, IC_DATA_CMD, cmd);
+        wr32(base, IC_DATA_CMD, cmd);
         let mut spins = 0u32;
         loop {
-            if rd32(I2C4_BASE, IC_RXFLR) > 0 {
-                *slot = (rd32(I2C4_BASE, IC_DATA_CMD) & 0xff) as u8;
+            if rd32(base, IC_RXFLR) > 0 {
+                *slot = (rd32(base, IC_DATA_CMD) & 0xff) as u8;
                 break;
             }
             spins += 1;
@@ -152,15 +181,15 @@ pub unsafe fn read_regs(addr: u16, from: u8, out: &mut [u8]) -> Result<(), u32> 
             }
         }
     }
-    let abrt = rd32(I2C4_BASE, IC_TX_ABRT_SOURCE);
+    let abrt = rd32(base, IC_TX_ABRT_SOURCE);
     if abrt != 0 {
-        wr32(I2C4_BASE, IC_CLR_TX_ABRT, 0);
+        wr32(base, IC_CLR_TX_ABRT, 0);
         return Err(abrt);
     }
     // ACTIVITY / MST_ACTIVITY: a transaction that starts while the previous
     // STOP is still on the wire is refused by the controller.
     let mut spins = 0u32;
-    while rd32(I2C4_BASE, IC_STATUS) & 0x21 != 0 {
+    while rd32(base, IC_STATUS) & 0x21 != 0 {
         spins += 1;
         if spins > 200_000 {
             return Err(3);

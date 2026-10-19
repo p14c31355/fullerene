@@ -596,6 +596,50 @@ pub fn poll(log: fn(&str, u64)) {
     }
 
     #[cfg(fullerene_aarch64_ane)]
+    if let Some(arg) = cmd.strip_prefix(b"oem i2cbus ") {
+        // `oem i2cbus <0|2|4>`: address scan of a bus that is already clocked.
+        // Reads one byte from register 0 of every 7-bit address and reports
+        // the ones that acknowledge - the topology the next driver needs,
+        // without a datasheet. Nothing is written anywhere.
+        let bus = crate::adb_dispatch::parse_hex(arg.trim_ascii()) as u8;
+        let Some(base) = crate::platform::ane_i2c::bus_base(bus) else {
+            crate::platform::ane_usb_dev::ep1_send(b"FAILno such bus");
+            return;
+        };
+        log("fb: i2cbus=", bus as u64);
+        crate::platform::ane_usb_dev::fb_send_info(b"i2c scan");
+        let mut found = 0u32;
+        let mut line = [b' '; 72];
+        line[..5].copy_from_slice(b"bus ");
+        const HEX: [u8; 16] = *b"0123456789ABCDEF";
+        line[4] = HEX[(bus & 0xF) as usize];
+        let mut at = 6;
+        for addr in 0x08u16..=0x77 {
+            if unsafe { crate::platform::ane_i2c::probe_at(base, addr) } {
+                if at + 3 > line.len() {
+                    crate::platform::ane_usb_dev::fb_send_info(&line[..at]);
+                    at = 6;
+                    line[..6].copy_from_slice(b"bus ? ");
+                    line[4] = HEX[(bus & 0xF) as usize];
+                }
+                line[at] = HEX[((addr >> 4) & 0xF) as usize];
+                line[at + 1] = HEX[(addr & 0xF) as usize];
+                line[at + 2] = b' ';
+                at += 3;
+                found += 1;
+            }
+        }
+        if at > 6 {
+            crate::platform::ane_usb_dev::fb_send_info(&line[..at]);
+        }
+        log("fb: i2cbus_n=", found as u64);
+        let mut ok = [0u8; 32];
+        let l = crate::adb_dispatch::fmt_okay_hex(found as u64, &mut ok);
+        crate::platform::ane_usb_dev::ep1_send(&ok[..l]);
+        return;
+    }
+
+    #[cfg(fullerene_aarch64_ane)]
     if let Some(args) = cmd.strip_prefix(b"oem i2c4 ") {
         // `oem i2c4 <addr> <from> <count>`: read-only dump on the charger
         // bus (hi6522 at 0x6B, fsa9685 at 0x25). Nothing is written to the
