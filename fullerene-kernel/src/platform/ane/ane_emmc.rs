@@ -828,6 +828,12 @@ pub fn write_sectors(lba: u32, data: &[u8], log: fn(&str, u64)) -> (u64, u64) {
                 }
                 k += 1;
             }
+            // Blocks the fallback never reached (it broke on eight in a row)
+            // are not successes: count them so ok + bad is always the number
+            // of sectors the host sent.
+            if k < nblocks {
+                bad += (nblocks - k) as u64;
+            }
             // v336d: if the first 64 single-sector writes all failed, the
             // lane is not going to recover mid-chunk; the remaining blocks
             // count as bad and the caller fails fast (the host waits).
