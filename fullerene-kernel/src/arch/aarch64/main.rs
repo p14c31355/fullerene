@@ -1493,12 +1493,17 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
             if pressed != 2
                 && PREV_PRESSED.swap(pressed, core::sync::atomic::Ordering::Relaxed) != pressed
             {
-                desktop::tick_input();
+                // Press: light the tile under the finger and show it.
+                // Release on a tile: the launcher's one action for now -
+                // open the desktop on that canvas.
+                let hit = mobile_home::touch_feedback();
+                if pressed == 0 && hit != mobile_home::HomeHit::None {
+                    desktop::tick_input();
+                } else {
+                    unsafe { platform::ane_fb::flush_panel_rotated() };
+                }
             }
         }
-        // v331t: the launcher's press feedback (a no-op without a point).
-        #[cfg(fullerene_aarch64_ane)]
-        mobile_home::touch_feedback();
         // Serve the device-side USB control transfers in the same loop.
         // The wait loop already wakes on the timer IRQ (the watchdog feed),
         // so one poll pass per wake keeps the host's transfers answered.

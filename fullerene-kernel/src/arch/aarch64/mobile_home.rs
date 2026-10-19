@@ -99,11 +99,106 @@ impl IntegerSqrt for u32 {
     }
 }
 
+/// The launcher geometry, derived once from the canvas so the renderer,
+/// the press feedback and the hit test cannot disagree about a tile.
+#[derive(Clone, Copy)]
+pub struct HomeLayout {
+    pub width: u32,
+    pub height: u32,
+    pub bar_h: u32,
+    pub notch_l: u32,
+    pub notch_w: u32,
+    pub notch_h: u32,
+    pub grid_top: u32,
+    pub grid_bottom: u32,
+    pub margin: u32,
+    pub gap: u32,
+    pub tile_w: u32,
+    pub dock_top: u32,
+}
+
+/// What a touch at a point asked for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HomeHit {
+    App { row: u32, col: u32 },
+    Dock(u32),
+    None,
+}
+
+impl HomeLayout {
+    pub fn new(width: u32, height: u32) -> Self {
+        let notch_w = width * 330 / 1080;
+        let notch_h = height * 80 / 2280;
+        let bar_h = notch_h + 56;
+        let margin = 40u32;
+        let gap = 28u32;
+        let tile_w = (width - margin * 2 - gap * 3) / 4;
+        let dock_top = height.saturating_sub(200);
+        Self {
+            width,
+            height,
+            bar_h,
+            notch_l: (width - notch_w) / 2,
+            notch_w,
+            notch_h,
+            grid_top: bar_h + 40,
+            grid_bottom: dock_top.saturating_sub(32),
+            margin,
+            gap,
+            tile_w,
+            dock_top,
+        }
+    }
+
+    /// Which tile, if any, covers this panel point. Pure geometry: no
+    /// canvas, no state, so it is testable off-device.
+    pub fn hit_test(&self, x: u32, y: u32) -> HomeHit {
+        let pitch = self.tile_w + self.gap;
+        if y >= self.dock_top {
+            let dock_tile = 120u32;
+            let dock_gap = self.width.saturating_sub(4 * dock_tile) / 5;
+            if y >= self.dock_top + (200 - dock_tile) / 2 {
+                for i in 0..4u32 {
+                    let x0 = dock_gap + i * (dock_tile + dock_gap);
+                    if x >= x0 && x < x0 + dock_tile {
+                        return HomeHit::Dock(i);
+                    }
+                }
+            }
+            return HomeHit::None;
+        }
+        if y < self.grid_top || y >= self.grid_bottom || x < self.margin {
+            return HomeHit::None;
+        }
+        let col = (x - self.margin) / pitch;
+        if col >= 4 {
+            return HomeHit::None;
+        }
+        let rel_y = y - self.grid_top;
+        if rel_y % pitch >= self.tile_w {
+            return HomeHit::None;
+        }
+        HomeHit::App {
+            row: rel_y / pitch,
+            col,
+        }
+    }
+
+    /// Top-left corner of a grid tile.
+    pub fn app_origin(&self, row: u32, col: u32) -> (u32, u32) {
+        (
+            self.margin + col * (self.tile_w + self.gap),
+            self.grid_top + row * (self.tile_w + self.gap),
+        )
+    }
+}
+
 /// Render the phone home screen onto the canvas. Every color/position
 /// derives from the canvas dimensions.
 pub fn render_home() {
     let width = crate::platform::ane_fb::WIDTH;
     let height = crate::platform::ane_fb::HEIGHT;
+    let l = HomeLayout::new(width, height);
     let canvas_ptr = crate::platform::ane_fb::CANVAS as *mut u32;
     let count = (width as usize) * (height as usize);
     let fb = unsafe { core::slice::from_raw_parts_mut(canvas_ptr, count) };
@@ -129,28 +224,28 @@ pub fn render_home() {
     // carries a wide U notch: ~330 px wide, ~80 px deep, centered. The
     // reusable shell expresses it in fractions of the panel so other
     // phones substitute their own descriptor values.
-    let notch_w = width * 330 / 1080; // ~330 px at 1080
-    let notch_h = height * 80 / 2280; // ~80 px at 2280
-    let notch_l = (width - notch_w) / 2;
+    let notch_w = l.notch_w;
+    let notch_h = l.notch_h;
+    let notch_l = l.notch_l;
     let notch_r = notch_l + notch_w;
 
     // Status bar: the full-width band. Its content row sits BELOW the
     // notch row: the band covers the notch depth plus the content strip,
     // and the notch rectangle itself is left as background (the cutout).
-    let bar_h = notch_h + 56;
+    let bar_h = l.bar_h;
     fill_rect(fb, width, height, 0, 0, width, bar_h, bar);
     fill_rect(fb, width, height, notch_l, 0, notch_w, notch_h, bg);
 
     // App grid: 4 cols x N rows of tiles between the bars.
     let grid_top = bar_h + 40;
-    let margin = 40u32;
-    let gap = 28u32;
     let cols = 4u32;
     let rows = 5u32;
-    let tile_w = (width - margin * 2 - gap * (cols - 1)) / cols;
+    let margin = l.margin;
+    let gap = l.gap;
+    let tile_w = l.tile_w;
     let tile_h = tile_w; // square tiles
-    let dock_top = height.saturating_sub(200);
-    let grid_bottom = dock_top.saturating_sub(32);
+    let dock_top = l.dock_top;
+    let grid_bottom = l.grid_bottom;
     let row_pitch = tile_h + gap;
     for row in 0..rows {
         let y = grid_top + row * row_pitch;
@@ -189,47 +284,45 @@ pub fn render_home() {
     );
 }
 
-/// v331t: the touch feedback - map the polled touch point to a grid
-/// tile and repaint that tile in the accent color (the launcher's
-/// press feedback). Called from the wait loop; a no-op when the touch
-/// poller has no point.
-pub fn touch_feedback() {
-    let Some((tx16, ty16)) = crate::platform::ane_touch::snapshot(0) else {
-        return;
-    };
-    let x = tx16 as u32;
-    let y = ty16 as u32;
+/// Where the last poll put the finger, in panel pixels.
+pub fn touch_point() -> Option<(u32, u32)> {
+    let (x, y) = crate::platform::ane_touch::snapshot(0)?;
+    Some((x as u32, y as u32))
+}
+
+/// v331t: press feedback - repaint the tile the finger is on in the
+/// accent color. Returns the hit so the caller can decide what a
+/// release on it means, instead of the geometry being re-derived there.
+pub fn touch_feedback() -> HomeHit {
     let width = crate::platform::ane_fb::WIDTH;
     let height = crate::platform::ane_fb::HEIGHT;
-    // The grid geometry (mirrors render_home's layout).
-    let notch_h = height * 80 / 2280;
-    let bar_h = notch_h + 56;
-    let grid_top = bar_h + 40;
-    let margin = 40u32;
-    let gap = 28u32;
-    let cols = 4u32;
-    let tile_w = (width - margin * 2 - gap * (cols - 1)) / cols;
-    let tile_h = tile_w;
-    let dock_top = height.saturating_sub(200);
-    let grid_bottom = dock_top.saturating_sub(32);
-    // Inside the grid?
-    if y < grid_top || y >= grid_bottom || x < margin {
-        return;
-    }
-    let col = (x - margin) / (tile_w + gap);
-    if col >= cols {
-        return;
-    }
-    let rel_y = y - grid_top;
-    if rel_y % (tile_h + gap) >= tile_h {
-        return; // in a gap
-    }
-    let row = rel_y / (tile_h + gap);
-    let tx = margin + col * (tile_w + gap);
-    let ty = grid_top + row * (tile_h + gap);
-    // Repaint the tile in the accent color (the press feedback).
+    let l = HomeLayout::new(width, height);
+    let Some((x, y)) = touch_point() else {
+        return HomeHit::None;
+    };
+    let hit = l.hit_test(x, y);
+    let (tx, ty) = match hit {
+        HomeHit::App { row, col } => l.app_origin(row, col),
+        // Dock presses keep their tile lit too; the dock origin is the
+        // same arithmetic with the dock pitch.
+        HomeHit::Dock(i) => {
+            let dock_tile = 120u32;
+            let dock_gap = width.saturating_sub(4 * dock_tile) / 5;
+            (
+                dock_gap + i * (dock_tile + dock_gap),
+                l.dock_top + (200 - dock_tile) / 2,
+            )
+        }
+        HomeHit::None => return hit,
+    };
     let canvas_ptr = crate::platform::ane_fb::CANVAS as *mut u32;
     let count = (width as usize) * (height as usize);
     let fb = unsafe { core::slice::from_raw_parts_mut(canvas_ptr, count) };
-    fill_tile(fb, width, height, tx, ty, tile_w, tile_h, 24, 0xFF4C_8D_FF);
+    let side = if let HomeHit::App { .. } = hit {
+        l.tile_w
+    } else {
+        120
+    };
+    fill_tile(fb, width, height, tx, ty, side, side, 24, 0xFF4C_8D_FF);
+    hit
 }
