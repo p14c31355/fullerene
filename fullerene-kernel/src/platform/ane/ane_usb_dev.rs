@@ -559,7 +559,10 @@ fn fifo_push_word(word: u32) {
 /// packets, one packet, transfer size 8*3 = 24. CNAK is deliberately *not*
 /// set here - the vendor clears the NAK after the setup interrupt instead.
 fn arm_setup_receive() {
-    wr(DOEPTSIZ0, (3 << 29) | (1 << 19) | 24);
+    // v336f: EP0 must carry MC(1). dwc2 sets hs_ep->mc = 1 for the control
+    // endpoint (gadget.c: "EP0 is a special case") and every size it
+    // programs for EP0 keeps that field; this one carried 3.
+    wr(DOEPTSIZ0, (1 << 29) | (1 << 19) | 24);
     wr(DOEPCTL0, rd(DOEPCTL0) | EPCTL_EPENA | EPCTL_USBACTEP);
     unsafe {
         SETUP_ARMED = true;
@@ -592,7 +595,10 @@ fn ep0_status_out() {
     // waits for 64 bytes that never arrive, the status stage never completes,
     // TRANSACTION_BUSY stays latched and the next SETUP is never re-armed.
     // The host sees the following control transfer die as EPROTO (-71).
-    wr(DOEPTSIZ0, (1 << 19) | 0);
+    // v336f: MC(1) on the status OUT as well - dwc2_hsotg_program_zlp
+    // writes DXEPTSIZ_MC(1) | DXEPTSIZ_PKTCNT(1) | DXEPTSIZ_XFERSIZE(0)
+    // no matter which direction the status stage runs in.
+    wr(DOEPTSIZ0, (1 << 29) | (1 << 19));
     wr(
         DOEPCTL0,
         rd(DOEPCTL0) | EPCTL_EPENA | EPCTL_CNAK | EPCTL_USBACTEP,
@@ -685,7 +691,12 @@ fn ep0_send(data: &[u8]) {
     // 255-byte string read with the tail of the previous descriptor and
     // reported EOVERFLOW (-75) on string 0 every single boot.
     ep0_flush_tx_fifo();
-    wr(DIEPTSIZ0, (1 << 19) | ((n & 0x7f) as u32));
+    // v336f: MC(1) | PKTCNT(1) | XFERSIZE(n), the exact shape of
+    // dwc2_hsotg_program_zlp. Without MC the core's packet accounting for
+    // the control endpoint is off by one, which is what the host saw as an
+    // extra packet on a 2-byte string read (-75) and as a stalled status
+    // stage on SET_CONFIGURATION (-71).
+    wr(DIEPTSIZ0, (1 << 29) | (1 << 19) | ((n & 0x7f) as u32));
     wr(
         DIEPCTL0,
         rd(DIEPCTL0) | EPCTL_EPENA | EPCTL_CNAK | EPCTL_USBACTEP,
