@@ -1798,6 +1798,12 @@ fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
     #[cfg(fullerene_ane_enum_diag)]
     {
         platform::ane_fb::set_hold_active(true);
+        // A panic that lands mid-reconnect leaves D+ down, and then the
+        // device is invisible to the host: "powered off" and "panicked on
+        // screen" look identical from the cable. Finish the reconnect first
+        // so the hold is at least an enumeration attempt the host can see.
+        platform::ane_usb_dev::usb_reconnect_end();
+        crate::blackbox::text_puts("HOLD D+ UP\n");
         let mut beat: u32 = 0;
         loop {
             platform::ane_fb::hold_frame(
