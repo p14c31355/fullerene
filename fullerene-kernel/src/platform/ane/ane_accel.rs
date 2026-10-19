@@ -13,7 +13,7 @@
 //! |---|---|---|---|
 //! | WHO_AM_I | 0x0F | - | reads 0x33 |
 //! | CTRL_REG1 | 0x20 | 0x57 | ODR 100 Hz, X/Y/Z enabled |
-//! | CTRL_REG4 | 0x23 | 0x80 | block data update, +-2 g |
+//! | CTRL_REG4 | 0x23 | 0x88 | block data update, high resolution, +-2 g |
 //! | OUT_X_L | 0x28 | - | six bytes, little endian, X/Y/Z |
 //!
 //! Multi-byte reads need the sub-address MSB set (0x28 | 0x80) - that is the
@@ -62,7 +62,8 @@ pub unsafe fn start() -> Option<u8> {
     if write_reg(REG_CTRL1, 0x57).is_err() {
         return None;
     }
-    if write_reg(REG_CTRL4, 0x80).is_err() {
+    // 0x80 = BDU, 0x08 = high resolution (12-bit, 1 mg/digit at +-2 g).
+    if write_reg(REG_CTRL4, 0x88).is_err() {
         return None;
     }
     Some(id)
@@ -76,13 +77,26 @@ pub unsafe fn read() -> Option<(i16, i16, i16)> {
     if ACCEL_ID.load(Ordering::Relaxed) != LIS3DH_ID {
         return None;
     }
-    let mut raw = [0u8; 6];
-    read_regs_at(BUS_I2C0, ACCEL_ADDR, REG_OUT | 0x80, &mut raw).ok()?;
-    Some((
-        i16::from_le_bytes([raw[0], raw[1]]),
-        i16::from_le_bytes([raw[2], raw[3]]),
-        i16::from_le_bytes([raw[4], raw[5]]),
-    ))
+    // The first conversion lands up to 10 ms after CTRL_REG1 was written, so
+    // a read straight after `start` can be all zeros. Take the first sample
+    // that carries motion, or the last one if the part is genuinely still.
+    let mut last = (0i16, 0i16, 0i16);
+    for attempt in 0..4 {
+        let mut raw = [0u8; 6];
+        read_regs_at(BUS_I2C0, ACCEL_ADDR, REG_OUT | 0x80, &mut raw).ok()?;
+        last = (
+            i16::from_le_bytes([raw[0], raw[1]]),
+            i16::from_le_bytes([raw[2], raw[3]]),
+            i16::from_le_bytes([raw[4], raw[5]]),
+        );
+        if last != (0, 0, 0) || attempt == 3 {
+            break;
+        }
+        for _ in 0..2_000_000u32 {
+            core::hint::spin_loop();
+        }
+    }
+    Some(last)
 }
 
 /// A single register write. `ane_i2c` exposes reads because the charger map
