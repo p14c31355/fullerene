@@ -526,6 +526,69 @@ pub fn poll(log: fn(&str, u64)) {
     }
 
     #[cfg(fullerene_aarch64_ane)]
+    if let Some(args) = cmd.strip_prefix(b"oem i2c4 ") {
+        // `oem i2c4 <addr> <from> <count>`: read-only dump on the charger
+        // bus (hi6522 at 0x6B, fsa9685 at 0x25). Nothing is written to the
+        // target, so an unknown register map is not a hazard here - the
+        // dump is how the map gets learned.
+        let mut it = args.split(|&b| b == b' ');
+        let addr = it.next().map(crate::adb_dispatch::parse_hex).unwrap_or(0) as u16;
+        let from = it.next().map(crate::adb_dispatch::parse_hex).unwrap_or(0) as u8;
+        let count = (it.next().map(crate::adb_dispatch::parse_hex).unwrap_or(0) as usize).min(16);
+        if count == 0 {
+            crate::platform::ane_usb_dev::ep1_send(b"FAILbad range");
+            return;
+        }
+        log("fb: i2c4_req=", ((addr as u64) << 16) | ((from as u64) << 8) | count as u64);
+        let mut bytes = [0u8; 16];
+        crate::platform::ane_usb_dev::fb_send_info(b"i2c4 bring-up");
+        unsafe {
+            crate::platform::ane_i2c::bring_up(log);
+        }
+        let r = unsafe { crate::platform::ane_i2c::read_regs(addr, from, &mut bytes[..count]) };
+        match r {
+            Ok(()) => {
+                let mut line = [b' '; 72];
+                line[..5].copy_from_slice(b"i2c4 ");
+                let mut at = 5;
+                const HEX: [u8; 16] = *b"0123456789ABCDEF";
+                at += {
+                    line[at] = HEX[(addr >> 4) as usize & 0xF];
+                    line[at + 1] = HEX[(addr & 0xF) as usize];
+                    2
+                };
+                line[at] = b' ';
+                at += 1;
+                at += {
+                    line[at] = HEX[(from >> 4) as usize];
+                    line[at + 1] = HEX[(from & 0xF) as usize];
+                    2
+                };
+                line[at] = b':';
+                at += 1;
+                line[at] = b' ';
+                at += 1;
+                let n = crate::platform::ane_i2c::hex_row(&mut line, at, &bytes[..count]);
+                crate::platform::ane_usb_dev::fb_send_info(&line[..n]);
+                crate::platform::ane_usb_dev::ep1_send(b"OKAY");
+            }
+            Err(e) => {
+                let mut line = [b' '; 40];
+                line[..6].copy_from_slice(b"i2c4 !");
+                const HEX: [u8; 16] = *b"0123456789ABCDEF";
+                let mut i = 6;
+                for sh in [28u32, 24, 20, 16, 12, 8, 4, 0] {
+                    line[i] = HEX[((e >> sh) & 0xF) as usize];
+                    i += 1;
+                }
+                crate::platform::ane_usb_dev::fb_send_info(&line[..i]);
+                crate::platform::ane_usb_dev::ep1_send(b"FAILi2c4");
+            }
+        }
+        return;
+    }
+
+    #[cfg(fullerene_aarch64_ane)]
     if let Some(args) = cmd.strip_prefix(b"oem scan ") {
         // `oem scan <lba-hex> <count-hex>`: compact non-zero-word scan.
         let mut lba = 0u32;

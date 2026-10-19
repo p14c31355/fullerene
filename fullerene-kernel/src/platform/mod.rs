@@ -32,6 +32,8 @@ pub mod ane_dwmmc;
 pub mod ane_emmc;
 #[path = "ane/ane_emmc_diag.rs"]
 pub mod ane_emmc_diag;
+#[path = "ane/ane_i2c.rs"]
+pub mod ane_i2c;
 #[path = "ane/ane_fb.rs"]
 pub mod ane_fb;
 #[path = "ane/ane_touch.rs"]

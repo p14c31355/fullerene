@@ -1702,7 +1702,7 @@ fn wdog_w(off: usize, value: u32) {
 }
 
 /// One INFO response line (the host prints it verbatim).
-fn fb_send_info(text: &[u8]) {
+pub(crate) fn fb_send_info(text: &[u8]) {
     let mut buf = [0u8; 56];
     buf[..4].copy_from_slice(b"INFO");
     let n = core::cmp::min(text.len(), buf.len() - 4);
