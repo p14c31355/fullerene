@@ -145,3 +145,49 @@ STALL on both halves of EP0 and re-arms them. The garble detector tries
 that first and only cycles D+ when the pipe refuses to re-arm; the host
 retries a GET_DESCRIPTOR on its own, and a correctly answered retry
 recovers the identity without re-enumeration.
+
+## The flash that stopped at 1 MiB (2026-10-20 02:20 JST)
+
+Self-flash of a 1242 KB image ended `FAILED (remote: 'wr 800,1B4,80018000')`:
+`ok=0x800` (2048 sectors, two full 1024-block chunks), `bad=0x1B4` (436,
+exactly the last partial chunk), and `LAST_WR` bit31 set with
+`err=0x8001` - CMD_TIMEOUT.
+
+The shape is the diagnosis. A multi-block write does not finish when the
+last block leaves the host: the card programs, holds DAT0 low, and the
+controller reports that as `PRESENT_STATE` CMD_INHIBIT/DAT_INHIBIT. The
+next chunk's CMD25 was issued straight into that window, got no response
+at all, and failed as CMD_TIMEOUT; the single-sector fallback then
+inherited the busy card and failed 436 times in a row, each attempt
+spending its full completion poll. That storm - not the card clock - is
+where the ten minutes went.
+
+Three changes follow from it:
+
+- `wait_idle` gates both data paths on CMD/DAT inhibit before the command
+  and again after CMD12, with a boot heartbeat through the wait.
+- `recover_lines` issues software reset for the CMD and DAT machines
+  (SPEC 3.00 3.3.13) and clears the error latches when a burst dies. A
+  dead burst used to leave the controller holding the lines: every later
+  read spun to its poll bound and the responder answered
+  `unknown partition` after 2.6 s.
+- eight consecutive single-sector failures end the chunk. Sixty-four was
+  chosen when the fallback was expected to recover; on a busy card it
+  only made the host wait longer for the same answer.
+
+## Where the phone is (2026-10-20 02:25 JST)
+
+The failed chunk left the kernel partition with its last 223 KB stale, so
+the next boot could not start the image. A deliberate `oem coldreboot`
+returned the device to the boot loader, which fell back on its own - the
+phone is up as `12d1:107e` (`Product: HUAWEI`, mass storage only, no ADB,
+no network interface), i.e. stock/eRecovery, not FullereneOS.
+
+That fallback is the useful fact of the night: a broken kernel partition
+is survivable. Getting back to a flashable prompt still needs the volume
+key, because the fallback image exposes neither ADB nor RNDIS.
+
+The image to flash when the loader window opens is built from `d33997a3`
+plus the notes above; `fastboot getvar emmc` then reports whether the PHY
+unlocked the divider ladder, and `getvar flash` reports the write counts
+without needing the panel.
