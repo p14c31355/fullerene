@@ -695,6 +695,29 @@ pub fn report_previous_panic() {
     crate::blackbox::text_puts("PREV-PANIC painted rows 58-59\n");
 }
 
+/// Paint the enumeration ledger: five rows under the event ledger.
+///
+/// The ANE has no serial console, and a boot whose control pipe goes mute
+/// also loses the durable ring (the host never gets a bulk transfer to read
+/// it with). A photo of these rows is then the only record of how far USB
+/// got: `SETUPS` counts SETUP packets, `ADDR` SET_ADDRESSes, `STR` served
+/// string descriptors, `CFG` the SET_CONFIGURATION path (bit 0 = value 1
+/// seen, bit 1 = CONFIGURED latched), `WAIT` the service passes the boot
+/// spent on the control pipe.
+pub fn usb_ledger(setups: u64, addr: u64, strings: u64, cfg: u64, wait: u64) {
+    let rows = [
+        (44u32, &b"SETUPS"[..], setups),
+        (45, &b"ADDR"[..], addr),
+        (46, &b"STR"[..], strings),
+        (47, &b"CFG"[..], cfg),
+        (48, &b"WAIT"[..], wait),
+    ];
+    for (row, label, value) in rows {
+        paint_hex_at(row, 0, label, value);
+        flush_row(row);
+    }
+}
+
 /// `paint_hex` at an explicit x on the right column (rows follow `paint`).
 pub fn paint_hex_at(row: u32, x: u32, label: &[u8], value: u64) {
     let mut buf = [0u8; 48];

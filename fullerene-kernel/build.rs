@@ -258,6 +258,7 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_ep0_initial_512)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_ane_adb_protocol)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_ane_marks_uart_only)");
+    println!("cargo:rustc-check-cfg=cfg(fullerene_ane_enum_diag)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_ane_desktop_landscape)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_ane_marks_panel)");
     println!("cargo:rustc-check-cfg=cfg(fullerene_ane_no_timer)");
@@ -469,6 +470,13 @@ fn main() {
             println!("cargo:rustc-cfg=fullerene_ane_marks_uart_only");
         } else {
             println!("cargo:rustc-cfg=fullerene_ane_marks_panel");
+        }
+        if env::var_os("FULLERENE_ANE_ENUM_DIAG").is_some() {
+            // Bench build: when the host never reaches SET_CONFIGURATION,
+            // keep the USB ledger on the panel and keep serving the control
+            // pipe instead of letting the desktop flush cover the only
+            // evidence of where enumeration stopped.
+            println!("cargo:rustc-cfg=fullerene_ane_enum_diag");
         }
         if env::var_os("FULLERENE_ANE_NO_PUTC_WD_TEND").is_some() {
             // v211 experiment: drop the per-console-byte SP805 read

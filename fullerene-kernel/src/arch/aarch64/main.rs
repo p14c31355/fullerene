@@ -1323,6 +1323,7 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
             // straight to the UI.
             if platform::ane_usb_dev::usb_attached() {
                 let deadline = timer::uptime_us().saturating_add(6_000_000);
+                let mut served = 0u32;
                 // ENUMDONE fires at speed detection, before the host reads
                 // a descriptor byte - gate on SET_CONFIGURATION instead.
                 while platform::ane_usb_dev::usb_attached()
@@ -1330,13 +1331,39 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                     && timer::uptime_us() < deadline
                 {
                     platform::ane_usb_dev::service(ane_log);
+                    served = served.wrapping_add(1);
                 }
                 #[cfg(fullerene_aarch64_ane)]
-                platform::ane_fb::event(if platform::ane_usb_dev::host_configured() {
-                    b"STG ENUM-WAIT-OK"
-                } else {
-                    b"STG ENUM-WAIT-TIMEOUT"
-                });
+                {
+                    platform::ane_fb::event(if platform::ane_usb_dev::host_configured() {
+                        b"STG ENUM-WAIT-OK"
+                    } else {
+                        b"STG ENUM-WAIT-TIMEOUT"
+                    });
+                    // The panel is the only channel left when the pipe is
+                    // mute: the host never gets a bulk transfer, so the
+                    // durable ring cannot be read back either.
+                    let cfg_word = (platform::ane_usb_dev::usb_config_was_1() as u64)
+                        | ((platform::ane_usb_dev::host_configured() as u64) << 1)
+                        | ((platform::ane_usb_dev::usb_config_value() as u64) << 8);
+                    platform::ane_fb::usb_ledger(
+                        platform::ane_usb_dev::setups_seen() as u64,
+                        platform::ane_usb_dev::address_seen() as u64,
+                        platform::ane_usb_dev::strings_served() as u64,
+                        cfg_word,
+                        served as u64,
+                    );
+                }
+                #[cfg(fullerene_ane_enum_diag)]
+                if !platform::ane_usb_dev::host_configured() {
+                    // Diagnostic build: the desktop flush would paint over
+                    // the ledger, which is the only evidence of where the
+                    // control pipe stopped. Keep serving and keep the
+                    // ledger on the panel instead of taking the canvas.
+                    loop {
+                        platform::ane_usb_dev::service(ane_log);
+                    }
+                }
             }
             // v331 golf: the desktop bring-up is the ANE's canvas path
             // (the qemu-virt/bramble runtimes have no desktop module -
