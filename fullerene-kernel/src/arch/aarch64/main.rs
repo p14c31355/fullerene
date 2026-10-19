@@ -1122,9 +1122,15 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
             // words need a window measured against the same clock they are
             // timed with. 300 s turned out to be about two minutes of real
             // time - long enough to miss if nobody was standing there.
-            let deadline = timer::uptime_us().saturating_add(1_200_000_000);
-            while timer::uptime_us() < deadline {
-                core::hint::spin_loop();
+            // Measured, not assumed: on this board 300 s of uptime is about
+            // 26 s at the USB port (v332o boot 22:18:50, first host error
+            // 22:19:18), so the firmware's CNTFRQ under-reports the counter
+            // rate by roughly an order of magnitude and every nominal second
+            // is worth about 0.09 real ones. An hour of nominal hold is a
+            // handful of real minutes - enough to pick the phone up, open a
+            // camera and focus. The log timestamps stay the ground truth.
+            for _ in 0..7_200 {
+                timer::delay_ms(500);
             }
         }
         // Device-side USB: answer the host's control transfers now that the
@@ -1408,6 +1414,7 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                     // each half second: a single paint proved to be gone
                     // before a camera could reach it.
                     platform::ane_fb::event(b"STG ENUM-HOLD-45S");
+                    platform::ane_fb::set_hold_active(true);
                     for i in 0..90 {
                         platform::ane_fb::hold_frame(
                             i + 1,
@@ -1421,6 +1428,7 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                         }
                         timer::delay_ms(500);
                     }
+                    platform::ane_fb::set_hold_active(false);
                 }
                 #[cfg(fullerene_ane_enum_diag)]
                 if !platform::ane_usb_dev::host_configured() {

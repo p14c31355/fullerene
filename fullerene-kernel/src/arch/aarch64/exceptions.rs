@@ -869,7 +869,14 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                 // down (the boot thread's predesktop wait owns the exchange).
                 static LAST_SETUPS: AtomicU32 = AtomicU32::new(0);
                 static LAST_SETUPS_BEAT: AtomicU32 = AtomicU32::new(0);
-                let setups_now = super::platform::ane_usb_dev::setups_seen();
+                // v332r: "the host has talked to us" is the whole wire, not
+                // SETUPs alone. A host stuck retrying an enumeration it cannot
+                // finish sends resets (and the occasional ENUMDONE) with no
+                // SETUP between them; watching SETUPs only made that host look
+                // silent, and the watchdog's answer to silence - drop D+
+                // mid-retry - is precisely what keeps such a host from ever
+                // finishing.
+                let setups_now = super::platform::ane_usb_dev::host_events();
                 if setups_now != LAST_SETUPS.swap(setups_now, Ordering::Relaxed) {
                     LAST_SETUPS_BEAT.store(beats, Ordering::Relaxed);
                 }
@@ -877,6 +884,7 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                     <= reconnect_wait_beats;
                 let watchdog_applies = super::platform::ane_usb_dev::usb_attached()
                     && !super::platform::ane_usb_dev::usb_config_was_1()
+                    && !super::platform::ane_fb::hold_active()
                     // v285: honor the boot thread's closed duty window - it
                     // explicitly said the handoff is over, so do not wait
                     // for enumeration on its behalf.

@@ -810,6 +810,7 @@ fn handle_setup(log: fn(&str, u64)) {
 
 /// Reset handling: back to address 0, void the EP0 state machine, re-arm.
 fn handle_reset(log: fn(&str, u64)) {
+    host_event();
     log("ud: usbreset=", 1);
     // A bus reset voids any fastboot session: drop a half-received
     // download so commands flow again. (A stray `download:` whose client
@@ -893,6 +894,7 @@ fn pop_rx(log: fn(&str, u64)) {
                     SETUP_BYTES_READY = true;
                 }
                 SETUP_SEEN.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                host_event();
                 log("ud: setupbcnt=", bcnt as u64);
                 // Answer the moment the bytes exist. v200: the v198 single-
                 // site experiment (answer only from service()'s tail, gated
@@ -1049,6 +1051,22 @@ pub static SETUP_SEEN: core::sync::atomic::AtomicU32 = core::sync::atomic::Atomi
 
 pub fn setups_seen() -> u32 {
     SETUP_SEEN.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// Every sign of life the host puts on the wire: a bus reset, an ENUMDONE,
+/// or a SETUP. The enumeration watchdog watched SETUPs alone, so a host that
+/// was visibly retrying - reset, descriptor read, -71, reset again - looked
+/// exactly like an idle bus. It answered by dropping D+ in the middle of
+/// those retries, which is the one thing a host mid-enumeration cannot
+/// survive, and then panicked about the enumeration it had just broken.
+pub static HOST_EVENTS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+pub fn host_events() -> u32 {
+    HOST_EVENTS.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+fn host_event() {
+    HOST_EVENTS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// v300: string-descriptor transfers served this boot. A clean enumeration
@@ -2594,6 +2612,7 @@ pub fn service(log: fn(&str, u64)) {
         pass_enter(2);
         if sts & GINT_ENUMDONE != 0 {
             wr(GINTSTS, GINT_ENUMDONE);
+            host_event();
             log("ud: enumdone=", ((rd(DSTS) >> 1) & 3) as u64);
             // v186: from here on the USB block is up and safe to poll -
             // the DS instrument reads its registers only after this.
