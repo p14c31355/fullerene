@@ -542,8 +542,13 @@ pub fn poll(log: fn(&str, u64)) {
         log("fb: i2c4_req=", ((addr as u64) << 16) | ((from as u64) << 8) | count as u64);
         let mut bytes = [0u8; 16];
         crate::platform::ane_usb_dev::fb_send_info(b"i2c4 bring-up");
-        unsafe {
-            crate::platform::ane_i2c::bring_up(log);
+        let live = unsafe { crate::platform::ane_i2c::bring_up(log) };
+        if !live {
+            // The reset never released: touching the controller now is the
+            // unclocked-peripheral read that stalls this fabric.
+            crate::platform::ane_usb_dev::fb_send_info(b"i2c4 reset stuck");
+            crate::platform::ane_usb_dev::ep1_send(b"FAILi2c4 reset");
+            return;
         }
         let r = unsafe { crate::platform::ane_i2c::read_regs(addr, from, &mut bytes[..count]) };
         match r {
