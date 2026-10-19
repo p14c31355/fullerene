@@ -1033,6 +1033,16 @@ pub fn usb_attached() -> bool {
     ATTACHED.load(core::sync::atomic::Ordering::Relaxed)
 }
 
+/// True once the host has issued SET_CONFIGURATION with a non-zero value.
+/// This, not the ENUMDONE interrupt, is the real end of enumeration: the
+/// host raises ENUMDONE at speed detection, long before it has read a
+/// descriptor byte, so a boot thread that waits on ENUMDONE walks away
+/// from the control pipe while GET_DESCRIPTOR is still in flight
+/// (v331x: descriptor -110 x3 with the panel drawing the whole time).
+pub fn host_configured() -> bool {
+    unsafe { *core::ptr::addr_of!(CONFIGURED) }
+}
+
 /// v203: total SETUP packets received this boot. The self-heal uses this as
 /// "the host has talked to us" evidence - no attach-beat series dependency.
 pub static SETUP_SEEN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);

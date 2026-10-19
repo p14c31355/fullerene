@@ -1312,6 +1312,32 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                 }
             }
             platform::ane_usb_dev::service(ane_log);
+            // v331x: the enumeration outranks the canvas. The host asks
+            // for descriptors the instant the pull-up asserts, and the
+            // desktop bring-up (solvent render plus the 9.6 MB panel
+            // flush) owns the boot thread for seconds after it. v331w
+            // showed the cost: attach, then three `device descriptor
+            // read/64, error -110` and `address -62`. Serve the
+            // responder until the host has finished, but only while a
+            // cable is actually attached - a cable-less boot goes
+            // straight to the UI.
+            if platform::ane_usb_dev::usb_attached() {
+                let deadline = timer::uptime_us().saturating_add(6_000_000);
+                // ENUMDONE fires at speed detection, before the host reads
+                // a descriptor byte - gate on SET_CONFIGURATION instead.
+                while platform::ane_usb_dev::usb_attached()
+                    && !platform::ane_usb_dev::host_configured()
+                    && timer::uptime_us() < deadline
+                {
+                    platform::ane_usb_dev::service(ane_log);
+                }
+                #[cfg(fullerene_aarch64_ane)]
+                platform::ane_fb::event(if platform::ane_usb_dev::host_configured() {
+                    b"STG ENUM-WAIT-OK"
+                } else {
+                    b"STG ENUM-WAIT-TIMEOUT"
+                });
+            }
             // v331 golf: the desktop bring-up is the ANE's canvas path
             // (the qemu-virt/bramble runtimes have no desktop module -
             // their UI paths are the platform's own).
