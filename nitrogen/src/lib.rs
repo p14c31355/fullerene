@@ -34,6 +34,7 @@ pub mod debug;
 pub mod driver_context;
 pub mod error;
 pub mod geometry;
+pub mod gesture;
 pub mod hid;
 pub mod input;
 pub mod metrics;
