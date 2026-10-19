@@ -230,11 +230,9 @@ pub unsafe fn write_reg_at(base: usize, addr: u16, reg: u8, value: u8) -> Result
         }
         wr32(base, IC_DATA_CMD, b);
     }
-    let abrt = rd32(base, IC_TX_ABRT_SOURCE);
-    if abrt != 0 {
-        wr32(base, IC_CLR_TX_ABRT, 0);
-        return Err(abrt);
-    }
+    // Wait for the bus to be free first: the abort source only latches once
+    // the failed attempt is over, so reading it immediately after the last
+    // write would report success for a NACKed transaction.
     let mut spins = 0u32;
     while rd32(base, IC_STATUS) & 0x21 != 0 {
         spins += 1;
@@ -242,6 +240,11 @@ pub unsafe fn write_reg_at(base: usize, addr: u16, reg: u8, value: u8) -> Result
             return Err(3);
         }
         core::hint::spin_loop();
+    }
+    let abrt = rd32(base, IC_TX_ABRT_SOURCE);
+    if abrt != 0 {
+        wr32(base, IC_CLR_TX_ABRT, 0);
+        return Err(abrt);
     }
     Ok(())
 }
