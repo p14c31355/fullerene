@@ -602,6 +602,11 @@ pub fn poll(log: fn(&str, u64)) {
         crate::platform::ane_usb_dev::fb_send_info(b"hs switch");
         match crate::platform::ane_emmc::switch_hs(on, log) {
             Ok(v) => {
+                // A timing switch only widens the ladder; climbing it is what
+                // turns that into bytes per second, so do both here.
+                if v == 1 {
+                    crate::platform::ane_emmc::clock_probe(log);
+                }
                 let mut line = [0u8; 32];
                 let n = crate::adb_dispatch::fmt_okay_hex(v as u64, &mut line);
                 crate::platform::ane_usb_dev::ep1_send(&line[..n]);
