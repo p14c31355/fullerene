@@ -1309,6 +1309,18 @@ fn ep1_send_ptr(src: usize, n: usize) -> usize {
     while (rd(DIEPCTL1) & EPCTL_EPENA) != 0 && w < 0x2_0000 {
         w += 1;
     }
+    // v336h: empty the non-periodic TX FIFO before every reply. The loader
+    // leaves bytes ahead of ours, and the old first-reply "sweep" let them
+    // through, relying on each host parser to scan for its own header. That
+    // is what shifted a whole command stream: the host read the leftover
+    // first and every later reply arrived one request late. Flushing is what
+    // the vendor gadget does when it stops a transfer (TXFFLSH, TXFNUM 0 =
+    // every non-periodic IN endpoint); the bit self-clears.
+    wr(GRSTCTL, rd(GRSTCTL) | GRSTCTL_TXFFLSH);
+    let mut f = 0u32;
+    while (rd(GRSTCTL) & GRSTCTL_TXFFLSH) != 0 && f < 0x2_0000 {
+        f += 1;
+    }
     // DIEPTSIZ, exactly as the vendor gadget.c programs it (primary source:
     // hi6250 gadget.c:584-614): MC(1) for every non-EP0 IN endpoint,
     // PKTCNT = ceil(xfersize / MPS) - packet count, not 1! - and the byte
