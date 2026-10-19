@@ -809,6 +809,7 @@ pub fn poll(log: fn(&str, u64)) {
         .strip_prefix(b"oem i2c ")
         .map(|a| (0u8, a))
         .or_else(|| cmd.strip_prefix(b"oem i2c4 ").map(|a| (4u8, a)));
+    #[cfg(fullerene_aarch64_ane)]
     if let Some((hint, args)) = i2c_call {
         // `oem i2c <bus> <addr> <from> <count>` reads any clocked bus;
         // `oem i2c4 <addr> <from> <count>` is the same call with the bus
