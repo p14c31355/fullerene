@@ -576,11 +576,14 @@ fn ep0_zlp_in() {
 
 /// Receive the zero-length OUT (the status stage for an IN data phase).
 ///
-/// Vendor values (dwc_otg_cil.c `dwc_otg_ep0_start_transfer`, OUT branch):
-/// xfersize = maxpacket (64), pktcnt = 1, supcnt = 3 on cores at or above
-/// 3.00a. The xfersize=0 / supcnt=1 shape this used to write made the core
-/// mis-consume the following packets, which derailed the enumeration right
-/// at the first config descriptor read (host journal: -71).
+/// History, because both shapes have been tried on hardware: the vendor
+/// dwc_otg path programs xfersize = maxpacket (64), pktcnt = 1, supcnt = 3,
+/// and that was the first shape here. It did not fix anything: the host
+/// still reported EPROTO (-71) at the first config descriptor read, and the
+/// shape is wrong for this core - xfersize=64 makes the core wait for 64
+/// bytes that a status stage never sends. Linux's dwc2 gadget.c
+/// (`dwc2_hsotg_program_zlp`) is the primary source for the OUT status
+/// stage, and it programs MC(1) | PKTCNT(1) | XFERSIZE(0) with no SUPCNT.
 fn ep0_status_out() {
     // The status stage of a control-IN transfer is an OUT zero-length packet.
     // Primary source (dwc2 gadget.c: dwc2_hsotg_program_zlp) programs exactly

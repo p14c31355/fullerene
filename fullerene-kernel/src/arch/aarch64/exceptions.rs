@@ -972,7 +972,14 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                 // bulk-only session (no control traffic after config-1),
                 // so without this latch it kills the very boots that work.
                 let had_conversation = super::platform::ane_usb_dev::conversations_served() > 0;
+                // v336: a hold is documentation, not recovery. The detector
+                // below answers "the host went quiet" by cycling D+ - and a
+                // held boot that has just reached config-1 always looks quiet,
+                // because the host is retrying a transfer in the gap. Cycles
+                // 1..3 scattered -71/-110 across boots and the fourth took
+                // the panel away entirely (panic L=990 C=29, SETUPS=0x20).
                 if !had_conversation
+                    && !super::platform::ane_fb::hold_active()
                     && super::platform::ane_usb_dev::usb_config_was_1()
                     && super::platform::ane_usb_dev::strings_served() > 0
                 {
