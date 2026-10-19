@@ -169,6 +169,16 @@ pub unsafe fn read_regs_at(base: usize, addr: u16, from: u8, out: &mut [u8]) -> 
                 *slot = (rd32(base, IC_DATA_CMD) & 0xff) as u8;
                 break;
             }
+            // A NACKed address aborts instead of filling the RX FIFO: notice
+            // it here rather than spending the whole poll budget, and report
+            // the controller's reason instead of a generic timeout.
+            if spins & 0x3FF == 0 {
+                let abrt = rd32(base, IC_TX_ABRT_SOURCE);
+                if abrt != 0 {
+                    wr32(base, IC_CLR_TX_ABRT, 0);
+                    return Err(abrt);
+                }
+            }
             spins += 1;
             if spins > 200_000 {
                 return Err(2);
