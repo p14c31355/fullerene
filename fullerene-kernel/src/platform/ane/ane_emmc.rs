@@ -562,6 +562,7 @@ pub fn write_sectors(lba: u32, data: &[u8], log: fn(&str, u64)) -> (u64, u64) {
                 );
             }
             let mut k = 0usize;
+            let mut consec = 0u32;
             while k < nblocks {
                 crate::platform::common::recovery::boot_heartbeat();
                 let o = off + k * 512;
@@ -571,8 +572,18 @@ pub fn write_sectors(lba: u32, data: &[u8], log: fn(&str, u64)) -> (u64, u64) {
                 let (d, _s2, _e2) = sdhci_data_write(24, lba + (i + k) as u32, &words, log);
                 if d {
                     ok += 1;
+                    consec = 0;
                 } else {
                     bad += 1;
+                    consec += 1;
+                    // v336u: a card that refuses eight single-sector writes
+                    // in a row is busy or gone, not unlucky. The old bound
+                    // was 64 blocks, and the 436-sector tail of a failed
+                    // chunk spent minutes in that storm.
+                    if consec >= 8 {
+                        log("em: sb_gone=", consec as u64);
+                        break;
+                    }
                 }
                 // v336d: the single-block fallback is the slow lane - one
                 // CMD24 per sector with its own buffer waits. It reported
