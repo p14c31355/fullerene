@@ -1,27 +1,39 @@
-# Status — 2026-10-19 (night)
+# Status — 2026-10-20 (small hours)
 
 ## Device
 
-Off-bus. The flashed build is `v331z-panicpeek3`, whose hold is unbounded in
-that binary: it halts before USB and never returns to LK, so nothing can be
-flashed until someone power-cycles it. (The bounded hold landed after that
-image was built; every later build returns to LK on its own.)
+Off-bus, last seen 19:4x. The flashed build is `v331z-panicpeek3`, whose
+hold is unbounded in that binary: it halts before USB and never returns to
+LK, so nothing can be flashed until someone power-cycles it. (The bounded
+45 s hold landed after that image was built; every later build returns to
+LK on its own.)
+
+`~/dev/p20-root/watch_flash.sh <image> <hours>` is watching for the window.
+It gates on serial `SCV7N18927000473` **and** product `Fastboot2.0`, flashes
+once, reboots, and dumps the next `journalctl -k usb 1-1` lines to
+`logs/watch_flash.*.log` — so the enumeration evidence is collected even if
+nobody is watching the terminal.
 
 ## Next flash
 
-`artifacts/fullerene-ane-v331z7-homehit.img` — ledger + touch + launcher hit
-test, built 18:25, `cargo test -p solvent` 37 passed, kernel suites green.
+`artifacts/fullerene-ane-v332a-battery.img` (md5 `c55df3e789677469c4552e892b0ff8ac`)
+
+Contents, in boot order: panic text hold (45 s, then LK on its own), enum
+ledger on the panel, touch → shell input, launcher hit test, battery capsule
+in the status bar. `cargo test -p solvent` 37 passed, kernel suites 29/7/12/
+27/5.
 
 ## Reading the next panel photograph
 
 | SETUPS | ADDR | reading |
 |---|---|---|
 | 0 | – | the SETUP never reaches `handle_setup` — RX pop / reset ordering, or EP0 armed late |
-| >0 | 0 | first SETUP answered wrongly (`-71`), i.e. we replied to a phantom/stale SETUP or stalled a standard request |
+| >0 | 0 | first SETUP answered wrongly (`-71`), i.e. a phantom SETUP or a stalled standard request |
 | >0 | >0, CFG=0 | dies between SET_ADDRESS and GET_DESCRIPTOR(config) |
 
 `WAIT` counts passes of the serve loop, so it also tells whether the loop ran
-at all.
+at all. The battery capsule in the status bar is the second reading: if it
+fills, the PMU path works and the voltage sample is real.
 
 ## Why `-71` is probably a symptom, not the cause
 
@@ -30,35 +42,24 @@ one second after attach explains both the error and the reset; the host only
 sees the endpoint die. That is why the peek build matters more than another
 EP0 theory: get the `file:line` first.
 
-## Battery / charging — evidence already extracted
+## Battery — done, unverified on hardware
 
-From `/tmp/ane_fdt.dts` (decompiled stock DTB):
-
-- `battery { compatible = "huawei,hisi_bci_battery"; battery_design_fcc = 3000; }`
-  — BCI is a *driver*, not a chip: it reads the PMU coulomb counter plus the
-  charger chip and presents a percentage.
-- `hi6555v100_coul@1 { compatible = "hisilicon,hi6555v100_coul"; interrupts = <9>; }`
-  — the fuel gauge lives inside the Hi6555 PMU (same die we already reach for
-  `PMIC HRST` at `0xFFF3462C` and `BOOTUP_END` at `0x18C`), interrupt 9.
-- Charger candidates in the DT: `hi6522_charger@6B`, `hi6523_charger@6B`,
-  `bq2560x_charger@6B` (same I2C address, mutually exclusive alternatives),
-  plus `scharger_power` regulators.
-- LEDs: `pmic_led@a0` red/green/blue with `dr_ctrl` 0x14D..0x156 — usable for
-  charging indication later.
-- RTC: `pmic_rtc@a0`, base `0x1D0`, IMR `0x130`, ICR `0x1B2`.
-
-**Do not write guessed coulomb-counter register numbers.** The next step is
-either (a) read them from stock Android over adb
-(`/sys/class/power_supply/battery/*`, `/proc/...`), or (b) find the Hi6555
-coulomb driver in Huawei's published hi6250 kernel source. Until one of those
-exists, battery work is blocked on evidence, not on code.
+`platform/common/power.rs::ocv` (generic, host-tested) + `platform/ane/
+ane_battery.rs` (backend). Registers, units and both charge ladders are from
+the vendor hi6250 coulomb driver and the stock ANE device tree; see
+`docs/hardware/battery.md` for the table and the remaining gaps
+(pack identity via ADC ch 6, temperature, charger status, coulomb
+integration).
 
 ## Open items in priority order
 
-1. `-71` root cause via the ledger (needs the photograph).
+1. `-71` root cause via the peek screen (needs one photograph).
 2. Touch on real hardware — never yet observed; `first_point()` has never
    produced a sample.
-3. Battery reporting + charging (blocked on gauge registers).
-4. Storage: eMMC reads work through the bootloader path; mounting in
+3. Battery voltage/charge on real hardware (build is ready).
+4. Charging: identify the charger IC among `hi6522`/`hi6523`/`bq2560x` at
+   0x6B and read its status register; then `charging` stops being a current
+   proxy.
+5. Storage: eMMC reads work through the bootloader path; mounting in
    FullereneOS is the next real subsystem.
-5. Buttons (power/volume) as a proper input source, not just a PMIC IRQ.
+6. Buttons (power/volume) as a proper input source, not just a PMIC IRQ.
