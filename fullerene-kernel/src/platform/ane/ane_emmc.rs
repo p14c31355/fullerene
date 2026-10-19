@@ -883,6 +883,7 @@ const CMD_DATA: u16 = 0x20;
 fn sdhci_data_read(idx: u16, arg: u32, words: &mut [u32], log: fn(&str, u64)) -> (bool, u32, u32) {
     wr16(SDHCI_BASE, 0x04, 512); // block size 0x200
     wr16(SDHCI_BASE, 0x06, 1); // one block
+    wr8(SDHCI_BASE, 0x2E, 0x0E); // v336e: maximum data timeout (see CMD25).
     wr16(SDHCI_BASE, 0x0C, 0x12); // BLK_CNT_EN | READ, no DMA (sdhci_set_transfer_mode)
     wr32(SDHCI_BASE, 0x08, arg);
     wr16(
@@ -1235,6 +1236,12 @@ fn sdhci_data_write_multi(
 ) -> (bool, u32, u32) {
     wr16(SDHCI_BASE, 0x04, 512);
     wr16(SDHCI_BASE, 0x06, blocks);
+    // v336e: TIMEOUT_CONTROL (0x2E) was never programmed, so it sat at its
+    // reset value and gave the card the shortest data-timeout in the book.
+    // A read answers immediately; a write has to programme flash cells, and
+    // at this clock that is far slower - every write aborted with a data
+    // timeout while every read passed. 0x0E is the maximum (2^27 TMCLK).
+    wr8(SDHCI_BASE, 0x2E, 0x0E);
     wr16(SDHCI_BASE, 0x0C, 0x22); // BLK_CNT_EN | MULTI_BLOCK, WRITE, no DMA
     wr32(SDHCI_BASE, 0x08, arg);
     wr16(
