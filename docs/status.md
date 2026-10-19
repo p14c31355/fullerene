@@ -16,7 +16,7 @@ nobody is watching the terminal.
 
 ## Next flash
 
-`artifacts/fullerene-ane-v332a-battery.img` (md5 `c55df3e789677469c4552e892b0ff8ac`)
+`artifacts/fullerene-ane-v332b-battery.img` (md5 `cc2fee5dfa5dcc6260c2a3e1c3730a52`)
 
 Contents, in boot order: panic text hold (45 s, then LK on its own), enum
 ledger on the panel, touch → shell input, launcher hit test, battery capsule
