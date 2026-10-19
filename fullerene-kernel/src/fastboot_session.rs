@@ -78,11 +78,14 @@ pub fn dl_data() -> &'static [u8] {
 }
 
 /// Announce an incoming `download:` payload of `len` bytes.
-pub fn dl_begin(len: usize) {
+/// `now` is the caller's clock: the session keeps a timestamp only so a
+/// stalled download can be told apart from a slow one, and that clock is
+/// the platform's business, not this module's.
+pub fn dl_begin(len: usize, now: u64) {
     unsafe {
         core::ptr::addr_of_mut!(DL_LEN).write(0);
         core::ptr::addr_of_mut!(DL_REMAIN).write(len.min(DOWNLOAD_MAX));
-        core::ptr::addr_of_mut!(DL_T0).write(crate::timer::uptime_us());
+        core::ptr::addr_of_mut!(DL_T0).write(now);
         core::ptr::addr_of_mut!(DL_STATE).write(1);
     }
 }
@@ -102,13 +105,13 @@ pub fn dl_t0() -> u64 {
 }
 
 /// Keep a long download from looking abandoned.
-pub fn dl_touch() {
-    unsafe { core::ptr::addr_of_mut!(DL_T0).write(crate::timer::uptime_us()) }
+pub fn dl_touch(now: u64) {
+    unsafe { core::ptr::addr_of_mut!(DL_T0).write(now) }
 }
 
 /// One byte arrived on EP1 OUT. Returns true when it belonged to a
 /// download payload, false when it is part of the command line.
-pub fn take_byte(b: u8) -> bool {
+pub fn take_byte(b: u8, now: u64) -> bool {
     unsafe {
         let remain = core::ptr::addr_of!(DL_REMAIN).read();
         if remain > 0 {
@@ -119,7 +122,7 @@ pub fn take_byte(b: u8) -> bool {
                 (core::ptr::addr_of_mut!(BUF) as *mut u8).add(len).write(b);
                 core::ptr::addr_of_mut!(DL_LEN).write(len + 1);
             }
-            core::ptr::addr_of_mut!(DL_T0).write(crate::timer::uptime_us());
+            core::ptr::addr_of_mut!(DL_T0).write(now);
             let next = remain - 1;
             core::ptr::addr_of_mut!(DL_REMAIN).write(next);
             if next == 0 {
@@ -143,5 +146,47 @@ pub fn dl_complete() -> Option<&'static [u8]> {
         Some(dl_data())
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One test, one sequence: the statics are process-wide, so a second
+    /// test running in parallel would interleave with this one.
+    #[test]
+    fn a_payload_owns_the_pipe_until_its_last_byte() {
+        reset();
+        assert_eq!(cmd_len(), 0);
+
+        // A command line: stays in the command buffer.
+        for &b in b"getvar:product" {
+            assert!(!take_byte(b, 0));
+        }
+        assert_eq!(cmd(), b"getvar:product");
+        clear_cmd();
+        assert_eq!(cmd_len(), 0);
+
+        // A download of four bytes takes every byte until the count runs
+        // out, then hands the pipe back.
+        dl_begin(4, 0);
+        assert_eq!(dl_state(), 1);
+        for &b in b"abcd" {
+            assert!(take_byte(b, 0));
+        }
+        assert_eq!(dl_remain(), 0);
+        assert_eq!(dl_state(), 2);
+        assert_eq!(dl_data(), b"abcd");
+        assert_eq!(dl_complete().map(|d| d.len()), Some(4));
+
+        // After the payload, bytes are commands again.
+        assert!(!take_byte(b'x', 0));
+        assert_eq!(cmd(), b"x");
+
+        dl_reset();
+        assert_eq!(dl_state(), 0);
+        assert!(dl_complete().is_none());
+        reset();
     }
 }

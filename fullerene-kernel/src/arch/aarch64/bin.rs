@@ -18,6 +18,8 @@ mod blackbox;
 #[path = "../../cdc_acm.rs"]
 mod cdc_acm;
 pub(crate) mod fastboot_dispatch;
+#[path = "../../fastboot_session.rs"]
+pub(crate) mod fastboot_session;
 
 pub(crate) use runtime::platform;
 pub(crate) use runtime::timer;

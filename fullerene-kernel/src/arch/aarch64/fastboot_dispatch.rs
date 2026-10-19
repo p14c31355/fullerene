@@ -178,7 +178,7 @@ use crate::platform::ane_usb_dev::{
     ADB_PENDING_LEN, ADB_PENDING_READY, DPTXFSIZ1, DTXFSTS1, EP1_CONVERSATIONS, LOG_END,
     LOG_LINES, LOG_MAIN, XFER_END, XFER_FEED, XFER_ON, XFER_WIN_END,
 };
-use crate::platform::fastboot_session as fb;
+use crate::fastboot_session as fb;
 use core::ptr;
 
 /// The fastboot command interpreter: one call per completed EP1 OUT
@@ -424,7 +424,7 @@ pub fn poll(log: fn(&str, u64)) {
             crate::platform::ane_usb_dev::ep1_send(b"FAILbad download size");
         } else {
             unsafe {
-                fb::dl_begin(size as usize);
+                fb::dl_begin(size as usize, crate::timer::uptime_us());
             }
             // The fastboot protocol wants "DATA" + the size as eight
             // uppercase hex digits, then the raw payload follows.

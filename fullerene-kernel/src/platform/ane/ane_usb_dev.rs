@@ -266,7 +266,7 @@ static mut IN_WAS_DATA: bool = false;
 /// The fastboot command line and the download staging area live in
 /// `fastboot_session`: the driver moves bytes, the session decides what
 /// they mean.
-use crate::platform::fastboot_session as fb;
+use crate::fastboot_session as fb;
 
 /// One-time per boot: the first EP1 reply sweeps the core's stale TX FIFO.
 static mut SWEPT_FIRST_REPLY: bool = false;
@@ -1007,7 +1007,7 @@ fn pop_rx(log: fn(&str, u64)) {
                         let b = w.to_le_bytes();
                         let take = if n >= 4 { 4 } else { n };
                         for &byte in b.iter().take(take) {
-                            fb::take_byte(byte);
+                            fb::take_byte(byte, crate::timer::uptime_us());
                             unsafe {
                                 DBG_EP1_BYTES = DBG_EP1_BYTES.wrapping_add(1);
                             }

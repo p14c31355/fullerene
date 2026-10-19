@@ -40,8 +40,6 @@ pub mod ane_fb;
 pub mod ane_touch;
 #[path = "ane/ane_usb_dev.rs"]
 pub mod ane_usb_dev;
-#[path = "ane/fastboot_session.rs"]
-pub mod fastboot_session;
 
 pub mod bramble;
 pub mod qemu_virt;
