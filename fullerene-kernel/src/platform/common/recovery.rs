@@ -82,6 +82,21 @@ fn schedule_loader_reset(marker: &str) {
     crate::blackbox::schedule_reset_at(crate::timer::uptime_us());
 }
 
+/// A long storage operation (a flash writes 24 MB through a 400 kHz clock
+/// in the worst case) legitimately leaves the boot thread inside one call
+/// for minutes. The frozen-boot lane is for a boot that is *stuck*, not for
+/// one that is working, so the write path marks itself busy and the lane
+/// stands down for the duration.
+static BUSY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+pub fn set_busy(busy: bool) {
+    BUSY.store(busy, Ordering::Relaxed);
+}
+
+pub fn busy() -> bool {
+    BUSY.load(Ordering::Relaxed)
+}
+
 /// v330 recovery: pump-side check. Runs from the timer IRQ every tick:
 /// if the heartbeat has not moved for 7200 beats (~10 min at the observed
 /// 12 beats/s), schedule the loader reset. The 10 min window is far above
@@ -102,6 +117,11 @@ pub fn boot_recovery_check(beats: u32) {
         return;
     }
     // The heartbeat is frozen: the boot thread has not run the wait loop.
+    if busy() {
+        // A flash is not a frozen boot; it reports through its own counts.
+        FROZEN_AT.store(0, Ordering::Relaxed);
+        return;
+    }
     let frozen_at = FROZEN_AT.load(Ordering::Relaxed);
     if frozen_at == 0 {
         FROZEN_AT.store(beats, Ordering::Relaxed);

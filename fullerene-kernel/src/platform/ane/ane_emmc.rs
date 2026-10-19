@@ -543,6 +543,9 @@ pub fn write_sectors(lba: u32, data: &[u8], log: fn(&str, u64)) -> (u64, u64) {
     // this board (1271 "s" elapsed during an 85 s write), so it cut a
     // write that was making steady progress. Every chunk now lands or
     // fails fast on its own polls, and the host hears the result.
+    // The frozen-boot lane stands down for the duration: a flash that
+    // takes minutes is working, not stuck.
+    crate::platform::common::recovery::set_busy(true);
     let mut i = 0usize;
     while i < total {
         // v336i: a flash is progress. Without this the frozen-boot lane
@@ -621,6 +624,7 @@ pub fn write_sectors(lba: u32, data: &[u8], log: fn(&str, u64)) -> (u64, u64) {
         log("em: wr_prog=", i as u64);
         i += nblocks;
     }
+    crate::platform::common::recovery::set_busy(false);
     LAST_FLASH.store((ok << 32) | (bad & 0xFFFF_FFFF), Ordering::Relaxed);
     (ok, bad)
 }
