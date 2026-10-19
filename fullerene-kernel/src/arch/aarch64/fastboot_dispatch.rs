@@ -534,6 +534,39 @@ pub fn poll(log: fn(&str, u64)) {
     }
 
     #[cfg(fullerene_aarch64_ane)]
+    if cmd == b"oem hs" || cmd == b"oem hs on" || cmd == b"oem hs off" {
+        // `oem hs on|off`: ask the card to switch to high-speed timing and
+        // then re-run the clock ladder. CMD6 writes one EXT_CSD byte, so
+        // the switch is persistent - `off` puts it back. Both directions
+        // read the table before and after, so the answer is the card's.
+        let on = cmd != b"oem hs off";
+        log("fb: hs_req=", on as u64);
+        crate::platform::ane_usb_dev::fb_send_info(b"hs switch");
+        match crate::platform::ane_emmc::switch_hs(on, log) {
+            Ok(v) => {
+                let mut line = [0u8; 32];
+                let n = crate::adb_dispatch::fmt_okay_hex(v as u64, &mut line);
+                crate::platform::ane_usb_dev::ep1_send(&line[..n]);
+                // The envelope just moved: climb again under the new rules.
+                crate::platform::ane_emmc::clock_probe(log);
+            }
+            Err(code) => {
+                log("fb: hs_fail=", code as u64);
+                // `FAILhs` then eight hex digits: the stage is the high
+                // byte so the reply names which step refused.
+                let mut line = [b'0'; 14];
+                line[..6].copy_from_slice(b"FAILhs");
+                const HEX: [u8; 16] = *b"0123456789ABCDEF";
+                for i in 0..8 {
+                    line[6 + i] = HEX[((code >> (28 - i * 4)) & 0xF) as usize];
+                }
+                crate::platform::ane_usb_dev::ep1_send(&line[..]);
+            }
+        }
+        return;
+    }
+
+    #[cfg(fullerene_aarch64_ane)]
     if let Some(args) = cmd.strip_prefix(b"oem i2c4 ") {
         // `oem i2c4 <addr> <from> <count>`: read-only dump on the charger
         // bus (hi6522 at 0x6B, fsa9685 at 0x25). Nothing is written to the

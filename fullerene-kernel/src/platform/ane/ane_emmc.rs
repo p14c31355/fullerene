@@ -125,13 +125,16 @@ pub fn clock_probe(log: fn(&str, u64)) {
     log("em: crg40=", rd32(CRG_BASE, 0x40) as u64);
     log("em: crgb4=", rd32(CRG_BASE, 0xB4) as u64);
 
-    // Slowest first; field 4 is the top of the default-speed envelope.
-    const RUNGS: [u16; 4] = [8, 6, 5, 4];
+    // Slowest first. Fields 8..4 stay inside the 26 MHz default-speed
+    // envelope; 3 (33 MHz) and 2 (50 MHz) exist only once CMD6 has told
+    // the card it may run high speed - see `switch_hs`.
+    const RUNGS: [u16; 6] = [8, 6, 5, 4, 3, 2];
+    let rungs = if hs_mode() { &RUNGS[..] } else { &RUNGS[..4] };
     let mut code = 0u64;
     let mut chosen = 0u64;
     let mut first_fail = 0u64;
     let mut sample = [0u32; 128];
-    for (i, field) in RUNGS.iter().enumerate() {
+    for (i, field) in rungs.iter().enumerate() {
         let slot = (i * 4) as u64;
         let mut set = |c: u64| code |= c << slot;
         if !emmc_clock_set(*field, log) {
@@ -201,7 +204,7 @@ pub fn clock_probe(log: fn(&str, u64)) {
         Ordering::Relaxed,
     );
     CLK_RESULT.store(
-        chosen | (base as u64) << 8 | code << 16 | first_fail << 32,
+        chosen | (base as u64) << 8 | code << 16 | first_fail << 40,
         Ordering::Relaxed,
     );
     log("em: clk_res=", clock_result());
@@ -569,6 +572,91 @@ pub fn persist_all(log: fn(&str, u64)) -> (u64, u64) {
         bad += b;
     }
     (ok, bad)
+}
+
+/// EXT_CSD byte 185 is the bus timing the card will use.
+const EXT_CSD_HS_TIMING: usize = 185;
+/// EXT_CSD byte 192 is the table's revision. Checking it proves the 512
+/// bytes really are the table and not whatever the FIFO held.
+const EXT_CSD_REV: usize = 192;
+/// JEDEC JESD84-B50 6.6.2: 1 selects the high-speed timing (52 MHz).
+const HS_TIMING_HIGH_SPEED: u8 = 1;
+
+/// Set once the card has been told high speed is allowed. The ladder only
+/// climbs past 25 MHz when this is true, because above that a card still in
+/// default speed simply stops answering.
+static HS_MODE: AtomicU32 = AtomicU32::new(0);
+
+/// Whether the card has been switched to high-speed timing.
+pub fn hs_mode() -> bool {
+    HS_MODE.load(Ordering::Relaxed) != 0
+}
+
+fn ext_csd_byte(table: &[u32; 128], index: usize) -> u8 {
+    ((table[index / 4] >> ((index % 4) * 8)) & 0xFF) as u8
+}
+
+/// Ask the card to switch between default and high-speed timing.
+///
+/// This is a CMD6 write to one EXT_CSD byte, which is persistent on the card
+/// until it is switched back - the same write every Linux boot makes. It is
+/// deliberately *not* done at boot: a mistyped switch there would cost the
+/// only recovery window this device has. `oem hs on|off` calls it.
+///
+/// The whole table is read before and after, so the result is what the card
+/// says, not what we wrote. On any failure the data lines are reset; timing
+/// is left as the read-back reported it, and 400 kHz still works either way.
+pub fn switch_hs(on: bool, log: fn(&str, u64)) -> Result<u8, u32> {
+    let mut table = [0u32; 128];
+    let (ok, _s, e) = sdhci_data_read(8, 0, &mut table, log);
+    if !ok {
+        recover_lines(log);
+        return Err(0x1_0000 | e);
+    }
+    let rev = ext_csd_byte(&table, EXT_CSD_REV);
+    if rev < 4 {
+        // Not a table we can trust; do not write to it.
+        recover_lines(log);
+        return Err(0x2_0000 | rev as u32);
+    }
+    let before = ext_csd_byte(&table, EXT_CSD_HS_TIMING);
+    let want = if on { HS_TIMING_HIGH_SPEED } else { 0 };
+    if before & 0x0F == want {
+        HS_MODE.store(on as u32, Ordering::Relaxed);
+        return Ok(before);
+    }
+    // MMC_SWITCH(access, index, value, cmdset): access 3 = write byte, and
+    // the index sits in bits 23..16 while the value sits in 15..8
+    // (include/linux/mmc/mmc.h).
+    let arg: u32 = (3 << 26) | ((EXT_CSD_HS_TIMING as u32) << 16) | ((want as u32) << 8);
+    let zeros = [0u32; 128];
+    let (wok, _ws, we) = sdhci_data_write(6, arg, &zeros, log);
+    if !wok {
+        recover_lines(log);
+        return Err(0x3_0000 | we);
+    }
+    // CMD6 answers R1b: the card holds DAT0 while it commits the byte.
+    if !wait_idle(0x20_0000, log) {
+        recover_lines(log);
+        return Err(0x4_0000);
+    }
+    let mut after = [0u32; 128];
+    let (rok, _rs, re) = sdhci_data_read(8, 0, &mut after, log);
+    if !rok {
+        recover_lines(log);
+        return Err(0x5_0000 | re);
+    }
+    let now = ext_csd_byte(&after, EXT_CSD_HS_TIMING);
+    log(
+        "em: hs=",
+        ((before as u64) << 16) | ((now as u64) << 8) | want as u64,
+    );
+    if now & 0x0F != want {
+        recover_lines(log);
+        return Err(0x6_0000 | now as u32);
+    }
+    HS_MODE.store(on as u32, Ordering::Relaxed);
+    Ok(now)
 }
 
 pub fn write_sectors(lba: u32, data: &[u8], log: fn(&str, u64)) -> (u64, u64) {
