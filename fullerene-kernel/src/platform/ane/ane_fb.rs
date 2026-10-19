@@ -793,21 +793,28 @@ pub fn flush_panel() {
 
 /// v331m: the 90-degree-CW rotated flush. The canvas holds a LANDSCAPE
 /// image (2340x1080, the solvent desktop's native orientation); this
-/// blits it into the portrait panel. The desktop's layout fits the
-/// landscape natively - the user's design call.
+/// blits it into the portrait (1080x2340) panel.
 ///
-/// Mapping (rotate 90 CW): dst(px,py) = src(ly=1080-1-px, lx=py):
-///   dst[py*1080 + px] = src[(1080-1-px)*2340 + py]
+/// v331w fixes the source bound. v331m wrote `src[(HEIGHT-1-px)*LW + py]`
+/// (HEIGHT = 2340, the panel's long side) while the comment and the commit
+/// both specified 1080 - `WIDTH`, the landscape image's HEIGHT. The result
+/// read source rows 1259..2339 of an image that has 1080 of them: up to
+/// 22 MB of reads past the 10 MB canvas, the last 10 MB of it outside the
+/// reservation. That boot never enumerated. Correct map:
+///   dst[py*WIDTH + px] = src[(WIDTH-1-px)*LW + py]
+///
+/// The band loop yields to the USB responder every BAND scanlines. The
+/// write side is 2.5M scattered stores into the display channel, and the
+/// host's post-reenumerate descriptor window must not wait for all of
+/// them. The cost rides the durable ring (CODE_ANE_ROT_FLUSH) so the next
+/// regression of this path is visible from a collection alone.
 pub unsafe fn flush_panel_rotated() {
-    const LW: usize = HEIGHT as usize; // the landscape width = 2340
+    const LW: usize = HEIGHT as usize; // the landscape width  = 2340
     const LH: usize = WIDTH as usize; // the landscape height = 1080
+    const BAND: usize = 32;
     let src = CANVAS as *const u32;
-    // Rotate into a scratch half? No scratch: rotate IN PLACE is complex.
-    // Use the tail of the canvas beyond the landscape image? The canvas
-    // is exactly W*H = LW*LH - no room. Rotate line-by-line into the
-    // DISPLAY channel: read the src pixel, write the dst pixel directly
-    // to the display address (column-major writes - slower but simple,
-    // and the flush is a one-shot).
+    let t0 = crate::timer::uptime_us();
+    let mut channels = 0u64;
     for &ch in CHANNELS.iter() {
         for &w in WINDOWS.iter() {
             let addr = unsafe { ptr::read_volatile((ch + w) as *const u32) };
@@ -815,23 +822,40 @@ pub unsafe fn flush_panel_rotated() {
                 continue;
             }
             let dst = addr as *mut u32;
-            for py in 0..HEIGHT as usize {
-                for px in 0..WIDTH as usize {
-                    let v = unsafe {
-                        ptr::read_volatile(src.add((HEIGHT as usize - 1 - px) * LW + py))
-                    };
-                    unsafe {
-                        ptr::write_volatile(dst.add(py * (WIDTH as usize) + px), v);
+            let mut py = 0usize;
+            while py < HEIGHT as usize {
+                let end = (py + BAND).min(HEIGHT as usize);
+                for y in py..end {
+                    let row = unsafe { dst.add(y * WIDTH as usize) };
+                    for px in 0..LH {
+                        let v = unsafe { ptr::read_volatile(src.add((LH - 1 - px) * LW + y)) };
+                        unsafe { ptr::write_volatile(row.add(px), v) };
                     }
                 }
+                py = end;
+                // The responder stays answered across the rotation; the
+                // reentrancy guard makes a nested pump pass a no-op.
+                crate::platform::ane_usb_dev::service(rot_noop_log);
             }
             crate::blackbox::cache_clean(addr as usize, CANVAS_LEN);
+            channels += 1;
         }
     }
     unsafe {
         crate::blackbox::cache_clean(CANVAS, CANVAS_LEN);
     }
+    let dt = crate::timer::uptime_us().saturating_sub(t0);
+    crate::blackbox::record(
+        crate::blackbox::CODE_ANE_ROT_FLUSH,
+        t0 as u64,
+        dt as u64,
+        channels,
+    );
 }
+
+/// The rotation's USB service pass logs nothing: the ring already carries
+/// the flush record, and per-band log lines would bury it.
+fn rot_noop_log(_: &str, _: u64) {}
 
 /// Repaint the fastboot diagnostic strip when the responder's state changed
 /// since the last paint. Called from the wait loop, so a photo of the panel

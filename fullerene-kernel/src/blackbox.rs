@@ -253,6 +253,11 @@ pub const CODE_PROBE_TRB_STILL_OWNED: u32 = 43;
 /// [step, value] trace, carried over before the console path can die.
 /// arg0 = (step_a << 32 | value_a), arg1 = (step_b << 32 | value_b).
 pub const CODE_L1D_TRACE: u32 = 96;
+/// One record per landscape scan-out rotation: arg0 = elapsed microseconds,
+/// arg1 = the number of display channels rotated. Exists because the v331m
+/// flush's cost was unmeasurable from the outside (the container never
+/// enumerated), and a cost that cannot be read is a cost that regresses.
+pub const CODE_ANE_ROT_FLUSH: u32 = 97;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
