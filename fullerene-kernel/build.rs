@@ -2419,9 +2419,20 @@ fn audit_env_rerun_declarations() {
             }
         }
     }
-    for name in read.difference(&declared) {
-        println!(
-            "cargo:warning=build.rs reads {name} without a matching rerun-if-env-changed, so changing it alone would not rebuild the kernel"
+    // v343k: a warning here is read by nobody, and it is not even printed
+    // when the script itself is skipped - which is the very case this audit
+    // exists to catch (v343i: five ANE knobs, including the one that keeps
+    // the SP805 read out of uart::putc, were silently inert). A knob that
+    // cannot be trusted to change the image is a build error, not a note.
+    let undeclared: Vec<&String> = read.difference(&declared).collect();
+    if !undeclared.is_empty() {
+        let list: Vec<String> = undeclared.iter().map(|n| n.to_string()).collect();
+        panic!(
+            "build.rs reads {} without a matching cargo:rerun-if-env-changed, so setting it \
+             alone would silently reuse the cached build. Declare each one next to the other \
+             rerun-if-env-changed lines: {}",
+            list.len(),
+            list.join(", ")
         );
     }
 }
