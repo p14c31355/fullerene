@@ -234,3 +234,38 @@ in `platform/common/designware_i2c.rs`, because I2C0 and I2C4 are the same
 controller. This is a hypothesis with a mechanism behind it, not a measured
 result: the device has been on stock Android since 02:16, so the first proof
 of it is the touch probe on the next window.
+
+## The pull-up without an answer (05:00 JST)
+
+v340j flashed from LK in 0.14 s and the host saw a new high-speed device
+twenty-seven seconds later. Then:
+
+```
+04:42:23 new high-speed USB device number 120
+04:42:29 device descriptor read/64, error -110
+04:42:34 unable to read config index 0 descriptor/start: -110
+04:42:45 new high-speed USB device number 123 ...
+04:42:51 (silence - D+ down, nothing on the bus)
+```
+
+D+ was up, so the PHY and the attach ran. EP0 never answered, so the defence
+that raises the pull-up worked and the responder behind it did not.
+
+The short form of the story is a unit mismatch that has been in the boot flow
+since v331z: the enumeration window is `uptime_us() + 6_000_000`, and
+`uptime_us` runs about ten times the wall clock on this part, so the window is
+0.6 s. The host's own sequence after the pull-up - reset, address, then the
+first descriptor request - does not finish inside 0.6 s, and the boot thread
+had already moved on to painting the desktop (seconds, no service) by the time
+the request arrived. Each host retry met the same silence, the enumeration
+watchdog counted its beats, and the boot panicked to the hold screen.
+
+The fix is not a longer sleep but an honest deadline: sixty counter-seconds,
+which is the six real ones the comment has always claimed, and the loop still
+leaves the instant the host configures the device. `v341b-enumwin` carries it,
+`v341c-noladder-win` carries it without the clock ladder so the two questions
+stay separable.
+
+What this does not explain yet: why earlier builds with the same 0.6 s window
+did enumerate. The difference between them and this one is the clock ladder
+running before the attach, which is exactly why the noladder image exists.
