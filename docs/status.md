@@ -210,3 +210,27 @@ write path stays a fallback rather than the main road. The gates are
 unchanged: a flash only runs when the product on `1-9` is one of the two
 known strings, and the boot afterwards is not called good until the new
 image answers `getvar product`.
+
+## The i2c transaction that was never over (2026-10-20 03:20 JST)
+
+The touch controller has answered nothing since the port began, and the
+reason was in the master, not the panel. `IC_DATA_CMD` is a command word,
+not a byte: bit 8 is the read request, bit 9 is STOP, bit 10 is RESTART
+(`i2c-designware-master.c`, `cmd |= BIT(9)` on the last byte and `BIT(10)`
+on a repeated start).
+
+The touch bus wrote its register pointer with no STOP - correct - then
+asked for reads with `0x100`, a read with no RESTART and no STOP on the
+last byte. The charger bus was worse: it built its read command out of
+`RESTART` alone, which is a *write* of zero. Neither transfer was ever
+released, so `MST_ACTIVITY` stayed set and every following transaction
+aborted before it started. A controller that answers 0x54 perfectly well
+looks dead from the other side of that.
+
+Both buses now end the way the controller requires: pointer byte with STOP
+only when nothing follows, first read with RESTART, last read with STOP,
+then wait for ACTIVITY and MST_ACTIVITY to clear. The bits are defined once
+in `platform/common/designware_i2c.rs`, because I2C0 and I2C4 are the same
+controller. This is a hypothesis with a mechanism behind it, not a measured
+result: the device has been on stock Android since 02:16, so the first proof
+of it is the touch probe on the next window.
