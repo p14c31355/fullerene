@@ -1402,16 +1402,20 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                     // each half second: a single paint proved to be gone
                     // before a camera could reach it.
                     platform::ane_fb::event(b"STG ENUM-HOLD-45S");
-                    platform::ane_fb::hold_begin(
-                        platform::ane_usb_dev::setups_seen() as u64,
-                        served as u64,
-                    );
-                    for _ in 0..90 {
-                        platform::ane_usb_dev::repaint_trace();
-                        platform::ane_fb::usb_fail_banner(
+                    // Silence the timer strip while the hold owns the panel:
+                    // its band repaints were the one writer left that could
+                    // fight the held frame.
+                    platform::ane_fb::IRQ_QUIET.store(true, core::sync::atomic::Ordering::Relaxed);
+                    for i in 0..90 {
+                        platform::ane_fb::hold_frame(
+                            i + 1,
                             platform::ane_usb_dev::setups_seen() as u64,
                             served as u64,
                         );
+                        platform::ane_usb_dev::repaint_trace();
+                        if i % 10 == 9 {
+                            platform::ane_fb::event(b"TICK10");
+                        }
                         timer::delay_ms(500);
                     }
                 }

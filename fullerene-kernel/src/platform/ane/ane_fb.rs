@@ -610,26 +610,84 @@ pub fn usb_fail_banner(setups: u64, serviced: u64) {
     flush_row_force(51);
 }
 
-/// Take the panel for the enumeration hold: a solid field, the banner at
-/// the top, and the boot report below it.
+/// 3x5 digit rows, one byte per row, bit2 = leftmost column (the same table
+/// the home screen's charge badge uses).
+const BIG_DIGITS: [[u8; 5]; 10] = [
+    [0b111, 0b101, 0b101, 0b101, 0b111],
+    [0b010, 0b110, 0b010, 0b010, 0b111],
+    [0b111, 0b001, 0b111, 0b100, 0b111],
+    [0b111, 0b001, 0b111, 0b001, 0b111],
+    [0b101, 0b101, 0b111, 0b001, 0b001],
+    [0b111, 0b100, 0b111, 0b001, 0b111],
+    [0b111, 0b100, 0b111, 0b101, 0b111],
+    [0b111, 0b001, 0b010, 0b010, 0b010],
+    [0b111, 0b101, 0b111, 0b101, 0b111],
+    [0b111, 0b101, 0b111, 0b001, 0b111],
+];
+
+fn big_digits(value: u64, x: u32, y: u32, scale: u32, color: u32) {
+    let mut digits = [0u8; 20];
+    let mut n = 0;
+    let mut v = value;
+    loop {
+        digits[n] = (v % 10) as u8;
+        n += 1;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    let step = 4 * scale;
+    for i in 0..n {
+        let g = BIG_DIGITS[digits[n - 1 - i] as usize];
+        let dx = x + i as u32 * step;
+        for (r, bits) in g.iter().enumerate() {
+            for c in 0..3u32 {
+                if bits & (1 << (2 - c)) != 0 {
+                    fill_canvas(dx + c * scale, y + r as u32 * scale, scale, scale, color);
+                }
+            }
+        }
+    }
+}
+
+fn fill_canvas(x: u32, y: u32, w: u32, h: u32, color: u32) {
+    let canvas: &mut [u32] =
+        unsafe { core::slice::from_raw_parts_mut(CANVAS as *mut u32, CANVAS_LEN / 4) };
+    for py in y..(y + h).min(HEIGHT) {
+        for px in x..(x + w).min(WIDTH) {
+            let i = (py as usize) * (WIDTH as usize) + px as usize;
+            if let Some(slot) = canvas.get_mut(i) {
+                *slot = color;
+            }
+        }
+    }
+}
+
+/// One whole repaint of the held screen, with a counter that ticks.
 ///
-/// The band flushes alone were not enough to tell "the panel is ours and
-/// the text is there" from "the panel is showing something else": both
-/// look like text that disappears. A whole-screen colour is unambiguous.
-pub fn hold_begin(setups: u64, serviced: u64) {
+/// The screen was showing the held frame for a fraction of a second no
+/// matter how long the hold ran, so the hold now redraws the entire panel
+/// every iteration. A counter that climbs is the difference between "the
+/// panel is ours and updating" and "nothing we write is being scanned
+/// out" - and it is visible even in a single photo.
+pub fn hold_frame(tick: u32, setups: u64, serviced: u64) {
     let canvas: &mut [u32] =
         unsafe { core::slice::from_raw_parts_mut(CANVAS as *mut u32, CANVAS_LEN / 4) };
     for px in canvas.iter_mut() {
         *px = HOLD_BG;
     }
-    unsafe {
-        crate::blackbox::cache_clean(CANVAS, CANVAS_LEN);
-    }
     paint_at_force(0, 8, 20, b"USB NEVER CONFIGURED");
     paint_hex_at_force(1, 8, b"SETUPS", setups);
     paint_hex_at_force(2, 8, b"SERVICE", serviced);
     paint_at_force(3, 8, 24, b"HOLD - PHOTOGRAPH ME NOW");
+    // The tick counter, big enough to read from across a desk.
+    big_digits(tick as u64, 300, 900, 24, 0xFFFF_FFFF);
+    paint_at_force(30, 8, 20, b"TICK");
     usb_fail_banner(setups, serviced);
+    unsafe {
+        crate::blackbox::cache_clean(CANVAS, CANVAS_LEN);
+    }
     flush_panel();
 }
 
