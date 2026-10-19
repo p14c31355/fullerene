@@ -1356,7 +1356,14 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
             // cable is actually attached - a cable-less boot goes
             // straight to the UI.
             if platform::ane_usb_dev::usb_attached() {
-                let deadline = timer::uptime_us().saturating_add(6_000_000);
+                // `uptime_us` runs about ten times the wall clock on this
+                // part, so the old 6_000_000 was a 0.6 s window - shorter
+                // than the host's own reset-and-address sequence, which is
+                // why the pull-up was followed by `descriptor read -110`.
+                // Ask for sixty counter-seconds to get the six real ones
+                // the comment always meant; the loop still leaves the
+                // instant the host configures us.
+                let deadline = timer::uptime_us().saturating_add(60_000_000);
                 let mut served = 0u32;
                 // Paint the ledger from inside the wait: a pipe that never
                 // finishes leaves the hot loop running, so a ledger painted
