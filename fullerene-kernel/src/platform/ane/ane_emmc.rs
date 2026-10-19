@@ -1004,7 +1004,28 @@ const CMD_DATA: u16 = 0x20;
 /// (0x800) per word out of the buffer port 0x20, then wait for
 /// TRANSFER_COMPLETE (NORMAL_INT bit1) or an error latch. Bounded
 /// throughout; reports (complete, normal_int, error_status).
+/// v336t: a burst that dies leaves the controller holding the CMD and DAT
+/// lines, and every later command then spins to its poll bound and fails -
+/// the card is fine, the host side is stuck. SPEC 3.00 3.3.13: software
+/// reset for CMD (bit 1) and DAT (bit 2) returns just those state machines
+/// to idle without touching the clock or the card.
+fn recover_lines(log: fn(&str, u64)) {
+    wr8(SDHCI_BASE, 0x2F, 0x06);
+    for n in 0..0x40_000u32 {
+        if rd8(SDHCI_BASE, 0x2F) & 0x06 == 0 {
+            break;
+        }
+        if n & 0xFFF == 0 {
+            crate::platform::common::recovery::boot_heartbeat();
+        }
+    }
+    wr16(SDHCI_BASE, 0x32, 0xFFFF);
+    wr32(SDHCI_BASE, 0x30, 0xFFFF_FFFF);
+    log("em: recovered=", rd8(SDHCI_BASE, 0x2F) as u64);
+}
+
 fn sdhci_data_read(idx: u16, arg: u32, words: &mut [u32], log: fn(&str, u64)) -> (bool, u32, u32) {
+    wait_idle(0x40000, log);
     wr16(SDHCI_BASE, 0x04, 512); // block size 0x200
     wr16(SDHCI_BASE, 0x06, 1); // one block
     wr8(SDHCI_BASE, 0x2E, 0x0E); // v336e: maximum data timeout (see CMD25).
@@ -1051,6 +1072,9 @@ fn sdhci_data_read(idx: u16, arg: u32, words: &mut [u32], log: fn(&str, u64)) ->
         }
     }
     wr32(SDHCI_BASE, 0x30, 0xFFFF_FFFF);
+    if sts & 0x2 == 0 {
+        recover_lines(log);
+    }
     (sts & 0x2 != 0, sts, err)
 }
 
@@ -1508,6 +1532,9 @@ fn sdhci_data_write_multi(
     // v336s: let the card finish programming before the next chunk asks.
     let idle = wait_idle(0x100_0000, log);
     log("em: c25_idle=", idle as u64);
+    if sts & 0x2 == 0 {
+        recover_lines(log);
+    }
     (sts & 0x2 != 0, sts, err)
 }
 
