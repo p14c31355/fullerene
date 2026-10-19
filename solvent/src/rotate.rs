@@ -32,6 +32,24 @@ pub fn cw90_index(dx: u32, dy: u32, src_w: u32, src_h: u32) -> usize {
     sy as usize * src_w as usize + dy as usize
 }
 
+/// Where a source point lands on the rotated destination.
+///
+/// This is the map an input path needs: a touch reports panel
+/// coordinates, and the shell laid out in the unrotated canvas, so the
+/// touch has to be carried back through the same rotation it was
+/// displayed through. Getting this wrong is not a blank screen, it is a
+/// pointer that drifts - which is why both directions live here, next to
+/// the index map they invert.
+pub fn cw90_destination(sx: u32, sy: u32, src_h: u32) -> (u32, u32) {
+    (src_h.wrapping_sub(1).wrapping_sub(sy), sx)
+}
+
+/// The inverse of [`cw90_destination`]: panel point to source (canvas)
+/// point.
+pub fn cw90_source(dx: u32, dy: u32, src_h: u32) -> (u32, u32) {
+    (dy, src_h.wrapping_sub(1).wrapping_sub(dx))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,11 +97,28 @@ mod tests {
     }
 
     #[test]
-    fn a_row_of_the_source_becomes_a_column_of_the_destination() {
-        let sy = 0; // the landscape image's first row
-        let dx = LH - 1 - sy;
-        for dy in [0u32, 1, LW / 2, LW - 1] {
-            assert_eq!(cw90_index(dx, dy, LW, LH), dy as usize);
+    fn the_point_map_inverts_over_the_whole_image() {
+        const W: u32 = 6;
+        const H: u32 = 4;
+        for sy in 0..H {
+            for sx in 0..W {
+                let (dx, dy) = cw90_destination(sx, sy, H);
+                assert_eq!(cw90_source(dx, dy, H), (sx, sy));
+                // The point map and the index map must agree, or the
+                // pointer lands in a different pixel than the one drawn.
+                assert_eq!(
+                    cw90_index(dx, dy, W, H),
+                    (sy as usize) * (W as usize) + sx as usize
+                );
+            }
         }
+    }
+
+    #[test]
+    fn a_touch_on_the_panel_reaches_the_canvas_corner_it_covers() {
+        // The landscape top-left word is drawn at the panel's top-right.
+        assert_eq!(cw90_source(LH - 1, 0, LH), (0, 0));
+        // And the panel's top-left is the landscape bottom-left.
+        assert_eq!(cw90_source(0, 0, LH), (0, LH - 1));
     }
 }
