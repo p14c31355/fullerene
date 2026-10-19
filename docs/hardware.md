@@ -8,8 +8,8 @@ and where FullereneOS stands with each part. Written 2026-10-20.
 |---|---|---|---|
 | SoC | HiSilicon Hi6250 (Kirin 659 class) | - | boots |
 | panel | AUO OTM1901A, MIPI DSI, 1080x2340 | DSI | painting (portrait, rotated canvas) |
-| touch | FocalTech fts (chip id 0x54) | i2c0 `0xFFD71000`, 0x38, irq ao_gpio6 | driver written, **never seen a touch** |
-| eMMC | Arasan SDHCI | `0xFF390000` | read / write / erase, clock ladder in progress |
+| touch | FocalTech fts (chip id 0x54) | i2c0 `0xFFD71000`, 0x38, irq ao_gpio6 | driver written; two bus-layer faults found and fixed, unverified |
+| eMMC | Arasan SDHCI | `0xFF390000` | read / write / erase; ladder rebuilt inside the 26 MHz envelope, high-speed switch behind `oem hs` |
 | PMU + gauge | Hi6555 | PMU cells | battery % on the panel |
 | charger | hi6522 (`scharger_v200`) | i2c4 `0xFDF0D000`, 0x6B | bus up, register map unknown |
 | USB switch | fsa9685 | i2c4, 0x25 | bus up, unprobed |
@@ -19,6 +19,7 @@ and where FullereneOS stands with each part. Written 2026-10-20.
 | GNSS | `hisi_gps` | modem side | untouched |
 | fingerprint | fpc | SPI | not needed for the goal |
 | keys | `hisilicon,gpio-key` | GPIO | power/volume not yet read |
+| timer | ARM arch timer | `CNTFRQ` | read, but ~10x fast; `oem sof` measures it against the host's 1 ms frames |
 | USB | dwc2 gadget | `0xFF100000`-ish | enumerated responder |
 
 Notes that matter:
@@ -32,6 +33,10 @@ Notes that matter:
 - `docs/charger.md` has the read-only experiment that produces the hi6522
   register map; nothing else about charging can be written honestly
   before that.
+- Touch had two faults below the driver, both found by reading the
+  controllers rather than the panel: the DW I2C transaction never carried
+  STOP (so no transfer was ever released) and the reset settle was written
+  as spin loops, which is microseconds, not the 200 ms the part needs.
 
 ## What this means for the next sessions
 
@@ -41,4 +46,8 @@ Ordered by what one device session can settle:
 2. The write path end to end (`getvar flash` counts).
 3. The i2c4 dump with the cable in and out -> charger map.
 4. A touch on the panel -> the FocalTech driver's first evidence.
-5. The arch-timer calibration (`getvar time` vs the host's send seconds).
+5. The arch-timer calibration: `oem sof` reports frames and counter span,
+   so CNTFRQ becomes a division rather than an inference.
+6. `oem i2cbus 0|2|4` maps each live bus by address scan before any driver
+   for a part on it is written - that is how the hi1102, the codec and the
+   sensors get found without a datasheet.
