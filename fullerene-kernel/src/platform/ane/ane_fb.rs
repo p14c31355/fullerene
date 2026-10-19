@@ -751,7 +751,13 @@ pub fn hold_frame(tick: u32, uptime_s: u64, setups: u64, serviced: u64) {
 /// words on the screen, so the next photograph names the request the host
 /// gave up on instead of the one we assume it sent.
 fn paint_log_tail_force(row0: u32, want: usize) {
-    const MAXL: usize = 16;
+    // Two buckets, because the two kinds of line compete for the same rows.
+    // The `ud:` lines are the evidence (which control transfers arrived); the
+    // watchdog and panic lines are the verdict (why the boot stopped). A plain
+    // newest-first slice lets whichever is noisier win, and during a hold the
+    // watchdog wrote a line every second, so the verdict buried the evidence.
+    const MAXU: usize = 12;
+    const MAXO: usize = 4;
     let cap = crate::blackbox::TEXT_BLOCK_CAP as usize;
     let mut len =
         unsafe { core::ptr::read_volatile((crate::blackbox::TEXT_BLOCK_BASE + 4) as *const u32) }
@@ -762,45 +768,69 @@ fn paint_log_tail_force(row0: u32, want: usize) {
     if len == 0 {
         return;
     }
+    let want = want.min(MAXU);
     let base = (crate::blackbox::TEXT_BLOCK_BASE + 12) as *const u8;
     let at = |i: usize| unsafe { core::ptr::read_volatile(base.add(i)) };
-    // Walk back from the end, keeping only the lines that name a control
-    // transfer or a watchdog. The ring is otherwise flooded by the IRQ
-    // heartbeat (`IQ: us=... n=...` every 1024 beats), which buries the one
-    // line that matters a dozen rows deep.
-    let mut starts = [0usize; MAXL];
-    let mut ends = [0usize; MAXL];
-    let mut n = 0usize;
+    let mut us = [0usize; MAXU];
+    let mut ue = [0usize; MAXU];
+    let mut un = 0usize;
+    let mut os = [0usize; MAXO];
+    let mut oe = [0usize; MAXO];
+    let mut on = 0usize;
     let mut end = len;
     let mut pos = len;
-    while pos > 0 && n < want.min(MAXL) {
+    while pos > 0 {
+        if un >= want && on >= MAXO {
+            break;
+        }
         pos -= 1;
         if at(pos) == b'\n' {
             let s = pos + 1;
-            if log_line_matters(&at, s, end) {
-                starts[n] = s;
-                ends[n] = end;
-                n += 1;
+            if un < want && log_line_is_trace(&at, s, end) {
+                us[un] = s;
+                ue[un] = end;
+                un += 1;
+            } else if on < MAXO && log_line_matters(&at, s, end) {
+                os[on] = s;
+                oe[on] = end;
+                on += 1;
             }
             end = pos;
         }
     }
-    for k in 0..n {
-        let (s, e) = (starts[n - 1 - k], ends[n - 1 - k]);
-        let mut line = [b' '; 40];
-        for (i, cell) in line.iter_mut().enumerate() {
-            let p = s + i;
-            if p >= e {
-                break;
-            }
-            let b = at(p);
-            if b == b'\r' || b == 0 {
-                break;
-            }
-            *cell = if (0x20..0x7f).contains(&b) { b } else { b'.' };
-        }
-        paint_at_force(row0 + k as u32, 8, 40, &line);
+    let mut row = row0;
+    for k in 0..un {
+        let (s, e) = (us[un - 1 - k], ue[un - 1 - k]);
+        paint_ring_line(row, 8, &at, s, e);
+        row += 1;
     }
+    for k in 0..on {
+        let (s, e) = (os[on - 1 - k], oe[on - 1 - k]);
+        paint_ring_line(row, 8, &at, s, e);
+        row += 1;
+    }
+}
+
+/// One ring line, clipped to 40 columns, painted at `row`.
+fn paint_ring_line(row: u32, x: u32, at: &dyn Fn(usize) -> u8, s: usize, e: usize) {
+    let mut line = [b' '; 40];
+    for (i, cell) in line.iter_mut().enumerate() {
+        let p = s + i;
+        if p >= e {
+            break;
+        }
+        let b = at(p);
+        if b == b'\r' || b == 0 {
+            break;
+        }
+        *cell = if (0x20..0x7f).contains(&b) { b } else { b'.' };
+    }
+    paint_at_force(row, x, 40, &line);
+}
+
+/// Whether a ring line carries the transfer trace (`ud: ...`).
+fn log_line_is_trace(at: &dyn Fn(usize) -> u8, s: usize, e: usize) -> bool {
+    e >= s + 3 && at(s) == b'u' && at(s + 1) == b'd' && at(s + 2) == b':'
 }
 
 /// Whether a ring line is one a wedged enumeration asked for: the SETUP
@@ -818,7 +848,8 @@ fn log_line_matters(at: &dyn Fn(usize) -> u8, s: usize, e: usize) -> bool {
     if at(s) == b'F' && (at(s + 1) == b'U' || at(s + 1) == b'I') {
         return true;
     }
-    if !(at(s) == b'u' && at(s + 1) == b'd' && at(s + 2) == b':') {
+    let _ = e;
+    if at(s) == b'u' && at(s + 1) == b'd' && at(s + 2) == b':' {
         return false;
     }
     let mut i = s;

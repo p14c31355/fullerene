@@ -1142,11 +1142,13 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         // requests piling up here were the v49/v52 "one request behind"
         // enumeration break.
         platform::ane_usb_dev::service(ane_log);
+        crate::platform::common::recovery::boot_heartbeat();
         // Storage bring-up: phase A logged the loader's dwmmc1/CRG/PMIC
         // state; phase B opens the clocks, releases the reset, powers the
         // rails, then reads the controller identity (all painted on panel).
         platform::ane_dwmmc::bringup(ane_log);
         platform::ane_usb_dev::service(ane_log);
+        crate::platform::common::recovery::boot_heartbeat();
         // eMMC (Arasan SDHCI @0xFF390000) phase 3: verify the inherited
         // clocks/reset/rail, read the controller identity, run the vendor
         // reset toggle + SDHCI software reset and clock re-init, then the
@@ -1182,12 +1184,14 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         // later descriptor traffic.  The full-screen panel remains gated on
         // ENUMDONE below so it cannot compete with the first read.
         platform::ane_usb_dev::service(ane_log);
+        crate::platform::common::recovery::boot_heartbeat();
         // If a host reset/ENUMDONE was already latched, the panel is now safe
         // to paint. Otherwise leave the canvas alone until a later boot stage;
         // USB has priority over the diagnostic repaint.
         if platform::ane_usb_dev::usb_enumerated() {
             platform::ane_fb::report(&usb, ane_log);
             platform::ane_usb_dev::service(ane_log);
+            crate::platform::common::recovery::boot_heartbeat();
         }
     }
     // The usb report above is the newest text in the private block and sits
@@ -1341,6 +1345,7 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                 }
             }
             platform::ane_usb_dev::service(ane_log);
+            crate::platform::common::recovery::boot_heartbeat();
             // v331x: the enumeration outranks the canvas. The host asks
             // for descriptors the instant the pull-up asserts, and the
             // desktop bring-up (solvent render plus the 9.6 MB panel
@@ -1376,6 +1381,7 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                     && timer::uptime_us() < deadline
                 {
                     platform::ane_usb_dev::service(ane_log);
+                    crate::platform::common::recovery::boot_heartbeat();
                     served = served.wrapping_add(1);
                     // 79 passes per request at most, so 256 keeps the panel
                     // within one host retry of the truth without paying the
@@ -1428,6 +1434,8 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                     platform::ane_usb_dev::usb_reconnect_end();
                     for i in 0..90 {
                         platform::ane_usb_dev::service(ane_log);
+                        crate::platform::common::recovery::boot_heartbeat();
+                        crate::platform::common::recovery::boot_heartbeat();
                         platform::ane_fb::hold_frame(
                             i + 1,
                             timer::uptime_us() / 1_000_000,
@@ -1465,6 +1473,8 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                         // to be seen by the host.
                         platform::ane_usb_dev::usb_reconnect_end();
                         platform::ane_usb_dev::service(ane_log);
+                        crate::platform::common::recovery::boot_heartbeat();
+                        crate::platform::common::recovery::boot_heartbeat();
                         served = served.wrapping_add(1);
                         tick = tick.wrapping_add(1);
                         platform::ane_fb::set_hold_active(true);
@@ -1490,6 +1500,7 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                 platform::ane_fb::event(b"STG DESK-OK");
             }
             platform::ane_usb_dev::service(ane_log);
+            crate::platform::common::recovery::boot_heartbeat();
             if platform::ane_usb_dev::usb_enumerated() {
                 ane_log(
                     "usb: dctl-after-desktop=",
@@ -1579,6 +1590,7 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
         // so one poll pass per wake keeps the host's transfers answered.
         #[cfg(fullerene_aarch64_ane)]
         platform::ane_usb_dev::service(ane_log);
+        crate::platform::common::recovery::boot_heartbeat();
         // The panel doubles as the debug channel: repaint the fastboot strip
         // whenever its state changed, so a photo shows the last exchange.
         #[cfg(fullerene_aarch64_ane)]

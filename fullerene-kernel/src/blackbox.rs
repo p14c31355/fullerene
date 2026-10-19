@@ -1138,6 +1138,15 @@ impl ProgressWatchdog {
     /// Timer-side check: warn once, finally reset, if progress has stopped.
     pub fn check(&self, now_us: u64) {
         use core::sync::atomic::Ordering;
+        // A hold is a deliberate stop, not a stall. Letting this lane run
+        // during one flooded the ring with a "WD: BOOT PROGRESS STALLED" line
+        // every second, which pushed the twelve lines the hold exists to show
+        // out of the tail, and then reset the board on top of that.
+        if panel_hold() {
+            self.stalled_since_us.store(now_us, Ordering::Relaxed);
+            self.warned.store(false, Ordering::Relaxed);
+            return;
+        }
         let count = self.count.load(Ordering::Relaxed);
         if count != self.last_seen.load(Ordering::Relaxed) {
             self.last_seen.store(count, Ordering::Relaxed);
