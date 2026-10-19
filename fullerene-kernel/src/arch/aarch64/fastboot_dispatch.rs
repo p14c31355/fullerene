@@ -563,6 +563,35 @@ pub fn poll(log: fn(&str, u64)) {
     }
 
     #[cfg(fullerene_aarch64_ane)]
+    if let Some(arg) = cmd.strip_prefix(b"oem bus ") {
+        // `oem bus 1|4|8`: EXT_CSD[183] plus the host's HOST_CONTROL1, with a
+        // read-back that reverts both if the new width does not work. The
+        // card is left at the width the read-back proved, not the one asked
+        // for.
+        let bits = crate::adb_dispatch::parse_hex(arg.trim_ascii()) as u8;
+        log("fb: bus_req=", bits as u64);
+        crate::platform::ane_usb_dev::fb_send_info(b"bus width");
+        match crate::platform::ane_emmc::bus_width_set(bits, log) {
+            Ok(v) => {
+                let mut line = [0u8; 32];
+                let n = crate::adb_dispatch::fmt_okay_hex(v as u64, &mut line);
+                crate::platform::ane_usb_dev::ep1_send(&line[..n]);
+            }
+            Err(code) => {
+                log("fb: bus_fail=", code as u64);
+                let mut line = [b'0'; 14];
+                line[..6].copy_from_slice(b"FAILbw");
+                const HEX: [u8; 16] = *b"0123456789ABCDEF";
+                for i in 0..8 {
+                    line[6 + i] = HEX[((code >> (28 - i * 4)) & 0xF) as usize];
+                }
+                crate::platform::ane_usb_dev::ep1_send(&line[..]);
+            }
+        }
+        return;
+    }
+
+    #[cfg(fullerene_aarch64_ane)]
     if cmd == b"oem hs" || cmd == b"oem hs on" || cmd == b"oem hs off" {
         // `oem hs on|off`: ask the card to switch to high-speed timing and
         // then re-run the clock ladder. CMD6 writes one EXT_CSD byte, so

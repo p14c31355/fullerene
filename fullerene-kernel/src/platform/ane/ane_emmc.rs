@@ -659,6 +659,97 @@ pub fn switch_hs(on: bool, log: fn(&str, u64)) -> Result<u8, u32> {
     Ok(now)
 }
 
+/// EXT_CSD byte 183 is the bus width the card drives.
+const EXT_CSD_BUS_WIDTH: usize = 183;
+
+/// Program the host side of the bus width. SDHCI HOST_CONTROL1 (0x28):
+/// bits 2:1 are the data transfer width (0 = 1 bit, 1 = 4 bits, 2 = 8 bits).
+fn set_host_width(bits: u8) -> bool {
+    let field = match bits {
+        1 => 0u8,
+        4 => 1,
+        8 => 2,
+        _ => return false,
+    };
+    let cur = rd8(SDHCI_BASE, 0x28);
+    wr8(SDHCI_BASE, 0x28, (cur & !0x06) | (field << 1));
+    true
+}
+
+fn host_width() -> u8 {
+    match (rd8(SDHCI_BASE, 0x28) >> 1) & 0x03 {
+        0 => 1,
+        1 => 4,
+        2 => 8,
+        _ => 0,
+    }
+}
+
+/// Move the card and the host to a bus width, and prove it with a read.
+///
+/// The order is the one the card can follow: CMD6 (a command plus a 512-byte
+/// write, which is always accepted) changes what the card will drive, then
+/// the host starts listening on that many lines, then LBA0 is read twice. If
+/// either read fails the card is switched back *before* the host shrinks,
+/// because a card driving eight lines into a host reading one is garbage in
+/// both directions.
+///
+/// Like the timing switch this is explicit (`oem bus 1|4|8`), not automatic:
+/// a wrong width costs every read on the bus, and the only recovery is the
+/// loader.
+pub fn bus_width_set(bits: u8, log: fn(&str, u64)) -> Result<u8, u32> {
+    if !matches!(bits, 1 | 4 | 8) {
+        return Err(0x1_0000 | bits as u32);
+    }
+    let mut table = [0u32; 128];
+    let (ok, _s, e) = sdhci_data_read(8, 0, &mut table, log);
+    if !ok {
+        recover_lines(log);
+        return Err(0x2_0000 | e);
+    }
+    let before = ext_csd_byte(&table, EXT_CSD_BUS_WIDTH) & 0x0F;
+    let want = match bits {
+        1 => 0u8,
+        4 => 1,
+        _ => 2,
+    };
+    log("em: bw=", ((before as u64) << 8) | want as u64);
+    if before == want && host_width() == bits {
+        return Ok(want);
+    }
+    let arg: u32 = (3 << 26) | ((EXT_CSD_BUS_WIDTH as u32) << 16) | ((want as u32) << 8);
+    let zeros = [0u32; 128];
+    let (wok, _ws, we) = sdhci_data_write(6, arg, &zeros, log);
+    if !wok {
+        recover_lines(log);
+        return Err(0x3_0000 | we);
+    }
+    if !wait_idle(0x20_0000, log) {
+        recover_lines(log);
+        return Err(0x4_0000);
+    }
+    set_host_width(bits);
+    let mut a = [0u32; 128];
+    let mut b = [0u32; 128];
+    let (ok_a, _sa, _ea) = sdhci_data_read(17, 0, &mut a, log);
+    let (ok_b, _sb, _eb) = sdhci_data_read(17, 0, &mut b, log);
+    if !ok_a || !ok_b || (a[127] & 0xFFFF) != 0xAA55 || a[0] != b[0] {
+        // Put the card back while it and the host still agree on the width.
+        let back: u32 = (3 << 26) | ((EXT_CSD_BUS_WIDTH as u32) << 16) | ((before as u32) << 8);
+        let _ = sdhci_data_write(6, back, &zeros, log);
+        let _ = wait_idle(0x20_0000, log);
+        set_host_width(match before {
+            0 => 1,
+            1 => 4,
+            _ => 8,
+        });
+        recover_lines(log);
+        return Err(0x5_0000 | bits as u32);
+    }
+    log("em: bw_ok=", bits as u64);
+    Ok(want)
+}
+
 pub fn write_sectors(lba: u32, data: &[u8], log: fn(&str, u64)) -> (u64, u64) {
     const CHUNK: usize = 1024; // sectors per CMD25 run (512 KiB)
     let mut ok = 0u64;
