@@ -964,6 +964,21 @@ pub fn panic_text(line: u64, col: u64) {
     text_byte(b'\n');
 }
 
+/// Record a panic's source location in the durable block.
+///
+/// The marker line is what `ane_fb::report_previous_panic` scans for, and
+/// nothing ever wrote it: the reader has answered "none found" on every
+/// boot since it was written. File on its own line first, then the
+/// line/column as decimal, so the next boot can copy the path onto a row
+/// and read back the two numbers without a formatter.
+pub fn panic_record(file: &str, line: u64, col: u64) {
+    text_puts("FULLERENE AARCH64 PANIC\n");
+    text_puts("FILE ");
+    text_puts(file);
+    text_puts("\n");
+    panic_text(line, col);
+}
+
 /// Append one record to the durable text log, and keep the zone header consistent with it.
 ///
 /// The zone's `size` is the length of this log and `start` stays 0, so the driver's validity

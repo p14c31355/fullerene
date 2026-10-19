@@ -1704,7 +1704,11 @@ fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
     // Durable note FIRST: if the console write below ever blocks, the log
     // still carries the panic's source location.
     if let Some(location) = info.location() {
-        crate::blackbox::panic_text(location.line() as u64, location.column() as u64);
+        crate::blackbox::panic_record(
+            location.file(),
+            location.line() as u64,
+            location.column() as u64,
+        );
     }
     uart::puts("fullerene aarch64 panic\n");
     if let Some(location) = info.location() {

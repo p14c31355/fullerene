@@ -801,47 +801,90 @@ pub fn event(tag: &[u8]) {
 pub fn report_previous_panic() -> bool {
     const BASE: usize = crate::blackbox::TEXT_BLOCK_BASE as usize;
     const CAP: usize = crate::blackbox::TEXT_BLOCK_CAP as usize;
-    let needle = b"FULLERENE AARCH64 PANIC";
-    let mut found: usize = usize::MAX;
-    let mut i = 0;
-    'scan: while i + needle.len() <= CAP {
-        let mut j = 0;
-        while j < needle.len() {
-            let b = unsafe { core::ptr::read_volatile((BASE + i + j) as *const u8) };
-            if b != needle[j] {
-                i += 1;
-                continue 'scan;
+    let rd = |i: usize| -> u8 { unsafe { core::ptr::read_volatile((BASE + i) as *const u8) } };
+    let find_last = |needle: &[u8]| -> Option<usize> {
+        let mut found = None;
+        let mut i = 0;
+        while i + needle.len() <= CAP {
+            let mut j = 0;
+            while j < needle.len() && rd(i + j) == needle[j] {
+                j += 1;
             }
-            j += 1;
+            if j == needle.len() {
+                found = Some(i);
+                i += needle.len();
+            } else {
+                i += 1;
+            }
         }
-        found = i;
-        i += 1;
-    }
-    if found == usize::MAX {
-        crate::blackbox::text_puts("PREV-PANIC: none found\n");
-        return false;
-    }
-    // The marker is followed by "PANIC: FILE=... LINE=0X..." (upper-cased on
-    // the way into the ring); copy a printable run and paint two rows.
-    let mut buf = [b' '; 82];
-    let mut n = 0;
-    let start = found + needle.len();
-    while n < buf.len() && start + n < CAP {
-        let b = unsafe { core::ptr::read_volatile((BASE + start + n) as *const u8) };
-        if b == 0 {
+        found
+    };
+    let decimal = |from: usize| -> (u64, usize) {
+        let mut v: u64 = 0;
+        let mut i = from;
+        while i < CAP {
+            let b = rd(i);
+            if b.is_ascii_digit() {
+                v = v.saturating_mul(10).saturating_add((b - b'0') as u64);
+                i += 1;
+            } else {
+                break;
+            }
+        }
+        (v, i)
+    };
+    let marker = match find_last(b"PANIC L=") {
+        Some(m) => m,
+        None => {
+            crate::blackbox::text_puts("PREV-PANIC: none found\n");
+            return false;
+        }
+    };
+    let (line, after) = decimal(marker + 8);
+    // The column follows as " C=<decimal>"; find it inside a short window.
+    let mut col: u64 = 0;
+    let mut i = after;
+    let stop = (after + 16).min(CAP);
+    while i + 3 < stop {
+        if rd(i) == b'C' && rd(i + 1) == b'=' {
+            col = decimal(i + 2).0;
             break;
         }
-        buf[n] = if (0x20..0x7f).contains(&b) { b } else { b' ' };
-        n += 1;
+        i += 1;
     }
-    paint_at(58, 0, 40, &buf[..n.min(40)]);
-    flush_row(58);
-    let hi = n.min(80);
-    if hi > 40 {
-        paint_at(59, 0, 40, &buf[40..hi]);
-        flush_row(59);
+    // The file name sits on the "FILE " line just before the marker.
+    let mut name = [b' '; 40];
+    let mut name_len = 0;
+    if let Some(fm) = find_last(b"FILE ") {
+        if fm < marker {
+            let mut k = fm + 5;
+            while name_len < name.len() && k < marker {
+                let b = rd(k);
+                if b == b'\n' {
+                    break;
+                }
+                name[name_len] = if (0x20..0x7f).contains(&b) { b } else { b' ' };
+                name_len += 1;
+                k += 1;
+            }
+        }
     }
-    crate::blackbox::text_puts("PREV-PANIC painted rows 58-59\n");
+    // Same layout as the panic screen, so a photograph of either reads the
+    // same way: white = line, yellow = column, name above.
+    let canvas: &mut [u32] =
+        unsafe { core::slice::from_raw_parts_mut(CANVAS as *mut u32, CANVAS_LEN / 4) };
+    for px in canvas.iter_mut() {
+        *px = HOLD_BG;
+    }
+    paint_at_force(1, 8, 16, b"PREVIOUS PANIC");
+    paint_at_force(2, 8, name_len.max(1), &name[..name_len.max(1)]);
+    big_digits(line, 120, 820, 24, 0xFFFF_FFFF);
+    big_digits(col, 120, 1080, 20, 0xFFFF_E040);
+    unsafe {
+        crate::blackbox::cache_clean(CANVAS, CANVAS_LEN);
+    }
+    flush_panel();
+    crate::blackbox::text_puts("PREV-PANIC painted\n");
     true
 }
 
