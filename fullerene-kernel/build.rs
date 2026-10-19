@@ -24,6 +24,16 @@ fn main() {
     println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_ENTRY_SECURE_WDT");
     println!("cargo:rerun-if-env-changed=FULLERENE_ANDROID_INIT_SELFTEST");
     println!("cargo:rerun-if-env-changed=FULLERENE_AARCH64_DEBUG_RETURN");
+    // v343i: these five ANE knobs were read below but never declared, so
+    // setting one silently reused the cached build-script output and the
+    // cached kernel - the build "succeeded" with the knob still off. The
+    // audit below only warns, and its warning is swallowed when the script
+    // itself is skipped, which is exactly the case this list prevents.
+    println!("cargo:rerun-if-env-changed=FULLERENE_ANE_NO_PUTC_WD_TEND");
+    println!("cargo:rerun-if-env-changed=FULLERENE_ANE_NO_TIMER");
+    println!("cargo:rerun-if-env-changed=FULLERENE_ANE_ADB_PROTOCOL");
+    println!("cargo:rerun-if-env-changed=FULLERENE_ANE_DESKTOP_LANDSCAPE");
+    println!("cargo:rerun-if-env-changed=FULLERENE_ANE_MARKS_PANEL");
     // This cfg is also referenced by the host-built USB protocol tests, so
     // declare it before the AArch64-only build branch below.
     println!("cargo:rustc-check-cfg=cfg(fullerene_aarch64_usb_gadget_handoff_probe)");
