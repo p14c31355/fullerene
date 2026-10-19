@@ -596,10 +596,12 @@ fn fifo_push_word(word: u32) {
 /// packets, one packet, transfer size 8*3 = 24. CNAK is deliberately *not*
 /// set here - the vendor clears the NAK after the setup interrupt instead.
 fn arm_setup_receive() {
-    // v336f: EP0 must carry MC(1). dwc2 sets hs_ep->mc = 1 for the control
-    // endpoint (gadget.c: "EP0 is a special case") and every size it
-    // programs for EP0 keeps that field; this one carried 3.
-    wr(DOEPTSIZ0, (1 << 29) | (1 << 19) | 24);
+    // dwc2_hsotg_core_init_disconnected arms the control OUT with
+    // `DXEPTSIZ_MC(1) | DXEPTSIZ_PKTCNT(1) | DXEPTSIZ_XFERSIZE(8)` -- on an
+    // OUT endpoint bit 29 is SUPCNT, and the transfer size is one 8-byte
+    // setup packet, not 24. 24 left the core expecting 16 more bytes than
+    // a setup ever carries.
+    wr(DOEPTSIZ0, (1 << 29) | (1 << 19) | 8);
     wr(DOEPCTL0, rd(DOEPCTL0) | EPCTL_EPENA | EPCTL_USBACTEP);
     unsafe {
         SETUP_ARMED = true;
@@ -728,12 +730,20 @@ fn ep0_send(data: &[u8]) {
     // 255-byte string read with the tail of the previous descriptor and
     // reported EOVERFLOW (-75) on string 0 every single boot.
     ep0_flush_tx_fifo();
-    // v336f: MC(1) | PKTCNT(1) | XFERSIZE(n), the exact shape of
-    // dwc2_hsotg_program_zlp. Without MC the core's packet accounting for
-    // the control endpoint is off by one, which is what the host saw as an
-    // extra packet on a 2-byte string read (-75) and as a stalled status
-    // stage on SET_CONFIGURATION (-71).
-    wr(DIEPTSIZ0, (1 << 29) | (1 << 19) | ((n & 0x7f) as u32));
+    // dwc2_hsotg_start_req (primary source) splits the two shapes and this
+    // code had them mixed:
+    //   data IN  : MC(0) | PKTCNT(ceil(len/MPS)) | XFERSIZE(len)
+    //   ZLP      : MC(1) | PKTCNT(1)             | XFERSIZE(0)
+    //   setup OUT: SUPCNT(1) | PKTCNT(1)         | XFERSIZE(8)
+    // MC is only set for a zero-length packet. Carrying MC(1) on a real
+    // data IN told the core to send one packet MORE than the transfer
+    // described, which is the surplus packet the host reported as
+    // `string descriptor 0 read error: -75` (EOVERFLOW).
+    let mps = 64u32;
+    let len = (n as u32) & 0x7f;
+    let pkts = if n == 0 { 1 } else { (len + mps - 1) / mps };
+    let mc = if n == 0 { 1 } else { 0 };
+    wr(DIEPTSIZ0, (mc << 29) | (pkts << 19) | len);
     wr(
         DIEPCTL0,
         rd(DIEPCTL0) | EPCTL_EPENA | EPCTL_CNAK | EPCTL_USBACTEP,
@@ -1912,11 +1922,19 @@ fn service_ep0(log: fn(&str, u64)) {
     }
     if diep & EPINT_EP0_FATAL != 0 {
         wr(DIEPINT0, diep & EPINT_EP0_FATAL);
-        let ok = ep0_resync();
-        log(
-            "ud: ep0 in error=",
-            (diep & EPINT_EP0_FATAL) as u64 | ((ok as u64) << 16),
-        );
+        // Repair only when nothing is in flight. A resync disarms and
+        // re-arms both halves of EP0; run mid-transfer it throws away the
+        // reply this very pass queued, and the host reads zero bytes
+        // ("config index 0 descriptor too short (expected 9, got 0)").
+        if unsafe { !TRANSACTION_BUSY } {
+            let ok = ep0_resync();
+            log(
+                "ud: ep0 in error=",
+                (diep & EPINT_EP0_FATAL) as u64 | ((ok as u64) << 16),
+            );
+        } else {
+            log("ud: ep0 in err busy=", (diep & EPINT_EP0_FATAL) as u64);
+        }
     }
     if diep & !(EPINT_XFERCOMPL | EPINT_SETUP | EPINT_EP0_FATAL) != 0 {
         wr(DIEPINT0, diep);
@@ -1950,11 +1968,15 @@ fn service_ep0(log: fn(&str, u64)) {
     }
     if doep & EPINT_EP0_FATAL != 0 {
         wr(DOEPINT0, doep & EPINT_EP0_FATAL);
-        let ok = ep0_resync();
-        log(
-            "ud: ep0 out error=",
-            (doep & EPINT_EP0_FATAL) as u64 | ((ok as u64) << 16),
-        );
+        if unsafe { !TRANSACTION_BUSY } {
+            let ok = ep0_resync();
+            log(
+                "ud: ep0 out error=",
+                (doep & EPINT_EP0_FATAL) as u64 | ((ok as u64) << 16),
+            );
+        } else {
+            log("ud: ep0 out err busy=", (doep & EPINT_EP0_FATAL) as u64);
+        }
     }
     if doep & !(EPINT_XFERCOMPL | EPINT_SETUP | EPINT_EP0_FATAL) != 0 {
         wr(DOEPINT0, doep);

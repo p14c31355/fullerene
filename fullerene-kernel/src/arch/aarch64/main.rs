@@ -1371,7 +1371,10 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                 // gave up one request short while the host was still
                 // talking. Slide the deadline forward on every new setup.
                 let mut deadline = timer::uptime_us().saturating_add(60_000_000);
+                let hard_stop = timer::uptime_us().saturating_add(300_000_000);
                 let mut last_setups = platform::ane_usb_dev::setups_seen();
+                let mut last_progress = timer::uptime_us();
+                let mut replugs = 0u32;
                 let mut served = 0u32;
                 // Paint the ledger from inside the wait: a pipe that never
                 // finishes leaves the hot loop running, so a ledger painted
@@ -1397,10 +1400,34 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                 {
                     platform::ane_usb_dev::service(ane_log);
                     crate::platform::common::recovery::boot_heartbeat();
+                    let now = timer::uptime_us();
                     let seen = platform::ane_usb_dev::setups_seen();
                     if seen != last_setups {
                         last_setups = seen;
-                        deadline = timer::uptime_us().saturating_add(60_000_000);
+                        last_progress = now;
+                        // Slide, but never past a hard ceiling: a retry loop
+                        // that never parks also never shows the ledger, and
+                        // the ledger is the only channel when EP0 is the
+                        // thing that is broken.
+                        let slid = now.saturating_add(60_000_000);
+                        deadline = if slid > hard_stop { hard_stop } else { slid };
+                    } else if now.saturating_sub(last_progress) > 10_000_000 {
+                        // The host has been silent for about a second and we
+                        // are still not configured. Serving cannot repair an
+                        // EP0 that is wedged mid-transfer (the babble state):
+                        // only a fresh attach makes the host start over, and
+                        // handle_reset() then clears every latch. Re-plug
+                        // instead of waiting for the platform to time out.
+                        platform::ane_usb_dev::usb_reconnect_begin();
+                        // The counter runs fast, so 300 counts is only tens of
+                        // real milliseconds - long enough for the host hub to
+                        // latch a disconnect, which is the whole point.
+                        timer::delay_ms(300);
+                        platform::ane_usb_dev::usb_reconnect_end();
+                        replugs = replugs.wrapping_add(1);
+                        last_progress = now;
+                        let slid = now.saturating_add(60_000_000);
+                        deadline = if slid > hard_stop { hard_stop } else { slid };
                     }
                     served = served.wrapping_add(1);
                     // 79 passes per request at most, so 256 keeps the panel
