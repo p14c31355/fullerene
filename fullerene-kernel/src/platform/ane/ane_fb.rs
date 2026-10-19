@@ -625,7 +625,7 @@ pub fn hold_begin(setups: u64, serviced: u64) {
     unsafe {
         crate::blackbox::cache_clean(CANVAS, CANVAS_LEN);
     }
-    paint_at_force(0, 8, 19, b"USB NEVER CONFIGURED");
+    paint_at_force(0, 8, 20, b"USB NEVER CONFIGURED");
     paint_hex_at_force(1, 8, b"SETUPS", setups);
     paint_hex_at_force(2, 8, b"SERVICE", serviced);
     paint_at_force(3, 8, 24, b"HOLD - PHOTOGRAPH ME NOW");
