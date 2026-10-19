@@ -1269,21 +1269,15 @@ fn sdhci_data_write_multi(
         0x0E,
         (idx << 8) | 0x02 | CMD_CRC | CMD_INDEX | CMD_DATA,
     );
-    let nwords = (blocks as usize) * 128;
     let mut sent = 0u64;
-    let mut wi = 0usize;
-    while wi < nwords {
-        // Pack this word straight from the byte slice (the 512 KiB chunk
-        // must not be copied whole - no buffer that large exists here).
-        let off = wi * 4;
-        let mut w = 0u32;
-        let mut k = 0usize;
-        while k < 4 && off + k < data.len() {
-            w |= (data[off + k] as u32) << (8 * k);
-            k += 1;
-        }
+    let mut blk = 0usize;
+    'blocks: while blk < blocks as usize {
+        // v336k: the buffer-write gate is per BLOCK, not per word. Asking
+        // the controller once per 32-bit word cost ~100x: a 512 KiB chunk
+        // spent longer in MMIO polling than the card spent programming,
+        // and a 1.2 MB flash never finished inside the deadline.
         let mut ready = false;
-        for _ in 0..0x2_0000u32 {
+        for _ in 0..0x40_000u32 {
             let ps = rd32(SDHCI_BASE, 0x24);
             if ps & 0x400 != 0 {
                 ready = true;
@@ -1294,11 +1288,21 @@ fn sdhci_data_write_multi(
             }
         }
         if !ready {
-            break;
+            break 'blocks;
         }
-        wr32(SDHCI_BASE, 0x20, w);
-        sent += 1;
-        wi += 1;
+        for j in 0..128usize {
+            let wi = blk * 128 + j;
+            let off = wi * 4;
+            let mut w = 0u32;
+            let mut k = 0usize;
+            while k < 4 && off + k < data.len() {
+                w |= (data[off + k] as u32) << (8 * k);
+                k += 1;
+            }
+            wr32(SDHCI_BASE, 0x20, w);
+            sent += 1;
+        }
+        blk += 1;
     }
     log("em: c25_sent=", sent);
     let mut sts = 0u32;
