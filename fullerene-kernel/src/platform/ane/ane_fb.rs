@@ -585,13 +585,27 @@ pub fn panic_screen(file: &str, line: u32, column: u32) {
         Some(slash) => &file[slash + 1..],
         None => file,
     };
+    // Fill the whole panel first: a panic during the hold used to paint
+    // four thin rows over a green field and read as "the screen changed",
+    // not "the kernel died". Red is unambiguous, and the fill also proves
+    // the flush path still reaches the panel at the moment of the fault.
+    let canvas: &mut [u32] =
+        unsafe { core::slice::from_raw_parts_mut(CANVAS as *mut u32, CANVAS_LEN / 4) };
+    for px in canvas.iter_mut() {
+        *px = 0xFF40_0008;
+    }
     paint_at_force(0, 8, 12, b"* KERNEL PANIC *");
     paint_at_force(1, 8, name.len().min(40), name.as_bytes());
     paint_hex_at_force(2, 8, b"LINE", line as u64);
     paint_hex_at_force(3, 8, b"COL", column as u64);
-    for row in 0..4 {
-        flush_row_force(row);
+    // Same layout as the hold: line in white, column in yellow, both big
+    // enough to read off a photograph taken at arm's length.
+    big_digits(line as u64, 120, 820, 24, 0xFFFF_FFFF);
+    big_digits(column as u64, 120, 1080, 20, 0xFFFF_E040);
+    unsafe {
+        crate::blackbox::cache_clean(CANVAS, CANVAS_LEN);
     }
+    flush_panel();
 }
 
 /// The enumeration never finished: say so on the panel and keep it there.
@@ -671,7 +685,7 @@ fn fill_canvas(x: u32, y: u32, w: u32, h: u32, color: u32) {
 /// every iteration. A counter that climbs is the difference between "the
 /// panel is ours and updating" and "nothing we write is being scanned
 /// out" - and it is visible even in a single photo.
-pub fn hold_frame(tick: u32, setups: u64, serviced: u64) {
+pub fn hold_frame(tick: u32, uptime_s: u64, setups: u64, serviced: u64) {
     let canvas: &mut [u32] =
         unsafe { core::slice::from_raw_parts_mut(CANVAS as *mut u32, CANVAS_LEN / 4) };
     for px in canvas.iter_mut() {
@@ -681,9 +695,13 @@ pub fn hold_frame(tick: u32, setups: u64, serviced: u64) {
     paint_hex_at_force(1, 8, b"SETUPS", setups);
     paint_hex_at_force(2, 8, b"SERVICE", serviced);
     paint_at_force(3, 8, 24, b"HOLD - PHOTOGRAPH ME NOW");
-    // The tick counter, big enough to read from across a desk.
-    big_digits(tick as u64, 300, 900, 24, 0xFFFF_FFFF);
-    paint_at_force(30, 8, 20, b"TICK");
+    // Two counters, told apart by colour: white = the hold's own tick,
+    // yellow = the kernel's uptime in seconds. Their ratio is the whole
+    // measurement - a tick that climbs 60 times while uptime climbs 15 says
+    // delay_ms is short; a tick that stops at 31 while uptime runs on says
+    // something outside the loop ended the hold.
+    big_digits(tick as u64, 120, 820, 24, 0xFFFF_FFFF);
+    big_digits(uptime_s, 120, 1080, 20, 0xFFFF_E040);
     usb_fail_banner(setups, serviced);
     unsafe {
         crate::blackbox::cache_clean(CANVAS, CANVAS_LEN);

@@ -1116,7 +1116,11 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
             // one flash then answers both questions (what the last boot's
             // panic said, and whether the battery numbers are sane).
             crate::blackbox::text_puts("PEEK HOLD 30S\n");
-            let deadline = timer::uptime_us().saturating_add(30_000_000);
+            // 300 s of uptime, not 30: the clock runs well ahead of real time on
+            // this board (the panic that ends a 15 s hold resets the loader only
+            // ~12 real seconds after the screen goes up), so the dying words need a
+            // window measured against the same clock they are timed with.
+            let deadline = timer::uptime_us().saturating_add(300_000_000);
             while timer::uptime_us() < deadline {
                 core::hint::spin_loop();
             }
@@ -1402,13 +1406,10 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
                     // each half second: a single paint proved to be gone
                     // before a camera could reach it.
                     platform::ane_fb::event(b"STG ENUM-HOLD-45S");
-                    // Silence the timer strip while the hold owns the panel:
-                    // its band repaints were the one writer left that could
-                    // fight the held frame.
-                    platform::ane_fb::IRQ_QUIET.store(true, core::sync::atomic::Ordering::Relaxed);
                     for i in 0..90 {
                         platform::ane_fb::hold_frame(
                             i + 1,
+                            timer::uptime_us() / 1_000_000,
                             platform::ane_usb_dev::setups_seen() as u64,
                             served as u64,
                         );
@@ -1721,7 +1722,11 @@ fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
     if let Some(location) = info.location() {
         platform::ane_fb::panic_screen(location.file(), location.line(), location.column());
     }
-    let deadline = timer::uptime_us().saturating_add(30_000_000);
+    // 300 s of uptime, not 30: the clock runs well ahead of real time on
+    // this board (the panic that ends a 15 s hold resets the loader only
+    // ~12 real seconds after the screen goes up), so the dying words need a
+    // window measured against the same clock they are timed with.
+    let deadline = timer::uptime_us().saturating_add(300_000_000);
     while timer::uptime_us() < deadline {
         core::hint::spin_loop();
     }
