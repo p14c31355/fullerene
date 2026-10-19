@@ -88,6 +88,7 @@ mod menu_actions;
 mod network_state;
 #[cfg(not(target_arch = "xtensa"))]
 mod render;
+pub mod rotate;
 #[cfg(not(target_arch = "xtensa"))]
 mod runtime_context;
 #[cfg(not(target_arch = "xtensa"))]

@@ -809,9 +809,16 @@ pub fn flush_panel() {
 /// them. The cost rides the durable ring (CODE_ANE_ROT_FLUSH) so the next
 /// regression of this path is visible from a collection alone.
 pub unsafe fn flush_panel_rotated() {
-    const LW: usize = HEIGHT as usize; // the landscape width  = 2340
-    const LH: usize = WIDTH as usize; // the landscape height = 1080
+    const LANDSCAPE_W: usize = HEIGHT as usize; // 2340 - the canvas is landscape
+    const LANDSCAPE_H: usize = WIDTH as usize; // 1080
     const BAND: usize = 32;
+    /// The 90-CW scan-out map. The destination pixel (dx, dy) on the
+    /// portrait panel reads the landscape canvas at
+    /// (sx, sy) = (dy, LANDSCAPE_H - 1 - dx); the map itself lives in
+    /// `solvent::rotate` so it is covered by host tests.
+    fn src_index(dx: usize, dy: usize) -> usize {
+        solvent::rotate::cw90_index(dx as u32, dy as u32, LANDSCAPE_W as u32, LANDSCAPE_H as u32)
+    }
     let src = CANVAS as *const u32;
     let t0 = crate::timer::uptime_us();
     let mut channels = 0u64;
@@ -827,8 +834,8 @@ pub unsafe fn flush_panel_rotated() {
                 let end = (py + BAND).min(HEIGHT as usize);
                 for y in py..end {
                     let row = unsafe { dst.add(y * WIDTH as usize) };
-                    for px in 0..LH {
-                        let v = unsafe { ptr::read_volatile(src.add((LH - 1 - px) * LW + y)) };
+                    for px in 0..LANDSCAPE_H {
+                        let v = unsafe { ptr::read_volatile(src.add(src_index(px, y))) };
                         unsafe { ptr::write_volatile(row.add(px), v) };
                     }
                 }
