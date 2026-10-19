@@ -1152,6 +1152,10 @@ pub fn write_sectors(lba: u32, data: &[u8], log: fn(&str, u64)) -> (u64, u64) {
             bad += (total - i) as u64;
             break;
         }
+        // v336i: a flash is progress. Without this the frozen-boot lane
+        // reads the minutes a 24 MB partition takes as a dead boot and
+        // resets the machine in the middle of the write.
+        crate::platform::common::recovery::boot_heartbeat();
         let nblocks = core::cmp::min(CHUNK, total - i);
         let off = i * 512;
         let nbytes = core::cmp::min(nblocks * 512, data.len() - off);
@@ -1167,6 +1171,7 @@ pub fn write_sectors(lba: u32, data: &[u8], log: fn(&str, u64)) -> (u64, u64) {
         } else {
             let mut k = 0usize;
             while k < nblocks {
+                crate::platform::common::recovery::boot_heartbeat();
                 let o = off + k * 512;
                 let n = core::cmp::min(512, data.len() - o);
                 let mut words = [0u32; 128];
