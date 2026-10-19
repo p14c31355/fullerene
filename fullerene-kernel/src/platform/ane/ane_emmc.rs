@@ -19,6 +19,12 @@
 
 use super::common::mmio::{rd8, rd16, rd32, wr8, wr16, wr32};
 use super::common::pmic::pmic_rd;
+use core::sync::atomic::{AtomicU32, Ordering};
+
+/// v336j: the first failed multi-block chunk of a flash - bit31 = the
+/// chunk failed, bits 16..32 = the error status word, bits 0..16 = the
+/// normal status word. Reported to the host in the FAIL reply.
+pub static LAST_WR: AtomicU32 = AtomicU32::new(0);
 
 const CRG_BASE: usize = 0xFFF3_5000;
 const SDHCI_BASE: usize = 0xFF39_0000;
@@ -1169,6 +1175,15 @@ pub fn write_sectors(lba: u32, data: &[u8], log: fn(&str, u64)) -> (u64, u64) {
         if m_ok {
             ok += nblocks as u64;
         } else {
+            // v336j: the first failed chunk's status/error words, so the
+            // reply itself can carry them (the boot log block is full by
+            // the time a flash runs, so `em:` lines never make it out).
+            if LAST_WR.load(Ordering::Relaxed) == 0 {
+                LAST_WR.store(
+                    0x8000_0000 | ((_me & 0xFFFF) << 16) | (_ms & 0xFFFF),
+                    Ordering::Relaxed,
+                );
+            }
             let mut k = 0usize;
             while k < nblocks {
                 crate::platform::common::recovery::boot_heartbeat();

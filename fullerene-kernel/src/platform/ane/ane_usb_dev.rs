@@ -1779,7 +1779,27 @@ fn fb_poll(log: fn(&str, u64)) {
                     if bad_s == 0 {
                         ep1_send(b"OKAY");
                     } else {
-                        ep1_send(b"FAILwrite error");
+                        // v336j: carry the counts and the first failed
+                        // chunk's status words to the host - the panel and
+                        // the boot log block are both out of reach here.
+                        let mut m = [0u8; 48];
+                        m[..7].copy_from_slice(b"FAILwr ");
+                        let mut o = 7usize;
+                        let mut t = [0u8; 32];
+                        for v in [
+                            ok_s,
+                            bad_s,
+                            super::ane_emmc::LAST_WR.load(core::sync::atomic::Ordering::Relaxed)
+                                as u64,
+                        ] {
+                            let k = fmt_okay_hex(v, &mut t);
+                            let n = k - 6;
+                            m[o..o + n].copy_from_slice(&t[6..k]);
+                            o += n;
+                            m[o] = b',';
+                            o += 1;
+                        }
+                        ep1_send(&m[..o - 1]);
                     }
                 }
             }
