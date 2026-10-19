@@ -43,9 +43,6 @@ const IC_FS_SCL_HCNT: usize = 0x1c;
 const IC_FS_SCL_LCNT: usize = 0x40;
 const IC_SS_SCL_HCNT: usize = 0x8c;
 const IC_SS_SCL_LCNT: usize = 0x11e;
-const IC_CON_MASTER: u32 = 1 << 0;
-const IC_CON_SPEED_FAST: u32 = 1 << 1;
-const IC_CON_RESTART_EN: u32 = 1 << 5;
 
 /// Gate the bus, release its reset and put both pins in I2C function.
 /// Safe to call twice: the gate and reset writes are idempotent.
@@ -95,7 +92,7 @@ unsafe fn master_init(addr: u16) {
     wr32(
         I2C4_BASE,
         IC_CON,
-        IC_CON_MASTER | IC_CON_SPEED_FAST | IC_CON_RESTART_EN,
+        IC_CON_MASTER | IC_CON_SLAVE_DISABLE | IC_CON_RESTART_EN | IC_CON_SPEED_FAST,
     );
     wr32(I2C4_BASE, IC_TAR, (addr as u32) & 0x3ff);
     wr32(I2C4_BASE, IC_ENABLE, 1);

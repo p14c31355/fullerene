@@ -26,6 +26,21 @@ pub const IC_TX_ABRT_SOURCE: usize = 0x80;
 /// a direction change without bit 10 is not a repeated start. Both the touch
 /// bus and the charger bus are this controller, so the bits are defined
 /// once, here.
+/// IC_CON, the control word every DW I2C master must be built from
+/// (`i2c-designware-core.h`, `i2c_dw_configure_master`): master mode, slave
+/// mode disabled, restart enabled, and a speed field of 1 = standard
+/// (100 kHz), 2 = fast (400 kHz), 3 = high.
+///
+/// SLAVE_DISABLE is not decoration: with it clear the controller also answers
+/// as a slave on its own address, which is how a bus can look busy while the
+/// master never gets the wire.
+pub const IC_CON_MASTER: u32 = 1 << 0;
+pub const IC_CON_SPEED_STD: u32 = 1 << 1;
+pub const IC_CON_SPEED_FAST: u32 = 2 << 1;
+pub const IC_CON_SPEED_HIGH: u32 = 3 << 1;
+pub const IC_CON_RESTART_EN: u32 = 1 << 5;
+pub const IC_CON_SLAVE_DISABLE: u32 = 1 << 6;
+
 pub const IC_DATA_CMD_READ: u32 = 1 << 8;
 pub const IC_DATA_CMD_STOP: u32 = 1 << 9;
 pub const IC_DATA_CMD_RESTART: u32 = 1 << 10;

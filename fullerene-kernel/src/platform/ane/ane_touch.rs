@@ -18,8 +18,9 @@
 
 use super::ane;
 use crate::platform::common::designware_i2c::{
-    IC_CLR_TX_ABRT, IC_DATA_CMD, IC_DATA_CMD_READ, IC_DATA_CMD_RESTART, IC_DATA_CMD_STOP,
-    IC_STATUS, IC_TX_ABRT_SOURCE,
+    IC_CLR_TX_ABRT, IC_CON_MASTER, IC_CON_RESTART_EN, IC_CON_SLAVE_DISABLE, IC_CON_SPEED_FAST,
+    IC_DATA_CMD, IC_DATA_CMD_READ, IC_DATA_CMD_RESTART, IC_DATA_CMD_STOP, IC_STATUS,
+    IC_TX_ABRT_SOURCE,
 };
 use crate::platform::common::mmio::{rd32, wr32};
 use core::sync::atomic::Ordering;
@@ -34,9 +35,6 @@ const IC_ENABLE: usize = 0x6c;
 const IC_TXFLR: usize = 0x74;
 const IC_RXFLR: usize = 0x78;
 
-const IC_CON_MASTER: u32 = 1 << 0;
-const IC_CON_SPEED_FAST: u32 = 2 << 1;
-const IC_CON_RESTART_EN: u32 = 1 << 5;
 const IC_STATUS_TFNF: u32 = 1 << 1;
 const IC_STATUS_RFNE: u32 = 1 << 3;
 
@@ -113,7 +111,7 @@ unsafe fn i2c0_master_init() {
     wr32(
         base,
         IC_CON,
-        IC_CON_MASTER | IC_CON_SPEED_FAST | IC_CON_RESTART_EN,
+        IC_CON_MASTER | IC_CON_SLAVE_DISABLE | IC_CON_RESTART_EN | IC_CON_SPEED_FAST,
     );
     // Set the target address; 7-bit addressing (the DW IC_TAR takes the
     // address right-aligned).
