@@ -277,6 +277,18 @@ static mut SWEPT_FIRST_REPLY: bool = false;
 /// depth; a healthy transfer drains back to depth as the host reads.
 static LAST_SEND_N: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
+/// The raw architectural counter across the last `download:` payload, and
+/// the frequency firmware claims. The host knows how long it took to send
+/// that payload, so dividing one by the other gives the counter's *real*
+/// rate - the number every delay and watchdog on this board depends on and
+/// which `uptime_us` has been getting wrong by an order of magnitude.
+static DL_TICKS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static DL_TICK0: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+pub fn download_ticks() -> u64 {
+    DL_TICKS.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 /// (last reply byte count << 32) | (FIFO free words << 16): read every tick
 /// by the S4 instrument.
 pub fn last_send_state() -> u64 {
@@ -1007,7 +1019,27 @@ fn pop_rx(log: fn(&str, u64)) {
                         let b = w.to_le_bytes();
                         let take = if n >= 4 { 4 } else { n };
                         for &byte in b.iter().take(take) {
-                            fb::take_byte(byte, crate::timer::uptime_us());
+                            let payload =
+                                fb::take_byte(byte, crate::timer::uptime_us());
+                            if payload {
+                                // First byte of a payload starts the clock,
+                                // its last byte stops it. The host times the
+                                // same window from its own side.
+                                if DL_TICK0.load(core::sync::atomic::Ordering::Relaxed) == 0 {
+                                    DL_TICK0.store(
+                                        crate::timer::counter(),
+                                        core::sync::atomic::Ordering::Relaxed,
+                                    );
+                                }
+                                if fb::dl_remain() == 0 {
+                                    let t0 = DL_TICK0.load(core::sync::atomic::Ordering::Relaxed);
+                                    DL_TICKS.store(
+                                        crate::timer::counter().wrapping_sub(t0),
+                                        core::sync::atomic::Ordering::Relaxed,
+                                    );
+                                    DL_TICK0.store(0, core::sync::atomic::Ordering::Relaxed);
+                                }
+                            }
                             unsafe {
                                 DBG_EP1_BYTES = DBG_EP1_BYTES.wrapping_add(1);
                             }
@@ -1435,7 +1467,7 @@ impl crate::fastboot_dispatch::FastbootIo for AneFbIo {
 
 /// The registered variable table (the identity strings are the device's
 /// own; partition-size computes via the eMMC GPT lookup).
-fn fb_vars() -> [crate::fastboot_dispatch::VarEntry; 9] {
+fn fb_vars() -> [crate::fastboot_dispatch::VarEntry; 10] {
     use crate::fastboot_dispatch::{VarEntry, VarReply};
     [
         VarEntry {
@@ -1487,6 +1519,22 @@ fn fb_vars() -> [crate::fastboot_dispatch::VarEntry; 9] {
                 let n = fmt_okay_hex(super::ane_emmc::clock_sample(), &mut b);
                 out[..n].copy_from_slice(&b[..n]);
                 n
+            }),
+        },
+        VarEntry {
+            name: b"time",
+            reply: VarReply::Computed(|_part, out| {
+                // <ticks>,<freq> - the host divides by the seconds it
+                // measured while sending the payload.
+                let mut gv = [0u8; 32];
+                let n = fmt_okay_hex(download_ticks(), &mut gv);
+                let mut i = n;
+                out[..n].copy_from_slice(&gv[..n]);
+                out[i] = b',';
+                i += 1;
+                let m = fmt_okay_hex(crate::timer::frequency(), &mut gv);
+                out[i..i + m].copy_from_slice(&gv[..m]);
+                i + m
             }),
         },
         VarEntry {
