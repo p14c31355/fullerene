@@ -66,6 +66,20 @@ pub(crate) fn anchor_adb(raw: &[u8]) -> &[u8] {
 
 /// "OKAY0x<hex>" with no leading zeros - the numeric getvar form the
 /// client's strtoul(base 0) parser expects.
+/// The same reply without the `0x` - what the fastboot host's own parsers
+/// expect for the numeric getvars (`max-download-size`, `partition-size`).
+/// They run strtoul(..., 16) over the value, which stops at the `x` and
+/// reads zero, hence "couldn't parse max-download-size 'OKAY0xC00000'".
+pub(crate) fn fmt_okay_hex_bare(value: u64, out: &mut [u8; 32]) -> usize {
+    let n = fmt_okay_hex(value, out);
+    let mut i = 6usize;
+    while i + 1 < n {
+        out[i] = out[i + 1];
+        i += 1;
+    }
+    n - 1
+}
+
 pub(crate) fn fmt_okay_hex(value: u64, out: &mut [u8; 32]) -> usize {
     out[..6].copy_from_slice(b"OKAY0x");
     let mut i = 6usize;

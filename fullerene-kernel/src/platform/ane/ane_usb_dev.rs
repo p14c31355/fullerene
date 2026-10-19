@@ -1533,7 +1533,7 @@ fn fb_vars() -> [crate::fastboot_dispatch::VarEntry; 9] {
                 if let Some((first, last)) = super::ane_emmc::find_partition(part, |tag, v| {
                     super::super::uart::put_hexln(tag, v);
                 }) {
-                    let n = fmt_okay_hex(((last - first + 1) as u64) * 512, &mut gv);
+                    let n = crate::adb_dispatch::fmt_okay_hex_bare(((last - first + 1) as u64) * 512, &mut gv);
                     out[..n].copy_from_slice(&gv[..n]);
                     n
                 } else {
@@ -2134,7 +2134,7 @@ fn fb_poll(log: fn(&str, u64)) {
         // partition-size lookup registered below). The computed path
         // sends directly and returns.
         if name == b"max-download-size" {
-            reply = b"OKAY0xC00000";
+            reply = b"OKAYC00000";
         } else {
             fb_getvar_io(name);
             return;
