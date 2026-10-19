@@ -446,7 +446,15 @@ pub(super) fn emmc_clock_set(field: u16, log: fn(&str, u64)) -> bool {
     // a fifth of a millisecond. Ask for the vendor millisecond with the
     // same tenfold slack and the wait is never short.
     let t0 = crate::timer::uptime_us();
-    while crate::timer::uptime_us().saturating_sub(t0) < 20_000 {}
+    let mut guard = 0u32;
+    while crate::timer::uptime_us().saturating_sub(t0) < 20_000 {
+        // A counter that never moves must not hold the boot: the ladder runs
+        // before the device can say anything about it.
+        guard += 1;
+        if guard > 500_000_000 {
+            break;
+        }
+    }
     log(
         "em: clk_set=",
         ((stable as u64) << 32) | ((field as u64) << 8) | (rd16(SDHCI_BASE, 0x2C) as u64),

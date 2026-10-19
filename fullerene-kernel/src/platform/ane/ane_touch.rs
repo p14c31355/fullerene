@@ -52,10 +52,25 @@ pub static CHIP_ID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU3
 /// if it is right after all, the cost is a second of boot, which is cheaper
 /// than a touchscreen that never answers.
 fn spin(ms: u32) {
+    // A counter with no declared frequency would make the wait below spin
+    // forever, and this runs before anyone could report it. Fall back to a
+    // rough iteration budget instead - a short wait is survivable, a hung
+    // boot is not.
+    if crate::timer::frequency() == 0 {
+        for _ in 0..ms.saturating_mul(1_000_000) {
+            core::hint::spin_loop();
+        }
+        return;
+    }
     let want = (ms as u64) * 10_000;
     let t0 = crate::timer::uptime_us();
+    let mut guard = 0u64;
     while crate::timer::uptime_us().saturating_sub(t0) < want {
         core::hint::spin_loop();
+        guard += 1;
+        if guard > 2_000_000_000 {
+            break; // the counter stopped moving; do not take the boot with it
+        }
     }
     // A floor, in case the counter never advances at all on this path.
     for _ in 0..(ms * 2000) {
