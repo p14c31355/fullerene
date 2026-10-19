@@ -257,6 +257,88 @@ const STR_MFR: [u8; 64] = str_desc(b"Fullerene");
 const STR_PROD: [u8; 64] = str_desc(b"ANE fastboot");
 const STR_SER: [u8; 64] = str_desc(b"SCV7N18927000473");
 
+/// v343c: what the freeze watchdog latched, served to the host.
+///
+/// The panel is only readable through a camera, and the camera needs a human.
+/// The host journal needs neither: `Manufacturer:` is printed by usbcore the
+/// moment the device enumerates, so once the watchdog has latched a park the
+/// manufacturer string carries the suspended PC and the VFS trail and the
+/// next boot's `journalctl -k` names the pass directly.
+static FROZEN_PC: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static FROZEN_TR: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// The VFS step trail: [u32 count][32 bytes] at its private 4 KiB gap.
+///
+/// `fs::read_vfs_path` appends one byte per step ('1','2','e','3'..), so the
+/// last byte names the step the pass was in when it stopped. Packed as
+/// (count << 32) | the first eight bytes, little endian.
+fn trail_word() -> u64 {
+    const BASE: usize = 0x348d_e800;
+    unsafe {
+        let cnt = core::ptr::read_volatile(BASE as *const u32) as u64;
+        let mut bytes = 0u64;
+        let mut i = 0;
+        while i < 8 {
+            let b = core::ptr::read_volatile((BASE + 4 + i) as *const u8) as u64;
+            bytes |= b << (8 * i);
+            i += 1;
+        }
+        (cnt << 32) | bytes
+    }
+}
+
+/// Latch the park for the host. Called by the watchdog before it paints.
+pub fn freeze_capture() {
+    use core::sync::atomic::Ordering;
+    FROZEN_PC.store(
+        crate::blackbox::IRQ_PC.load(Ordering::Relaxed),
+        Ordering::Relaxed,
+    );
+    FROZEN_TR.store(trail_word(), Ordering::Relaxed);
+}
+
+fn hex_push(out: &mut [u8], at: &mut usize, v: u64, digits: usize) {
+    let mut i = digits;
+    while i > 0 {
+        i -= 1;
+        let d = ((v >> (i * 4)) & 0xf) as u8;
+        out[*at] = if d < 10 { b'0' + d } else { b'a' + d - 10 };
+        *at += 1;
+    }
+}
+
+/// The manufacturer string, with the latched park appended once it exists.
+///
+/// Shape: `Fullerene P<16 hex pc> T<16 hex trail>`. Kept as "Fullerene ..."
+/// because nothing gates on this string (the flash gate reads iProduct =
+/// "Fastboot2.0" on the loader, "ANE fastboot" on this responder), and the
+/// serial must stay byte-identical: the flash scripts address the device by
+/// `fastboot -s SCV7N18927000473`.
+fn manufacturer_desc() -> &'static [u8] {
+    use core::sync::atomic::Ordering;
+    let pc = FROZEN_PC.load(Ordering::Relaxed);
+    if pc == 0 {
+        return &STR_MFR;
+    }
+    static mut BUF: [u8; 96] = [0u8; 96];
+    static mut TEXT: [u8; 48] = [0u8; 48];
+    unsafe {
+        let buf = &mut *core::ptr::addr_of_mut!(BUF);
+        let text = &mut *core::ptr::addr_of_mut!(TEXT);
+        let mut n = 0usize;
+        for &b in b"Fullerene P" {
+            text[n] = b;
+            n += 1;
+        }
+        hex_push(text, &mut n, pc, 16);
+        text[n] = b'T';
+        n += 1;
+        hex_push(text, &mut n, FROZEN_TR.load(Ordering::Relaxed), 16);
+        let used = crate::fastboot_dispatch::string_descriptor(&text[..n], buf);
+        &buf[..used]
+    }
+}
+
 // ---- state ------------------------------------------------------------------
 
 /// This boot's SETUP packet (read from the FIFO in the RX pop path).
@@ -865,7 +947,7 @@ fn handle_setup(log: fn(&str, u64)) {
                 2 => &CFG_DESC,
                 3 => match index {
                     0 => &STR_LANG,
-                    1 => &STR_MFR,
+                    1 => manufacturer_desc(),
                     2 => &STR_PROD,
                     3 => &STR_SER,
                     _ => {
@@ -1343,6 +1425,25 @@ pub fn usb_reconnect_begin() {
 /// v202 self-heal: re-attach; the host enumerates afresh.
 pub fn usb_reconnect_end() {
     wr(DCTL, rd(DCTL) & !0x2);
+}
+
+/// v343c: one complete D+ cycle, driven from the pump.
+///
+/// The host only re-reads the descriptors when the device re-attaches, and by
+/// the time the freeze watchdog runs, the boot thread - the thing that would
+/// normally own the last `reconnect_end()` - is exactly what stopped. A
+/// `begin()` with no matching `end()` leaves the phone invisible on the bus,
+/// which is strictly worse than no diagnostic at all, so the cycle is closed
+/// here: pull down, dwell on a real MMIO read (a plain counter would be
+/// optimised out and the host would never see a disconnect), pull back up.
+pub fn usb_replug_bounded() {
+    usb_reconnect_begin();
+    let mut spins = 0u32;
+    while spins < 0x4_0000 {
+        let _ = rd(GINTSTS);
+        spins += 1;
+    }
+    usb_reconnect_end();
 }
 
 pub fn ep1_diag() -> u64 {
@@ -2279,9 +2380,26 @@ pub fn service(log: fn(&str, u64)) {
     // The pass is a state machine over shared endpoint arming, so a nested
     // pass would corrupt it. One pass at a time, on whichever context wins.
     static IN_SERVICE: AtomicBool = AtomicBool::new(false);
+    // v343e: the guard is mutual exclusion between two contexts, not a lock -
+    // and one of the two can be *parked inside the pass*, where it will never
+    // release. Refusing the pump for that long disarms the only context still
+    // able to answer the host, which is how a frozen boot thread turns into a
+    // device that no longer responds to SET_ADDRESS at all. After a bounded
+    // run of refusals, from IRQ context only, the pump takes the pass over:
+    // the abandoned arming state is reset to idle (ep0_resync is idle-gated)
+    // and the guard is reassigned to the live context.
+    static SERVICE_REFUSED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
     if IN_SERVICE.swap(true, Ordering::Acquire) {
-        return;
+        let refused = SERVICE_REFUSED.fetch_add(1, Ordering::Relaxed) + 1;
+        if refused < 64 || !crate::blackbox::in_irq_context() {
+            return;
+        }
+        // ~1 s of a pass that never finished. Reset what it left armed and
+        // run this pass instead.
+        ep0_resync();
+        log("usb: pass_takeover=", refused as u64);
     }
+    SERVICE_REFUSED.store(0, Ordering::Relaxed);
     // A `download:` that stops receiving (client died mid-transfer) must
     // not eat every later command: abort it after ~15 s without a byte.
     if fb::dl_state() == 1 {
@@ -2408,10 +2526,14 @@ static PASS_PHASE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32
 /// its own context. PHASE names the callee: 1 entry, 2 handle_reset, 3
 /// enumdone, 4 pop_rx, 5 ep0, 6 ep1, 7 pump tail; 0 means the thread was
 /// stuck outside service(), which is a different bug with a different owner.
-pub fn freeze_report() -> [(&'static str, u64); 8] {
+pub fn freeze_report() -> [(&'static str, u64); 10] {
     use core::sync::atomic::Ordering;
     [
         ("PHASE", PASS_PHASE.load(Ordering::Relaxed) as u64),
+        // v343c: the suspended PC and the VFS trail - the two numbers that
+        // name the pass by function instead of by phase number.
+        ("PC", crate::blackbox::IRQ_PC.load(Ordering::Relaxed)),
+        ("TR", FROZEN_TR.load(Ordering::Relaxed)),
         ("GINT", rd(GINTSTS) as u64),
         ("OEPINT", rd(0xb08 as usize) as u64),
         ("IEPINT", rd(0x908 as usize) as u64),

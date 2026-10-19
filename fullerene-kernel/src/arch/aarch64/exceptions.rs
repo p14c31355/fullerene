@@ -549,6 +549,9 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
     // that retired there - the 256-beat re-stamp prints it into the ring,
     // so a collection shows exactly where the thread is parked.
     LAST_IRQ_PC.store(frame.elr_el1, core::sync::atomic::Ordering::Relaxed);
+    // v343c: publish it to the library so the freeze frame (painted from here,
+    // but built by the platform) can name the suspended PC on the panel.
+    crate::blackbox::IRQ_PC.store(frame.elr_el1, core::sync::atomic::Ordering::Relaxed);
     // v228: keep the fault/status side of the frame too - if the parked
     // thread loops through a faulting access, ESR/FAR hold the last fault.
     LAST_IRQ_ESR.store(frame.esr_el1, core::sync::atomic::Ordering::Relaxed);

@@ -132,7 +132,15 @@ pub fn boot_recovery_check(beats: u32) {
         // The boot thread is the one that stopped, so it cannot report where.
         // Paint the pass it never returned from from this (pump) context.
         #[cfg(fullerene_aarch64_ane)]
-        crate::platform::ane_fb::freeze_frame();
+        {
+            // v343c: latch the suspended PC + the VFS trail for the host, then
+            // give the host a reason to look: one complete D+ cycle makes it
+            // re-read the descriptors, and the manufacturer string is where
+            // the latch is served. The journal then names the pass without a
+            // photograph - the camera needs a human, the journal does not.
+            crate::platform::ane_usb_dev::freeze_capture();
+            crate::platform::ane_fb::freeze_frame();
+        }
         return;
     }
     if beats.wrapping_sub(frozen_at) > 7200 {

@@ -760,7 +760,7 @@ pub fn freeze_frame() {
     {
         paint_hex_at_force(1 + i as u32, 8, label.as_bytes(), *value);
     }
-    paint_at_force(9, 8, 20, b"PHOTOGRAPH ME");
+    paint_at_force(12, 8, 20, b"PHOTOGRAPH ME");
     paint_log_tail_force(34, 8);
     unsafe {
         crate::blackbox::cache_clean(CANVAS, CANVAS_LEN);

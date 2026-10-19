@@ -1043,6 +1043,17 @@ pub struct ProgressWatchdog {
 pub static ANE_IRQ_CONTEXT: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
+/// v343c: the ELR of the most recent timer IRQ, published to the library.
+///
+/// The exception frame lives in the binary crate (`arch::aarch64::exceptions`)
+/// and the panel/paint code lives in this library, so the crate boundary is
+/// otherwise impossible to cross. A frozen boot thread is suspended at exactly
+/// this PC, which makes it the single most useful number a photograph (or the
+/// host journal) can carry - it names the function the pass never returned
+/// from. Plain store/load: single core, diagnostics only (the v227 LL/SC
+/// lesson).
+pub static IRQ_PC: AtomicU64 = AtomicU64::new(0);
+
 /// The single watchdog instance.
 static PROGRESS_WATCHDOG: ProgressWatchdog = ProgressWatchdog {
     count: core::sync::atomic::AtomicU32::new(0),
