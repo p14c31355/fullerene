@@ -1,73 +1,59 @@
-# Status — 2026-10-19 22:2x (bench night)
+# Status — 2026-10-19 22:37 (bench night)
 
-## Where the hold actually ends
+## The panic was ours, twice — and the photographs named both
 
-The green hold is not being cut by its own loop: the counter stops at
-tick 31 (≈15.5 s) and the panel then turns **red**. A panic screen is
-confirmed on the device. So the hold runs, paints, and *dies* — the
-45 s budget never runs out.
+Two panic screens were read off the panel tonight. Both were this tree
+attacking itself while it waited for the host.
 
-`v332n-panicred` (md5 `207a581afa8a8e13b9a68227d8654bd4`, commit
-`648aa186`) makes that legible: whole panel red, line number in white
-digits, column in yellow digits, file name small at the top, held for
-uptime 300 s (≈2.0–2.5 min of real time — the SoC clock runs fast).
+| photo | screen | location | what it is |
+|---|---|---|---|
+| 22:23:40 | `PREVIOUS PANIC`, white `903`, yellow `29` | `exceptions.rs:903:29` | `panic!("watchdog: enumeration never configured")` |
+| 22:29:58 | red, white `1184`, yellow `9` | `blackbox.rs:1184:9` | `panic!("cycle reset: deliberate")` (USB zombie path) |
 
-## The reader's own bug (found tonight, fixed in `acef2a72`)
+`report_previous_panic()` works now (`acef2a72`): one photograph taken
+minutes after the fact answers what the last boot died of.
 
-`report_previous_panic()` scanned the durable block for
-`FULLERENE AARCH64 PANIC`, a marker **nothing ever wrote**, so it
-answered "none found" on every boot since it was written. And when it
-did find a record it painted rows 58–59, below the canvas — invisible
-by construction. The panic handler now calls `blackbox::panic_record`,
-which writes marker, file, line and column; the reader paints the
-previous panic as a green field with the same white/yellow digits, and
-holds for the peek build. One photograph, taken minutes after the fact,
-answers what the last boot died of.
+## The chain behind 22:27
 
-## Next flash
+1. The panel hold parked the boot thread without calling
+   `ane_usb_dev::service()`. The host's first `GET_DESCRIPTOR` went
+   unanswered for five seconds — the `-110` at 22:27:06 — and the host's
+   retries were then read as a dead link.
+2. Just before the hold began, the enumeration watchdog had called
+   `usb_reconnect_begin()` (D+ low). Its matching
+   `usb_reconnect_end()` lived inside `watchdog_applies`, which the hold
+   turned off, so D+ stayed low for the rest of the boot.
+3. `recovery.rs` saw an EP0 that never moved, called it a zombie, and
+   scheduled the loader reset → `blackbox.rs:1184`.
 
-`artifacts/fullerene-ane-v332o-prevpanic.img` (md5 `b62b72179038f0270885c4c07a985579`,
-build `FULLERENE_ANE_PANIC_PEEK=1`, commit `acef2a72`).
+Fixed in `7a3bbb14` (v332t): the hold serves every iteration and leaves
+the moment the host configures us; finishing a reconnect is
+unconditional; every watchdog asks `blackbox::panel_hold()` before doing
+anything drastic.
 
-Flashed 22:18:47. First boot has no record yet (nothing was written
-before this image), so it is expected to be quiet; the second boot —
-the one `watch_flash.sh` is waiting to reflash — is the one that shows
-`PREVIOUS PANIC` with the white line and the yellow column.
+## Still open: EP0 answers the config descriptor with silence
 
-## Ruled out tonight (so they stay ruled out)
+v332t (flashed 22:34:39) attached at 22:35:06 and the host got
+`config index 0 descriptor/start: -110`, then `-71`, then LK at
+22:35:19. So the hold was not the only writer of that failure.
 
-- `delay_ms` spin cap — fixed in `3ffa7587`, hold now reaches ~15 s.
-- Event ledger overrun — rows 38..57 with `LINE_PITCH = 24` land at
-  y 1598..2054, inside 2340; `render_text` clips both axes.
-- Explicit panics on the enumeration path — the only `panic!` in
-  `ane_usb_dev.rs` is the deliberate `oem crash` handler at 1746.
-- `delay_ticks` — no panic path; it returns, it does not fail.
+The next evidence is a photograph of the v332u peek screen, which shows
+what v332t died of.
 
-## Why `-71` is probably a symptom, not the cause
+## Clock
 
-17:51:18 attach → 17:51:19 `-71` → 17:51:22 SoC reset → 17:51:23 LK. A panic
-one second after attach explains both the error and the reset; the host only
-sees the endpoint die. That is why the peek build matters more than another
-EP0 theory: get the `file:line` first.
+`CNTFRQ_EL0` is read at runtime (`timer.rs:42`) and is trusted as
+firmware truth, but measured holds run ~11x faster than their nominal
+budgets (nominal 300 s = 26 s of wall time). Every deadline in the tree
+is therefore ~1/11 of what its author intended. Decide with a
+measurement, not a guess: paint `CNTFRQ_EL0` next to uptime and compare
+two photographs taken a known wall-clock distance apart.
 
-## Battery — done, unverified on hardware
+## Builds tonight
 
-`platform/common/power.rs::ocv` (generic, host-tested) + `platform/ane/
-ane_battery.rs` (backend). Registers, units and both charge ladders are from
-the vendor hi6250 coulomb driver and the stock ANE device tree; see
-`docs/hardware/battery.md` for the table and the remaining gaps
-(pack identity via ADC ch 6, temperature, charger status, coulomb
-integration).
-
-## Open items in priority order
-
-1. `-71` root cause via the peek screen (needs one photograph).
-2. Touch on real hardware — never yet observed; `first_point()` has never
-   produced a sample.
-3. Battery voltage/charge on real hardware (build is ready).
-4. Charging: identify the charger IC among `hi6522`/`hi6523`/`bq2560x` at
-   0x6B and read its status register; then `charging` stops being a current
-   proxy.
-5. Storage: eMMC reads work through the bootloader path; mounting in
-   FullereneOS is the next real subsystem.
-6. Buttons (power/volume) as a proper input source, not just a PMIC IRQ.
+| build | commit | result |
+|---|---|---|
+| v332r-hostevents | `20d9f902` | host_events counted resets+ENUMDONE+SETUP; watchdog stand-down during hold |
+| v332s-rcend | (unflashed) | reconnect completion made unconditional |
+| v332t-servehold | `7a3bbb14` | hold serves EP0; flashed 22:34:39; -110 on config descriptor, LK in 13 s |
+| v332u-peek | `7a3bbb14` | flashed 22:36:16, peek hold shows v332t's panic |
