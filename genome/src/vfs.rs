@@ -501,7 +501,9 @@ impl Vfs {
     /// the filesystem.  The caller can then use `find_fs()` or an indexed
     /// operation to access the filesystem without holding a VFS lock.
     pub fn find_fs_for_path(&self, path: &str) -> Option<(usize, String)> {
-        let absolute = self.resolve_path(path);
+        // Strict resolution: a path the VFS cannot represent has no mount,
+        // rather than being looked up under a silently different name.
+        let absolute = self.try_resolve_path(path).ok()?;
         let index = self.find_fs_index_for_absolute_path(&absolute)?;
         let remaining = relative_to_mount(&absolute, &self.mounts[index].mount_point)?.to_string();
         Some((index, remaining))
@@ -590,6 +592,34 @@ impl Vfs {
             base.push_str(path);
             normalize_path(&base)
         }
+    }
+
+    /// Resolve `path` against the working directory and report the outcome.
+    ///
+    /// `resolve_path` above cannot fail, so a path the VFS cannot represent
+    /// still comes back as *something*. Callers on a trust boundary want the
+    /// opposite: an absolute path inside `MAX_PATH_BYTES`, or an error. The
+    /// join is done in one buffer, so the common absolute case allocates once
+    /// (for the returned `String`) instead of three times.
+    pub fn try_resolve_path(&self, path: &str) -> Result<String, FsError> {
+        if path.starts_with('/') || path.is_empty() {
+            let source = if path.is_empty() {
+                self.wd.as_str()
+            } else {
+                path
+            };
+            return Ok(AbsolutePath::normalize(source)?.as_str().to_string());
+        }
+        // A relative path is normalized against the working directory, so
+        // normalize the join, not the tail: `..` must be able to climb out of
+        // the tail and back into the directory chain.
+        let mut joined = String::with_capacity(self.wd.len() + 1 + path.len());
+        joined.push_str(&self.wd);
+        if !self.wd.ends_with('/') {
+            joined.push('/');
+        }
+        joined.push_str(path);
+        Ok(AbsolutePath::normalize(&joined)?.as_str().to_string())
     }
 
     pub fn find_fs(&mut self, absolute_path: &str) -> Option<(&mut Box<dyn FileSystem>, String)> {
@@ -815,6 +845,107 @@ impl Drop for VfsFile<'_> {
 }
 
 // ── Path utilities ──────────────────────────────────────────────
+
+/// Longest absolute path the VFS will build, matching the bound the kernel
+/// already enforces at the EL0 boundary (`MAX_PATH` in arch/aarch64/fs.rs and
+/// `MAX_PATH_BYTES` in syscall/fs.rs). A longer path is refused, never
+/// truncated: a truncated path names a different file.
+pub const MAX_PATH_BYTES: usize = 256;
+
+/// Deepest component chain accepted. A 255-byte path can carry 127
+/// one-letter components, and every one of them costs a lookup in the
+/// filesystem below, so the chain is bounded separately from the bytes.
+pub const MAX_PATH_COMPONENTS: usize = 64;
+
+/// An absolute path that has already been normalized, held in a fixed buffer.
+///
+/// The old path was `Vec<&str>` + `String` per resolve - two heap allocations
+/// on every lookup, on the boot path, with no cap on either. This type never
+/// allocates, and it reports a path it cannot represent instead of quietly
+/// producing something else. `..` still clamps at the root: a relative path
+/// that climbs above `/` lands on `/`, it does not escape.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct AbsolutePath {
+    /// Always starts with '/'; `len` bytes are meaningful.
+    bytes: [u8; MAX_PATH_BYTES],
+    len: usize,
+}
+
+impl AbsolutePath {
+    pub const ROOT: Self = {
+        let mut bytes = [0u8; MAX_PATH_BYTES];
+        bytes[0] = b'/';
+        Self { bytes, len: 1 }
+    };
+
+    /// Normalize any path (absolute or not) into an absolute one. The result
+    /// is what the old `normalize_path` produced for every path it could
+    /// represent; everything else is an error rather than a surprise.
+    pub fn normalize(path: &str) -> Result<Self, FsError> {
+        if path.as_bytes().contains(&0) {
+            return Err(FsError::InvalidPath);
+        }
+        let mut out = Self::ROOT;
+        let mut components = 0usize;
+        for component in path.split('/') {
+            match component {
+                "" | "." => continue,
+                ".." => {
+                    if out.len > 1 {
+                        out.pop_component(&mut components);
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            // A separator is needed only when the buffer already holds a
+            // component past the leading '/', so the check is against the
+            // bytes this component would add, not against `len` alone.
+            let needed = component.len() + if out.len == 1 { 0 } else { 1 };
+            if out.len + needed > MAX_PATH_BYTES || components == MAX_PATH_COMPONENTS {
+                return Err(FsError::InvalidPath);
+            }
+            if out.len > 1 {
+                out.bytes[out.len] = b'/';
+                out.len += 1;
+            }
+            out.bytes[out.len..out.len + component.len()].copy_from_slice(component.as_bytes());
+            out.len += component.len();
+            components += 1;
+        }
+        Ok(out)
+    }
+
+    /// Drop the last component, keeping the leading '/'. `components` is the
+    /// caller's running count and must cover the component being removed.
+    fn pop_component(&mut self, components: &mut usize) {
+        let mut at = self.len - 1;
+        while at > 0 && self.bytes[at] != b'/' {
+            at -= 1;
+        }
+        self.len = if at == 0 { 1 } else { at };
+        *components = components.saturating_sub(1);
+    }
+
+    pub fn as_str(&self) -> &str {
+        // Only ASCII '/' and the caller's own UTF-8 bytes were ever copied in
+        // on component boundaries, so this slice is always valid UTF-8.
+        core::str::from_utf8(&self.bytes[..self.len]).unwrap_or("/")
+    }
+
+    /// The path as a mount-relative remainder, or `None` when it is not under
+    /// `mount_point`. Same rules as `relative_to_mount`, without the borrow
+    /// dance: names must end at a component boundary.
+    pub fn relative_to(&self, mount_point: &str) -> Option<&str> {
+        relative_to_mount(self.as_str(), mount_point)
+    }
+}
+
+impl core::fmt::Debug for AbsolutePath {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("AbsolutePath").field(&self.as_str()).finish()
+    }
+}
 
 /// Return the path as seen from a mount point.
 ///
@@ -1047,5 +1178,82 @@ mod tests {
 
         let reopened = vfs.open("/stream.bin", 0).unwrap();
         assert_eq!(reopened.offset, 0);
+    }
+
+    #[test]
+    fn absolute_path_matches_the_allocating_normalizer() {
+        // Drop-in parity: every path the old normalizer handled must come out
+        // byte-identical, or a migration would silently rename files.
+        for case in [
+            "/",
+            "",
+            ".",
+            "..",
+            "/a",
+            "/a/b",
+            "/a/b/",
+            "//a///b//",
+            "/a/./b/../c",
+            "../../../",
+            "/a/b/../../..",
+            "/system/framework/framework.jar",
+            "/data/local/tmp/x",
+        ] {
+            assert_eq!(
+                AbsolutePath::normalize(case).unwrap().as_str(),
+                normalize_path(case),
+                "normalizing {case:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn absolute_path_clamps_at_the_root() {
+        assert_eq!(AbsolutePath::normalize("..").unwrap().as_str(), "/");
+        assert_eq!(AbsolutePath::normalize("/a/../..").unwrap().as_str(), "/");
+        assert_eq!(
+            AbsolutePath::normalize("../../../../etc/passwd")
+                .unwrap()
+                .as_str(),
+            "/etc/passwd"
+        );
+    }
+
+    #[test]
+    fn absolute_path_refuses_what_it_cannot_represent() {
+        // Truncating instead would name a different file.
+        let long = alloc::format!("/{}", "a".repeat(MAX_PATH_BYTES));
+        assert_eq!(AbsolutePath::normalize(&long), Err(FsError::InvalidPath));
+
+        let deep = alloc::format!("/{}", "a/".repeat(MAX_PATH_COMPONENTS + 1));
+        assert_eq!(AbsolutePath::normalize(&deep), Err(FsError::InvalidPath));
+
+        assert_eq!(AbsolutePath::normalize("/a\0b"), Err(FsError::InvalidPath));
+
+        // The boundary itself still fits: 255 bytes after the leading '/'.
+        let fits = alloc::format!("/{}", "a".repeat(MAX_PATH_BYTES - 1));
+        assert_eq!(AbsolutePath::normalize(&fits).unwrap().as_str(), fits);
+    }
+
+    #[test]
+    fn try_resolve_path_joins_against_the_working_directory() {
+        let mut vfs = Vfs::new(Box::new(MemFileSystem::new()));
+        vfs.mkdir("/data").unwrap();
+        vfs.mkdir("/data/local").unwrap();
+        vfs.change_directory("/data/local").unwrap();
+
+        assert_eq!(vfs.try_resolve_path("tmp").unwrap(), "/data/local/tmp");
+        assert_eq!(vfs.try_resolve_path("../x").unwrap(), "/data/x");
+        assert_eq!(vfs.try_resolve_path("/abs").unwrap(), "/abs");
+        assert_eq!(vfs.try_resolve_path("").unwrap(), "/data/local");
+
+        // Same answers as the allocating path for everything it accepts.
+        for case in ["tmp", "../x", "/abs", ""] {
+            assert_eq!(
+                vfs.try_resolve_path(case).unwrap(),
+                vfs.resolve_path(case),
+                "resolving {case:?}"
+            );
+        }
     }
 }
