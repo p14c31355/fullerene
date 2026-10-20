@@ -368,3 +368,48 @@ v346 (`dec320d6`) flashed at 10:22:16 and never enumerated: no `18d1:d00d`,
 no `12d1:107e`, for eight minutes. v343m did enumerate, so v345/v346 moved
 the freeze earlier than the USB responder. The panel is the only readout;
 the trail letter at freeze time names the stage.
+
+# Status — 2026-10-20 afternoon (UI lands while the device sleeps)
+
+## The warm-reset storm is not ours
+
+Every build after 10:47 - v346, HEAD (`fe4632f4`), AND the re-flashed
+v343m binary that enumerated cleanly at 09:37 - storms identically:
+`-90/-71/-110` descriptor reads, device numbers climbing, an occasional
+string read that dies at `-75` or `-22`. Same binary, clean in the
+morning, storming at noon. The audit (subagent, e939808c..HEAD) found no
+USB-path change in the range; the storm also reproduced on a binary built
+before it. Conclusion: a device-side warm-reset state (PHY/VBUS/DRAM),
+not a code regression. Next device session should A/B power-cycle vs
+warm-reset from the loader.
+
+## What landed on the host while the phone was on stock (64ea4220)
+
+- **Notes app over the lattice IME.** The dock's fourth tile opens a
+  full-screen text view; taps in the docked keyboard go
+  `Keyboard::press_at` -> `Field::apply` -> repaint; the title band
+  closes. The `Field` is `Option` (no const String) and materialises on
+  first use - safe because the bump allocator is live from entry.
+- **Touch probe asks both vendors.** The unit's real controller is a
+  Goodix GT1158 at 0x14 (`ts_kit@14`, stock-kernel sysfs), not the
+  FocalTech the probe was written for; the DTB carries both nodes for
+  different panel SKUs. Probe order: GT1x (`0x8140` CONFIG VERSION via a
+  new 16-bit-pointer transaction), then fts (0x00); the winner is stored
+  in `TOUCH_PROTOCOL` and `poll()` dispatches. The GT1x read path parses
+  through `resonance::touch::parse_gt1x_report` (frame = status + N*8 +
+  key + checksum, cleared after consumption). FocalTech path unchanged.
+- **Backlight contract + LM36923 backend** (`ane_backlight.rs`), ported
+  from the vendor kernel's `backlight/lm36923.c`: REG_ENABLE 0x10,
+  REG_BRT_CTR 0x11 = 0x85, REG_BRT_VAL_L/M 0x18/0x19, 11-bit code.
+  `oem bl [<level>]` drives it from the host.
+- Evidence base for the next drivers: `~/dev/p20-root/firmware_blobs/`
+  (EVIDENCE_SUMMARY.txt) - touch FW (Nemo_CS445A_junda.bin), Wi-Fi/BT
+  blobs (fw_bcm43455_hw.bin, BCM4345C0 hcd, nvram), bfgx_cfg, Hi1102
+  DTS GPIO/pinctrl map, and the full chip inventory from the live
+  system (LSM6DS3@0x6A, AKM09918@0x0C, LTR578@0x53, hi6523@0x6B,
+  pericom30216@0x1D, LM36923@0x36, TFA9895@0x34, pn547@0x28).
+
+Builds: aarch64/ane + bramble exit 0; kernel lib 38, workspace 765
+tests pass. Pre-commit review (focused 5-question subagent) all OK;
+its one real catch - the GT1x frame length needing `+2` not `+1` - was
+fixed before the commit.
