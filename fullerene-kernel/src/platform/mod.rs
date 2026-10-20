@@ -45,6 +45,8 @@ pub mod ane_keys;
 
 #[path = "ane/ane_sensors.rs"]
 pub mod ane_sensors;
+#[path = "ane/ane_vibrator.rs"]
+pub mod ane_vibrator;
 
 #[path = "ane/ane_touch.rs"]
 pub mod ane_touch;

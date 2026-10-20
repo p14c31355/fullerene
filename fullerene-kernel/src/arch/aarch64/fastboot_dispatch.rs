@@ -675,6 +675,40 @@ pub fn poll(log: fn(&str, u64)) {
     }
 
     #[cfg(fullerene_aarch64_ane)]
+    if cmd == b"oem vib" || cmd.starts_with(b"oem vib ") {
+        // `oem vib [<ms>]`: one haptics burst through the LDO31 motor
+        // switch, or bare `oem vib` to force-stop. The DTB makes the motor
+        // and its rail the same register (hisi_vibrator@fff34000 ->
+        // ldo31, ctrl 0x31 bit 0), so a burst is set -> delay -> clear on
+        // one PMIC byte. Clamped to 1 s so a typo cannot pin the coil on.
+        const HEX: [u8; 16] = *b"0123456789ABCDEF";
+        let arg = cmd.strip_prefix(b"oem vib ").map(|a| {
+            crate::adb_dispatch::parse_hex(a.trim_ascii()) as u32
+        });
+        let result = match arg {
+            Some(ms) if ms > 0 => {
+                let driven = crate::platform::ane_vibrator::burst(ms.min(1000));
+                ms.min(1000)
+            }
+            _ => {
+                crate::platform::ane_vibrator::stop();
+                0
+            }
+        };
+        let mut line = [b'0'; 12];
+        line[..6].copy_from_slice(b"vib ms");
+        line[6] = b'=';
+        for (i, shift) in [12u32, 8, 4, 0].iter().enumerate() {
+            line[7 + i] = HEX[((result >> shift) & 0xF) as usize];
+        }
+        crate::platform::ane_usb_dev::fb_send_info(&line[..11]);
+        let mut ok = [0u8; 32];
+        let n = crate::adb_dispatch::fmt_okay_hex(result as u64, &mut ok);
+        crate::platform::ane_usb_dev::ep1_send(&ok[..n]);
+        return;
+    }
+
+    #[cfg(fullerene_aarch64_ane)]
     if cmd == b"oem bl" || cmd.starts_with(b"oem bl ") {
         // `oem bl [<level>]`: read or set the panel brightness through the
         // generic backlight contract. Bare `oem bl` answers the current
