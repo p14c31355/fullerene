@@ -335,32 +335,35 @@ file. `Vfs::try_resolve_path` joins the working directory first, so only the
 result is bounded. The old `resolve_path` stays, pinned to the new one by a
 parity test. 75 genome tests, 38 kernel tests.
 
-## OPEN: the kernel has two VFS namespaces
+## RESOLVED: the two VFS namespaces were never a runtime split
 
-- `arch/aarch64/fs.rs:2350` — `static mut VFS: Option<Mutex<Vfs>>`, created at
-  `fs::init()` (`:2394`), seeded by the initramfs, reached by every EL0
-  syscall through the private `with_vfs` (`:7983`).
-- `contexts/vfs.rs:49` — `VfsContext.inner: Mutex<Vfs>`, created by
-  `VfsContext::new()` (`:139`), used by `shell.rs`, `gui.rs`, `init.rs`,
-  `klog.rs` and `initramfs.rs` through `with_kernel(|k| k.vfs …)`.
+Each kernel root builds exactly one owner. The x86/UEFI root compiles
+`contexts/vfs.rs` (via the `fs.rs` wrapper, `crate::fs::init()` at
+`init.rs:515`); the aarch64 root compiles `arch/aarch64/fs.rs`
+(`static mut VFS` at `:2350`, `fs::init()` at `:2394`). No binary ever
+held both — a syscall-created file and a shell-created file could never
+meet. The real cost was code-shape drift between two owners.
 
-Both call `Vfs::new(Box::new(MemFileSystem::new()))`, so a file created
-through a syscall is invisible to the shell and vice versa. Init order is
-`init_kernel()` (`init.rs:150`) *before* `fs::init()` (`init.rs:515`), which
-rules out the contexts layer owning the object unless the arch side adopts it
-lazily.
+First merge step landed (`0c6b2d13`):
 
-Migration plan (next session, in this order):
-1. Make the arch VFS the single owner; `VfsContext` keeps no `Vfs` of its own.
-2. Route the 20 `self.inner.lock()` sites in `contexts/vfs.rs` through one
-   `with_inner` helper that maps "owner not installed yet" to `FsError::Io`.
-3. Lock order becomes arch-VFS -> handle_table. Nothing inside the arch VFS
-   lock may take the kernel-context lock; nothing may hold `handle_table`
-   while calling into the arch VFS.
-4. Public API of `VfsContext` (48 fns) must not change, so shell/gui/init keep
-   compiling untouched.
-5. Verify: `cargo test -p fullerene-kernel --lib` (38 host tests, unchanged)
-   and the ANE build.
+- `contexts/vfs.rs` is self-owned: `static VFS_CONTEXT:
+  Mutex<Option<VfsContext>>` replaces the `KernelContext.vfs` slot. The
+  kernel lock is gone from every VFS call; the documented lock order
+  (inner -> handle_table) is the whole story. `vfs_try_access` proves
+  context + inner + handle_table via `try_lock` as before.
+- Its five x86-only dependencies are cfg-shimmed (`trace!`,
+  `klog_vfs_diag!`, `vfs_log_info!`, devfs mount arms), so the module
+  compiles on both roots.
+- The aarch64 root declares it (`contexts_vfs`, dead-code allowed for
+  now), so both roots compile-check the same owner in one build.
+- `KernelContext` lost its `vfs` field; no caller read it directly.
+- Public API of `contexts::vfs` unchanged (48 fns); 38 host tests and
+  765 workspace tests pass; ANE + bramble + x86 host/UEFI builds clean.
+
+Next merge step: point the aarch64 syscall path at the shared owner so
+`arch/aarch64/fs.rs` shrinks to the Android-specific layer (property
+area, shared buffers, linux_* helpers) and `Vfs` itself stops being
+duplicated.
 
 ## Device, 10:30
 
