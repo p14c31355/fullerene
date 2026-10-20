@@ -275,19 +275,41 @@ static FROZEN_TR: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64:
 fn trail_word() -> u64 {
     // One owner for the base address and capacity (blackbox::trail): this
     // reader used to carry its own copy of both, which is how a 16-slot
-    // writer and a 32-slot reader ended up disagreeing.
-    let cnt = crate::blackbox::trail::len();
-    // The newest step is what names the park, so pack the *tail* of the
-    // trail (the last eight bytes), newest byte in the low position.
-    let start = cnt.saturating_sub(8);
-    let mut bytes = 0u64;
-    for i in 0..8usize {
-        let at = start + i;
-        if at < cnt {
-            bytes |= (crate::blackbox::trail::byte(at) as u64) << (8 * i);
+    // writer and a 32-slot reader ended up disagreeing. The module is
+    // ANE-gated in blackbox.rs, and this file is compiled into non-ANE
+    // aarch64 roots too, so fall back to the raw volatile read there.
+    #[cfg(fullerene_aarch64_ane)]
+    {
+        let cnt = crate::blackbox::trail::len();
+        // The newest step is what names the park, so pack the *tail* of the
+        // trail (the last eight bytes), newest byte in the low position.
+        let start = cnt.saturating_sub(8);
+        let mut bytes = 0u64;
+        for i in 0..8usize {
+            let at = start + i;
+            if at < cnt {
+                bytes |= (crate::blackbox::trail::byte(at) as u64) << (8 * i);
+            }
         }
+        ((cnt as u64) << 32) | bytes
     }
-    ((cnt as u64) << 32) | bytes
+    #[cfg(not(fullerene_aarch64_ane))]
+    {
+        const BASE: usize = 0x348d_e800;
+        const CAP: u64 = 32;
+        let cnt = unsafe { core::ptr::read_volatile(BASE as *const u32).min(CAP as u32) } as u64;
+        let start = cnt.saturating_sub(8);
+        let mut bytes = 0u64;
+        for i in 0..8u64 {
+            let at = start + i;
+            if at < cnt {
+                bytes |= (unsafe { core::ptr::read_volatile((BASE + 4 + at as usize) as *const u8) }
+                    as u64)
+                    << (8 * i);
+            }
+        }
+        (cnt << 32) | bytes
+    }
 }
 
 /// Latch the park for the host. Called by the watchdog before it paints.

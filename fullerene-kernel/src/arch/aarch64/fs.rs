@@ -494,7 +494,9 @@ fn clear_property_area() -> bool {
         if frame == 0 {
             return false;
         }
-        crate::blackbox::trail::reset();
+        unsafe {
+            core::ptr::write_bytes(frame as *mut u8, 0, 4096);
+        }
     }
     true
 }
