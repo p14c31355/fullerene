@@ -696,8 +696,8 @@ where
 
 // ── Backward-compatible free functions ────────────────────────────
 //
-// All delegate through `with_vfs` → `KernelContext.vfs`, guaranteeing
-// single VfsContext instance.
+// All delegate through `with_vfs` -> the module's own singleton
+// (VFS_CONTEXT), guaranteeing a single VfsContext instance.
 
 /// Backward-compatible wrapper: mount a filesystem.
 ///
