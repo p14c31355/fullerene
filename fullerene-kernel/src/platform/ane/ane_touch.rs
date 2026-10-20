@@ -436,8 +436,10 @@ unsafe fn poll_focaltech() {
 
 /// The Goodix GT1x poll path: the status register at 0x814e carries the
 /// contact count in its low nibble and a buffer-valid bit (0x80); the
-/// 8-byte contact records follow from 0x8150. The frame is status +
-/// records + key byte + checksum.
+/// 8-byte contact records follow from 0x8150. The frame the parser wants
+/// is status + records + key byte + checksum (its `needed` is
+/// 1 + count*8 + 2 - the trailing two bytes are the key byte and the
+/// checksum, not one checksum byte).
 unsafe fn poll_gt1x() {
     // The status byte: is a report ready?
     let mut status = [0u8; 1];
