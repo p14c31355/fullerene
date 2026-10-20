@@ -303,3 +303,68 @@ What is still blocked: the phone that produced this record runs the v343c
 *diagnostic* build, which parks on panic - so the no-button loader lane never
 completes and the D+ storm continues. It needs one power cycle; the loop then
 flashes `v343g-handoff` (`afec7275a19a751a`) on its own.
+
+# Status — 2026-10-20 (VFS hardening, and the second namespace)
+
+## The flash loop was losing windows to two of its own bugs
+
+`lk_loop.sh` hard-coded `/sys/bus/usb/devices/1-9/product`, so a re-enumerated
+device on another port was invisible, and it read `NEXT_IMG` as a bare
+filename while `fastboot` resolves relative paths against the caller's cwd.
+Both cost whole LK windows; the 10:20 run lost three in a row to
+`No such file`. Fixed: the loop now scans the whole bus for a product string
+of `Fastboot2.0`, and `set_image` resolves `NEXT_IMG` under
+`~/dev/p20-root/artifacts` and refuses to flash when the artifact is missing.
+
+## The step trail had four writers and three capacities
+
+`0x348de800` (count u32 at +0, bytes at +4) was written by `blackbox.rs`,
+`arch/aarch64/fs.rs`, `arch/aarch64/exceptions.rs` and read by
+`platform/ane/ane_usb_dev.rs`, whose reader claimed `CAP = 32` while the
+writer kept 16. Now `blackbox::trail` owns the base, the capacity, the
+per-boot reset and the clamped read; the other four call it.
+
+## An absolute path is a bounded value
+
+`genome::vfs` normalised paths into `Vec<&str>` plus a `String` — two heap
+allocations per call on the boot path, no length bound, and no way to fail.
+`AbsolutePath` is a fixed 256-byte buffer (`MAX_PATH`, matching the EL0
+boundary) with `MAX_PATH_COMPONENTS = 64`; a path it cannot represent is
+refused rather than truncated, because truncation silently names a different
+file. `Vfs::try_resolve_path` joins the working directory first, so only the
+result is bounded. The old `resolve_path` stays, pinned to the new one by a
+parity test. 75 genome tests, 38 kernel tests.
+
+## OPEN: the kernel has two VFS namespaces
+
+- `arch/aarch64/fs.rs:2350` — `static mut VFS: Option<Mutex<Vfs>>`, created at
+  `fs::init()` (`:2394`), seeded by the initramfs, reached by every EL0
+  syscall through the private `with_vfs` (`:7983`).
+- `contexts/vfs.rs:49` — `VfsContext.inner: Mutex<Vfs>`, created by
+  `VfsContext::new()` (`:139`), used by `shell.rs`, `gui.rs`, `init.rs`,
+  `klog.rs` and `initramfs.rs` through `with_kernel(|k| k.vfs …)`.
+
+Both call `Vfs::new(Box::new(MemFileSystem::new()))`, so a file created
+through a syscall is invisible to the shell and vice versa. Init order is
+`init_kernel()` (`init.rs:150`) *before* `fs::init()` (`init.rs:515`), which
+rules out the contexts layer owning the object unless the arch side adopts it
+lazily.
+
+Migration plan (next session, in this order):
+1. Make the arch VFS the single owner; `VfsContext` keeps no `Vfs` of its own.
+2. Route the 20 `self.inner.lock()` sites in `contexts/vfs.rs` through one
+   `with_inner` helper that maps "owner not installed yet" to `FsError::Io`.
+3. Lock order becomes arch-VFS -> handle_table. Nothing inside the arch VFS
+   lock may take the kernel-context lock; nothing may hold `handle_table`
+   while calling into the arch VFS.
+4. Public API of `VfsContext` (48 fns) must not change, so shell/gui/init keep
+   compiling untouched.
+5. Verify: `cargo test -p fullerene-kernel --lib` (38 host tests, unchanged)
+   and the ANE build.
+
+## Device, 10:30
+
+v346 (`dec320d6`) flashed at 10:22:16 and never enumerated: no `18d1:d00d`,
+no `12d1:107e`, for eight minutes. v343m did enumerate, so v345/v346 moved
+the freeze earlier than the USB responder. The panel is the only readout;
+the trail letter at freeze time names the stage.
