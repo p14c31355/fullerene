@@ -404,6 +404,11 @@ fn syscall_exec_path(frame: &mut Aarch64TrapFrame) -> u64 {
     if image_length == 0 {
         return ERR_INVALID;
     }
+    // v343l: name the gap between read_path's last trail byte ('E') and
+    // exec's own first marker - if this line is the last one on the panel,
+    // the stall is upstream of exec, not inside it.
+    #[cfg(fullerene_aarch64_ane)]
+    uart::put_hex("exec:-1 call len=", image_length as u64);
     let replaced = match allocator::with_global(|frames| {
         task::exec(frames, frame, &image[..image_length], &name[..name_length])
     }) {
@@ -464,6 +469,8 @@ pub(super) fn linux_exec_path(
     if image_length == 0 {
         return ERR_INVALID;
     }
+    #[cfg(fullerene_aarch64_ane)]
+    uart::put_hex("exec:-1 call len=", image_length as u64);
     let image_info = match allocator::with_global(|frames| {
         task::exec(frames, frame, &image[..image_length], &name[..name_length])
     }) {
