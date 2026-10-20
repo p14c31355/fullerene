@@ -10,13 +10,23 @@
 
 use super::ane_i2c::{BUS_I2C0, read_regs_at};
 
-/// (label, address, id register, expected id) straight from the DTS.
+/// (label, address, id register, expected id) — the parts the ANE-LX2J DTB
+/// marks `ok` in `/sensorhub/*`, confirmed against the stock build's HAL
+/// (`dumpsys sensorservice`: accelerometer/gyro = LSM6DS3, magnetometer =
+/// AKM09918, light/proximity = LTR578). The DTB's other candidates
+/// (lis3dh@0x19, kionix@0x1F, akm09911@0x0D) are `disabled`; they stay
+/// discoverable through `oem i2c` but are not the fitted parts.
+///
+/// ID registers, from the vendor drivers:
+/// - LSM6DS3 `WHO_AM_I` (0x0F) = 0x6A
+/// - AKM09918 `WIA` (0x00) = 0x48
+/// - LTR578 `MANUFACTURER_ID` (0x87) = 0x05 ("LiteOn")
 pub const CANDIDATES: [(&str, u8, u8, u8); 5] = [
-    ("acc-lis3dh", 0x18, 0x0f, 0x33),
-    ("acc-kionix", 0x1e, 0x0f, 0x15),
-    ("mag-ak09911", 0x0d, 0x00, 0x48),
-    ("als-bh1745", 0x38, 0x40, 0x0b),
-    ("ps-pa224", 0x1e, 0x01, 0x10),
+    ("acc-lsm6ds3", 0x6a, 0x0f, 0x6a),
+    ("gyro-lsm6ds3", 0x6a, 0x0f, 0x6a),
+    ("mag-ak09918", 0x0c, 0x00, 0x48),
+    ("als-ltr578", 0x53, 0x87, 0x05),
+    ("ps-ltr578", 0x53, 0x87, 0x05),
 ];
 
 /// One candidate's answer: the id byte read, or `None` if the address NACKed.
