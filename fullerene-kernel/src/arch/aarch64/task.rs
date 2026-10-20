@@ -145,7 +145,7 @@ impl LinuxSignalFrame {
         saved_frame: Aarch64TrapFrame {
             x: [0; 31],
             elr_el1: 0,
-            spsr_el1: 0,
+            spsr_el1: super::exceptions::Pstate::el0t().bits(),
             sp_el0: 0,
             esr_el1: 0,
             far_el1: 0,
@@ -234,7 +234,7 @@ impl TaskSlot {
         frame: Aarch64TrapFrame {
             x: [0; 31],
             elr_el1: 0,
-            spsr_el1: 0,
+            spsr_el1: super::exceptions::Pstate::el0t().bits(),
             sp_el0: 0,
             esr_el1: 0,
             far_el1: 0,
@@ -2496,7 +2496,7 @@ pub(crate) fn spawn(
     let frame = Aarch64TrapFrame {
         x: [0; 31],
         elr_el1: entry,
-        spsr_el1: 0,
+        spsr_el1: super::exceptions::Pstate::el0t().bits(),
         sp_el0: STACK_ADDRESS + PAGE_SIZE - 16,
         esr_el1: 0,
         far_el1: 0,

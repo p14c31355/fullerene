@@ -178,8 +178,43 @@ impl Aarch64TrapFrame {
 
     #[inline]
     pub(crate) fn from_user(&self) -> bool {
-        // PSTATE.M == EL0t when the exception came from an AArch64 user task.
-        self.spsr_el1 & 0xf == 0
+        Pstate::from_bits(self.spsr_el1).is_user()
+    }
+}
+
+/// PSTATE as `eret` will install it. Every frame used to set `spsr_el1 = 0`,
+/// which means EL0t with every interrupt unmasked only by accident of
+/// arithmetic. Naming the bits makes the two mistakes that matter here -
+/// running the task at EL1, or landing in EL0 with IRQs masked - impossible to
+/// write by hand, and lets `from_user` read the mode field instead of a nibble.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Pstate(u64);
+
+impl Pstate {
+    const MODE_MASK: u64 = 0b1111;
+    const MODE_EL0T: u64 = 0b0000;
+    const IRQ_MASKED: u64 = 1 << 7;
+
+    /// EL0t with all interrupts unmasked: the only state launchd has ever
+    /// wanted, now spelled out instead of left as a zero.
+    pub(crate) const fn el0t() -> Self {
+        Self(Self::MODE_EL0T)
+    }
+
+    pub(crate) const fn from_bits(bits: u64) -> Self {
+        Self(bits)
+    }
+
+    pub(crate) const fn with_irq_masked(self) -> Self {
+        Self(self.0 | Self::IRQ_MASKED)
+    }
+
+    pub(crate) const fn is_user(self) -> bool {
+        self.0 & Self::MODE_MASK == Self::MODE_EL0T
+    }
+
+    pub(crate) const fn bits(self) -> u64 {
+        self.0
     }
 }
 

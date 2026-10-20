@@ -379,7 +379,7 @@ const fn user_frame(entry: u64, stack_top: u64) -> exceptions::Aarch64TrapFrame 
     exceptions::Aarch64TrapFrame {
         x: [0; 31],
         elr_el1: entry,
-        spsr_el1: 0, // EL0t, with interrupts unmasked
+        spsr_el1: super::exceptions::Pstate::el0t().bits(),
         sp_el0: stack_top,
         esr_el1: 0,
         far_el1: 0,
