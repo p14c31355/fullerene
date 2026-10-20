@@ -2,18 +2,23 @@
 //! `vfs::read()` / `vfs::cwd` / `vfs::mount` global calls.
 //!
 //! Holds mount table, working directory, and open-handle routing inside a single
-//! context struct so that higher layers access the VFS through
-//! `kernel.vfs.open(path)` rather than scattered module-level statics.
+//! context struct so that higher layers access the VFS through the module's
+//! own singleton (`init_vfs()` + the free functions) rather than scattered
+//! module-level statics.
 //!
 //! # Locking
 //!
 //! `VfsContext` uses internal `spin::Mutex` for `inner` (Vfs dispatcher) and
 //! `handle_table`.  Lock ordering is consistently **inner → handle_table**
 //! (or handle_table alone, never handle_table → inner) to prevent deadlocks.
+//! The singleton's own slot lock is taken only to fetch the context and is
+//! never held across a VFS operation.
 //!
-//! `VfsContext` lives inside `KernelContext` which is itself behind a
-//! global lock; the inner lock is still required because `VfsContext` may be
-//! accessed independently from the kernel-level lock in the future.
+//! The context is self-owned (a static inside this module), not a field of
+//! `KernelContext`: that removes the kernel lock from every VFS call and
+//! lets both kernel roots — the x86/UEFI one and the aarch64 one — compile
+//! and use this same owner, which is how the former two-VFS-namespace split
+//! is being collapsed.
 
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -22,17 +27,58 @@ use spin::Mutex;
 
 use genome::fs::FsError;
 use genome::io::SeekFrom;
-pub use genome::vfs::{
-    FileDescriptor, FileSystem, FileSystemCapabilities, InodeType, MemFileSystem, VNode, Vfs,
-};
+pub use genome::vfs::{FileDescriptor, FileSystem, InodeType, MemFileSystem, VNode, Vfs};
 
 /// Emit a debug-status message to the lock-free ring buffer (visible in the
 /// taskbar).  Safe to call while holding any VFS lock because the ring buffer
 /// uses only atomic operations.
+///
+/// The `nitrogen::debug_status` ring is an x86-root facility (the ANE root
+/// has no taskbar); the ANE carries no trace here.
+#[cfg(not(fullerene_aarch64_ane))]
 macro_rules! trace {
     ($fmt:literal $(, $arg:expr)* $(,)?) => {
         nitrogen::debug_status!("VFS", $fmt $(, $arg)*)
     };
+}
+#[cfg(fullerene_aarch64_ane)]
+macro_rules! trace {
+    ($fmt:literal $(, $arg:expr)* $(,)?) => {{
+        let _ = format_args!($fmt $(, $arg)*);
+    }};
+}
+
+// ── VFS diag logging ────────────────────────────────────────────────
+//
+// The x86 root routes diag lines through the kernel log ring; the ANE
+// root has no klog (its console is the blackbox ring), so the macro
+// compiles to nothing there.
+#[cfg(not(fullerene_aarch64_ane))]
+macro_rules! klog_vfs_diag {
+    ($fmt:literal $(, $arg:expr)* $(,)?) => {
+        crate::klog_fmt!($fmt $(, $arg)*)
+    };
+}
+#[cfg(fullerene_aarch64_ane)]
+macro_rules! klog_vfs_diag {
+    ($fmt:literal $(, $arg:expr)* $(,)?) => {{
+        let _ = format_args!($fmt $(, $arg)*);
+    }};
+}
+
+/// One informational mount message. The `log` crate is an x86-root
+/// dependency; the ANE root carries no logger, so the line is dropped.
+#[cfg(not(fullerene_aarch64_ane))]
+macro_rules! vfs_log_info {
+    ($($arg:tt)*) => {
+        log::info!($($arg)*)
+    };
+}
+#[cfg(fullerene_aarch64_ane)]
+macro_rules! vfs_log_info {
+    ($($arg:tt)*) => {{
+        let _ = format_args!($($arg)*);
+    }};
 }
 
 // ── VfsContext ──────────────────────────────────────────────────────
@@ -212,7 +258,12 @@ impl VfsContext {
             };
             for source in returned_devices {
                 if let Some(device_name) = source.strip_prefix("/dev/") {
+                    // Block-device leases exist only where devfs does; the
+                    // ANE root's unmount path never has a lease to return.
+                    #[cfg(not(fullerene_aarch64_ane))]
                     crate::devfs::return_block_device_lease(device_name);
+                    #[cfg(fullerene_aarch64_ane)]
+                    let _ = device_name;
                 }
             }
         }
@@ -461,7 +512,7 @@ impl VfsContext {
             return Ok(());
         }
 
-        crate::klog_fmt!(
+        klog_vfs_diag!(
             "[VFS-DIAG] context copy begin source={} destination={}\n",
             source,
             destination
@@ -514,7 +565,7 @@ impl VfsContext {
                     if actual == read_bytes as u64 {
                         Ok(())
                     } else {
-                        crate::klog_fmt!(
+                        klog_vfs_diag!(
                             "[VFS-DIAG] context copy committed-size mismatch destination={} expected={} actual={}\n",
                             destination,
                             read_bytes,
@@ -527,7 +578,7 @@ impl VfsContext {
         } else {
             result
         };
-        crate::klog_fmt!(
+        klog_vfs_diag!(
             "[VFS-DIAG] context copy end source={} destination={} reads={} read_bytes={} writes={} write_bytes={} result={:?}\n",
             source,
             destination,
@@ -572,36 +623,43 @@ impl VfsContext {
 
 // ── Global VFS context singleton ────────────────────────────────────
 //
-// NOTE: The canonical VfsContext lives inside `KernelContext.vfs`.
-// This static exists ONLY to provide a global accessor that routes
-// through KernelContext.  It is NOT a separate VfsContext instance.
-// The `init_vfs()` function is called once during boot and ensures
-// the VfsContext inside KernelContext is properly initialised.
-//
-// The free functions below (`open`, `read`, `close`, …) delegate
-// through `with_kernel()` → `kernel.vfs.*` to guarantee that there
-// is exactly ONE VfsContext in the system.
+// The VfsContext type is self-owned: this module holds the one instance
+// in a static, instead of borrowing a slot inside KernelContext. That
+// removes the kernel-level lock from every VFS call (lock order drops
+// to inner → handle_table, what the module header already documents)
+// and lets the aarch64 root compile-check this same owner in one build,
+// which is the first step of merging the two VFS namespaces.
+
+/// The process-wide VFS context. `KernelContext` keeps its `vfs` field
+/// pointing at nothing: every caller goes through the accessors here.
+static VFS_CONTEXT: Mutex<Option<VfsContext>> = Mutex::new(None);
 
 /// Initialise the global VFS context.
 ///
-/// This is idempotent: if KernelContext already has a VfsContext with
-/// a root filesystem mounted, this is a no-op.
+/// This is idempotent: the first call creates the context; later calls
+/// observe the existing one and change nothing.
 pub fn init_vfs() {
-    // VfsContext is already created inside KernelContext::new().
-    // This function exists for the bootstrap sequence and backward
-    // compatibility. Additional per-filesystem initialization
-    // is handled by the caller.
-    log::info!("VFS: mounted MemFileSystem at /");
+    let mut slot = VFS_CONTEXT.lock();
+    if slot.is_none() {
+        *slot = Some(VfsContext::new());
+    }
+    vfs_log_info!("VFS: mounted MemFileSystem at /");
+}
+
+fn with_context<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&VfsContext) -> R,
+{
+    let guard = VFS_CONTEXT.lock();
+    guard.as_ref().map(f)
 }
 
 /// Execute a closure over the VfsContext.
-///
-/// Routes through `KernelContext.vfs` to guarantee single-instance.
 pub fn with_vfs<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&VfsContext) -> R,
 {
-    super::kernel::with_kernel(|k| f(&k.vfs))
+    with_context(f)
 }
 
 /// Execute a mutable closure (though VfsContext uses interior mutability,
@@ -610,7 +668,7 @@ pub fn with_vfs_mut<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&VfsContext) -> R,
 {
-    super::kernel::with_kernel(|k| f(&k.vfs))
+    with_context(f)
 }
 
 // ── Backward-compatible free functions ────────────────────────────
@@ -633,54 +691,75 @@ pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsErr
         "tmpfs" => {
             let memfs = Box::new(MemFileSystem::new());
             vfs.mount(mount_point, memfs)?;
-            log::info!("VFS: mounted tmpfs from {} at {}", device, mount_point);
+            vfs_log_info!("VFS: mounted tmpfs from {} at {}", device, mount_point);
             Ok(())
         }
         "devfs" => {
-            vfs.mount(mount_point, Box::new(crate::devfs::DevFs::new()))?;
-            log::info!("VFS: mounted devfs at {}", mount_point);
-            Ok(())
+            #[cfg(fullerene_aarch64_ane)]
+            {
+                // The ANE root compiles no devfs (its /dev is the Android
+                // DevFs mounted by the boot path); this arm cannot run.
+                let _ = (device, mount_point);
+                Err(FsError::PermissionDenied)
+            }
+            #[cfg(not(fullerene_aarch64_ane))]
+            {
+                vfs.mount(mount_point, Box::new(crate::devfs::DevFs::new()))?;
+                vfs_log_info!("VFS: mounted devfs at {}", mount_point);
+                Ok(())
+            }
         }
         "auto" | "fat32" => {
-            let mount_point = vfs.inner.lock().resolve_path(mount_point);
-            let device_name = device
-                .strip_prefix("/dev/")
-                .filter(|name| !name.is_empty() && !name.contains('/'))
-                .ok_or(FsError::InvalidPath)?;
-
-            if !crate::devfs::block_device_exists(device_name) {
-                return Err(FsError::FileNotFound);
+            #[cfg(fullerene_aarch64_ane)]
+            {
+                // No devfs on the ANE root, so there is no block-device
+                // lease table to mount from; FAT/exFAT media on the phone
+                // arrives through the arch VFS's own block backend.
+                let _ = (device, mount_point, fs_type);
+                Err(FsError::PermissionDenied)
             }
-            if vfs.inner.lock().mounted_fs_index(&mount_point).is_some() {
-                return Err(FsError::FileExists);
-            }
+            #[cfg(not(fullerene_aarch64_ane))]
+            {
+                let mount_point = vfs.inner.lock().resolve_path(mount_point);
+                let device_name = device
+                    .strip_prefix("/dev/")
+                    .filter(|name| !name.is_empty() && !name.contains('/'))
+                    .ok_or(FsError::InvalidPath)?;
 
-            // Validate mount point before consuming the block device
-            if !vfs.exists(&mount_point) {
-                vfs.mkdir(&mount_point)?;
-            }
-
-            let bdev =
-                crate::devfs::lease_block_device(device_name).ok_or(FsError::PermissionDenied)?;
-            trace!("mount_device({})", device_name);
-            match genome::fat::mount_device(bdev) {
-                Ok(fs) => {
-                    if let Err(e) = vfs.mount(&mount_point, fs) {
-                        crate::devfs::return_block_device_lease(device_name);
-                        return Err(e);
-                    }
-                    vfs.record_device_mount(device, &mount_point);
-                    log::info!(
-                        "VFS: mounted removable filesystem from {} at {}",
-                        device,
-                        mount_point
-                    );
-                    Ok(())
+                if !crate::devfs::block_device_exists(device_name) {
+                    return Err(FsError::FileNotFound);
                 }
-                Err((e, returned_bdev)) => {
-                    drop(returned_bdev);
-                    crate::devfs::return_block_device_lease(device_name);
-                    Err(e)
+                if vfs.inner.lock().mounted_fs_index(&mount_point).is_some() {
+                    return Err(FsError::FileExists);
+                }
+
+                // Validate mount point before consuming the block device
+                if !vfs.exists(&mount_point) {
+                    vfs.mkdir(&mount_point)?;
+                }
+
+                let bdev = crate::devfs::lease_block_device(device_name)
+                    .ok_or(FsError::PermissionDenied)?;
+                trace!("mount_device({})", device_name);
+                match genome::fat::mount_device(bdev) {
+                    Ok(fs) => {
+                        if let Err(e) = vfs.mount(&mount_point, fs) {
+                            crate::devfs::return_block_device_lease(device_name);
+                            return Err(e);
+                        }
+                        vfs.record_device_mount(device, &mount_point);
+                        vfs_log_info!(
+                            "VFS: mounted removable filesystem from {} at {}",
+                            device,
+                            mount_point
+                        );
+                        Ok(())
+                    }
+                    Err((e, returned_bdev)) => {
+                        drop(returned_bdev);
+                        crate::devfs::return_block_device_lease(device_name);
+                        Err(e)
+                    }
                 }
             }
         }
@@ -797,13 +876,13 @@ pub fn change_directory(path: &str) -> Result<(), FsError> {
 
 /// RAII guard proving that all VFS-related locks were successfully
 /// acquired via `try_lock`.  Holding this guard guarantees that no
-/// other thread holds the kernel, VFS inner, or handle_table locks,
-/// so a subsequent blocking `flush_to_vfs()` call cannot deadlock.
+/// other thread holds the VFS inner or handle_table locks, so a
+/// subsequent blocking `flush_to_vfs()` call cannot deadlock.
 ///
 /// `spin::Mutex` does not have poisoning semantics, so re-acquiring
 /// the same locks after dropping this guard is safe in a panic handler.
 pub struct VfsAccessGuard {
-    _kernel: spin::MutexGuard<'static, Option<super::kernel::KernelContext>, spin::relax::Spin>,
+    _context: spin::MutexGuard<'static, Option<VfsContext>, spin::relax::Spin>,
     _inner: spin::MutexGuard<'static, Vfs, spin::relax::Spin>,
     _handle_table: spin::MutexGuard<'static, HandleTable, spin::relax::Spin>,
 }
@@ -815,7 +894,7 @@ pub struct VfsAccessGuard {
 
 /// Try to acquire all VFS-related locks without blocking.
 ///
-/// Returns `Some(guard)` if the kernel context, VFS dispatcher, and
+/// Returns `Some(guard)` if the VFS context, dispatcher, and
 /// handle table were all successfully locked via `try_lock`.
 /// Returns `None` if any lock is currently held by another thread
 /// (or by the panicking thread itself in a re-entrant scenario).
@@ -825,31 +904,28 @@ pub struct VfsAccessGuard {
 /// confidence that the locks are free (in a single-threaded kernel,
 /// no other thread can steal them between drop and re-acquire).
 pub fn vfs_try_access() -> Option<VfsAccessGuard> {
-    // SAFETY: kernel_guard borrows from a global static that lives for
+    // SAFETY: context_guard borrows from a global static that lives for
     // the entire program.  Transmute to 'static before accessing inner
     // fields to avoid borrow conflicts during the move into VfsAccessGuard.
-    let kernel_guard = super::kernel::get_kernel().try_lock()?;
-    let kernel_guard: spin::MutexGuard<
-        'static,
-        Option<super::kernel::KernelContext>,
-        spin::relax::Spin,
-    > = unsafe { core::mem::transmute(kernel_guard) };
-    let kernel = kernel_guard.as_ref()?;
+    let context_guard = VFS_CONTEXT.try_lock()?;
+    let context_guard: spin::MutexGuard<'static, Option<VfsContext>, spin::relax::Spin> =
+        unsafe { core::mem::transmute(context_guard) };
+    let context = context_guard.as_ref()?;
 
-    // Acquire inner and handle_table while holding the kernel guard
-    // to preserve lock ordering (kernel → inner → handle_table).
-    let inner_guard = kernel.vfs.inner.try_lock()?;
-    let handle_table_guard = kernel.vfs.handle_table.try_lock()?;
+    // Acquire inner and handle_table while holding the context guard
+    // to preserve lock ordering (context → inner → handle_table).
+    let inner_guard = context.inner.try_lock()?;
+    let handle_table_guard = context.handle_table.try_lock()?;
 
     // SAFETY: inner_guard and handle_table_guard also borrow from global
-    // statics inside KernelContext.vfs, which lives forever.
+    // statics inside VfsContext, which lives forever.
     let inner_guard: spin::MutexGuard<'static, Vfs, spin::relax::Spin> =
         unsafe { core::mem::transmute(inner_guard) };
     let handle_table_guard: spin::MutexGuard<'static, HandleTable, spin::relax::Spin> =
         unsafe { core::mem::transmute(handle_table_guard) };
 
     Some(VfsAccessGuard {
-        _kernel: kernel_guard,
+        _context: context_guard,
         _inner: inner_guard,
         _handle_table: handle_table_guard,
     })
