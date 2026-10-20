@@ -245,30 +245,85 @@ pub(super) fn run() -> ! {
             cpu::wait_forever();
         }
     }
-    uart::put_hex("user-launchd: ttbr0=", mmu::active_ttbr0());
+    let handoff = El0Handoff {
+        entry: interpreter_entry,
+        stack: frame.sp_el0,
+        ttbr0: mmu::active_ttbr0(),
+    };
+    uart::put_hex("user-launchd: ttbr0=", handoff.ttbr0);
     fb_mark(30, b"L6 enter el0");
-    #[cfg(fullerene_aarch64_ane)]
-    fs::vfs_step_mark(b'M');
-    #[cfg(fullerene_aarch64_ane)]
-    {
-        // The exact PC the eret targets. A wrong entry is invisible in every
-        // other channel when the target page happens to be mapped.
-        super::platform::ane_fb::ENTRY_PC
-            .store(interpreter_entry, core::sync::atomic::Ordering::Relaxed);
-        super::platform::ane_fb::paint_hex_at(18, 300, b"ENTRY", interpreter_entry);
-        super::platform::ane_fb::flush_panel();
-        // Tick stamp at the pre-ERET moment: frozen S marks plus this value
-        // bracket the stopping tick against the eret moment.
-        super::platform::ane_fb::paint_hex_at(
-            32,
-            300,
-            b"ET",
-            super::exceptions::tick_count() as u64,
-        );
-        super::platform::ane_fb::flush_panel();
+    handoff.enter(&mut frame)
+}
+
+/// The last steps of the EL0 handoff used to be a straight run of calls whose
+/// progress could only be inferred from one letter in the ring trail. Each step
+/// is now a named stage of one typed value, so a frozen trail names the call
+/// that did not return instead of inviting a reading of the panel.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HandoffStage {
+    Built,
+    EntryPublished,
+    EntryPainted,
+    PanelFlushed,
+    EntryTicked,
+}
+
+impl HandoffStage {
+    const fn letter(self) -> u8 {
+        match self {
+            Self::Built => b'M',
+            Self::EntryPublished => b'N',
+            Self::EntryPainted => b'O',
+            Self::PanelFlushed => b'P',
+            Self::EntryTicked => b'Q',
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct El0Handoff {
+    pub(crate) entry: u64,
+    pub(crate) stack: u64,
+    pub(crate) ttbr0: u64,
+}
+
+impl El0Handoff {
+    fn stamp(self, stage: HandoffStage) {
+        #[cfg(fullerene_aarch64_ane)]
+        {
+            let _ = self.stack;
+            fs::vfs_step_mark(stage.letter());
+        }
+        #[cfg(not(fullerene_aarch64_ane))]
+        let _ = (self, stage);
     }
 
-    unsafe { exceptions::enter_user(&*task::current_frame()) }
+    /// Publish the entry PC, paint it, flush, stamp a tick, and hand the CPU to
+    /// EL0. Each stage is stamped before the call it names, so the newest
+    /// letter in a frozen trail is the step that did not return.
+    fn enter(self, frame: &mut exceptions::Aarch64TrapFrame) -> ! {
+        self.stamp(HandoffStage::Built);
+        #[cfg(fullerene_aarch64_ane)]
+        {
+            super::platform::ane_fb::ENTRY_PC
+                .store(self.entry, core::sync::atomic::Ordering::Relaxed);
+            self.stamp(HandoffStage::EntryPublished);
+            super::platform::ane_fb::paint_hex_at(18, 300, b"ENTRY", self.entry);
+            self.stamp(HandoffStage::EntryPainted);
+            super::platform::ane_fb::flush_panel();
+            self.stamp(HandoffStage::PanelFlushed);
+            super::platform::ane_fb::paint_hex_at(
+                32,
+                300,
+                b"ET",
+                super::exceptions::tick_count() as u64,
+            );
+            self.stamp(HandoffStage::EntryTicked);
+            super::platform::ane_fb::flush_panel();
+        }
+        let _ = self.stack;
+        unsafe { exceptions::enter_user(frame) }
+    }
 }
 
 fn install_linux_stack(
