@@ -2584,11 +2584,13 @@ pub(crate) fn exec(
     // host meanwhile sees a device that answers no descriptor. These eight
     // numbered lines name the operation that wedges, on the panel and in the
     // ring, without a debugger.
+    crate::blackbox::EXEC_STAGE.store(0, core::sync::atomic::Ordering::Relaxed);
     #[cfg(fullerene_aarch64_ane)]
     uart::put_hex("exec:0 enter space=", new_space as u64);
     if !mmu::reset_user_space(new_space) {
         return Err(ERR_OUT_OF_MEMORY);
     }
+    crate::blackbox::EXEC_STAGE.store(1, core::sync::atomic::Ordering::Relaxed);
     #[cfg(fullerene_aarch64_ane)]
     uart::put_hex("exec:1 space ok=", new_space as u64);
 
@@ -2598,6 +2600,7 @@ pub(crate) fn exec(
         let _ = mmu::release_user_space(new_space, frames, &[]);
         return Err(ERR_INVALID);
     };
+    crate::blackbox::EXEC_STAGE.store(2, core::sync::atomic::Ordering::Relaxed);
     #[cfg(fullerene_aarch64_ane)]
     uart::put_hex("exec:2 image pages=", loaded.page_count as u64);
     let Some((interpreter_entry, interpreter_base)) = load_interpreter(new_space, &loaded, frames)
@@ -2611,6 +2614,7 @@ pub(crate) fn exec(
         let _ = mmu::release_user_space(new_space, frames, &[]);
         return Err(ERR_OUT_OF_MEMORY);
     };
+    crate::blackbox::EXEC_STAGE.store(3, core::sync::atomic::Ordering::Relaxed);
     #[cfg(fullerene_aarch64_ane)]
     uart::put_hex("exec:3 interp ok base=", interpreter_base.unwrap_or(0));
     if !elf::map_zeroed_user_page(new_space, STACK_ADDRESS, stack_page) {
@@ -2619,6 +2623,7 @@ pub(crate) fn exec(
         let _ = mmu::release_user_space(new_space, frames, &[]);
         return Err(ERR_OUT_OF_MEMORY);
     }
+    crate::blackbox::EXEC_STAGE.store(4, core::sync::atomic::Ordering::Relaxed);
     #[cfg(fullerene_aarch64_ane)]
     uart::put_hex("exec:4 stack ok=", stack_page as u64);
     if !mmu::activate_user_space(new_space) {
@@ -2626,11 +2631,13 @@ pub(crate) fn exec(
         let _ = mmu::release_user_space(new_space, frames, &[]);
         return Err(ERR_OUT_OF_MEMORY);
     }
+    crate::blackbox::EXEC_STAGE.store(5, core::sync::atomic::Ordering::Relaxed);
     #[cfg(fullerene_aarch64_ane)]
     uart::put_hex("exec:5 active=", new_space as u64);
     // An exec tears down all process-local shared mappings before the old
     // root is released; the capability itself remains in the handle table.
     fs::cleanup_shared_mappings(pid);
+    crate::blackbox::EXEC_STAGE.store(6, core::sync::atomic::Ordering::Relaxed);
     #[cfg(fullerene_aarch64_ane)]
     uart::put_hex("exec:6 shared ok pid=", pid as u64);
     if !mmu::release_user_space(old_space, frames, &[]) {
@@ -2638,6 +2645,7 @@ pub(crate) fn exec(
         let _ = mmu::release_user_space(new_space, frames, &[]);
         return Err(ERR_OUT_OF_MEMORY);
     }
+    crate::blackbox::EXEC_STAGE.store(7, core::sync::atomic::Ordering::Relaxed);
     #[cfg(fullerene_aarch64_ane)]
     uart::put_hex("exec:7 old released=", old_space as u64);
 

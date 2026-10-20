@@ -341,6 +341,10 @@ fn manufacturer_desc() -> &'static [u8] {
         text[n] = b'T';
         n += 1;
         hex_push(text, &mut n, FROZEN_TR.load(Ordering::Relaxed), 16);
+        text[n] = b'S';
+        n += 1;
+        let stage = crate::blackbox::EXEC_STAGE.load(Ordering::Relaxed);
+        hex_push(text, &mut n, stage as u64, 2);
         let used = crate::fastboot_dispatch::string_descriptor(&text[..n], buf);
         &buf[..used]
     }

@@ -1054,6 +1054,13 @@ pub static ANE_IRQ_CONTEXT: core::sync::atomic::AtomicBool =
 /// lesson).
 pub static IRQ_PC: AtomicU64 = AtomicU64::new(0);
 
+/// v343n: the last `exec` stage the boot thread announced. Published through
+/// the manufacturer string (`...S<hex>`) so a wedged boot names its own stop
+/// position in the host journal, with no photo in the loop. 0xff is the
+/// syscall-side call site, 0 is no stage recorded yet.
+pub static EXEC_STAGE: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0xffff_ffff);
+
 /// The single watchdog instance.
 static PROGRESS_WATCHDOG: ProgressWatchdog = ProgressWatchdog {
     count: core::sync::atomic::AtomicU32::new(0),
