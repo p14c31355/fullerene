@@ -2578,9 +2578,19 @@ pub(crate) fn exec(
     if name.is_empty() || name.len() > MAX_TASK_NAME || new_space == old_space {
         return Err(ERR_INVALID);
     }
+    // v343l: exec was a black box. The boot that stalls after the VFS read of
+    // the launchd image (trail last byte 'E' = read_vfs_path returned) never
+    // prints again, and the pump keeps servicing nothing while it waits - the
+    // host meanwhile sees a device that answers no descriptor. These eight
+    // numbered lines name the operation that wedges, on the panel and in the
+    // ring, without a debugger.
+    #[cfg(fullerene_aarch64_ane)]
+    uart::put_hex("exec:0 enter space=", new_space as u64);
     if !mmu::reset_user_space(new_space) {
         return Err(ERR_OUT_OF_MEMORY);
     }
+    #[cfg(fullerene_aarch64_ane)]
+    uart::put_hex("exec:1 space ok=", new_space as u64);
 
     mmu::activate_kernel_identity_space();
     let Some(loaded) = elf::load_image(new_space, image, frames) else {
@@ -2588,6 +2598,8 @@ pub(crate) fn exec(
         let _ = mmu::release_user_space(new_space, frames, &[]);
         return Err(ERR_INVALID);
     };
+    #[cfg(fullerene_aarch64_ane)]
+    uart::put_hex("exec:2 image pages=", loaded.page_count as u64);
     let Some((interpreter_entry, interpreter_base)) = load_interpreter(new_space, &loaded, frames)
     else {
         let _ = mmu::activate_user_space(old_space);
@@ -2599,25 +2611,35 @@ pub(crate) fn exec(
         let _ = mmu::release_user_space(new_space, frames, &[]);
         return Err(ERR_OUT_OF_MEMORY);
     };
+    #[cfg(fullerene_aarch64_ane)]
+    uart::put_hex("exec:3 interp ok base=", interpreter_base.unwrap_or(0));
     if !elf::map_zeroed_user_page(new_space, STACK_ADDRESS, stack_page) {
         let _ = frames.release_frame(stack_page);
         let _ = mmu::activate_user_space(old_space);
         let _ = mmu::release_user_space(new_space, frames, &[]);
         return Err(ERR_OUT_OF_MEMORY);
     }
+    #[cfg(fullerene_aarch64_ane)]
+    uart::put_hex("exec:4 stack ok=", stack_page as u64);
     if !mmu::activate_user_space(new_space) {
         let _ = mmu::activate_user_space(old_space);
         let _ = mmu::release_user_space(new_space, frames, &[]);
         return Err(ERR_OUT_OF_MEMORY);
     }
+    #[cfg(fullerene_aarch64_ane)]
+    uart::put_hex("exec:5 active=", new_space as u64);
     // An exec tears down all process-local shared mappings before the old
     // root is released; the capability itself remains in the handle table.
     fs::cleanup_shared_mappings(pid);
+    #[cfg(fullerene_aarch64_ane)]
+    uart::put_hex("exec:6 shared ok pid=", pid as u64);
     if !mmu::release_user_space(old_space, frames, &[]) {
         let _ = mmu::activate_user_space(old_space);
         let _ = mmu::release_user_space(new_space, frames, &[]);
         return Err(ERR_OUT_OF_MEMORY);
     }
+    #[cfg(fullerene_aarch64_ane)]
+    uart::put_hex("exec:7 old released=", old_space as u64);
 
     let mut new_frame = *live;
     new_frame.x = [0; 31];
