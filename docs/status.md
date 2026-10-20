@@ -360,10 +360,28 @@ First merge step landed (`0c6b2d13`):
 - Public API of `contexts::vfs` unchanged (48 fns); 38 host tests and
   765 workspace tests pass; ANE + bramble + x86 host/UEFI builds clean.
 
-Next merge step: point the aarch64 syscall path at the shared owner so
-`arch/aarch64/fs.rs` shrinks to the Android-specific layer (property
-area, shared buffers, linux_* helpers) and `Vfs` itself stops being
-duplicated.
+Second merge step landed (`3110e92e`): the aarch64 syscall boundary now
+routes through the shared owner. `arch/aarch64/fs.rs`'s private
+`with_vfs` delegates to `contexts_vfs::with_vfs` → the new
+`VfsContext::with_inner` (the locked inner `Vfs` dispatcher), with the
+l/L/N trail marks preserved. `fs::init()` installs the shared owner
+first; the local `static mut VFS` is deleted — it allocated a second
+MemFileSystem nobody read, and the VA/VB identity probe compared
+addresses of an owner no code used. The x86-only shims gate on
+`target_arch` instead of the ANE cfg (bramble/qemu-virt also lack
+nitrogen/log/klog/devfs), so devfs/auto mounts now return
+PermissionDenied uniformly on every aarch64 root. The slot-lock rule is
+documented at `with_context`: held across the closure, so closures must
+not re-enter `with_vfs` — no caller does. What remains in
+`arch/aarch64/fs.rs` is the genuinely arch-specific layer: the EL0
+copy boundary, the capability handle table, Android property area,
+shared buffers, and the linux_* syscall helpers.
+
+Next merge step: shrink the wrapper surface itself — route
+`read_kernel_path` and the few remaining direct `Vfs` users through
+`contexts::vfs` free functions so `Vfs` exists exactly once in the
+dependency graph, then examine whether the EL0 handle table can reuse
+the contexts `HandleTable` instead of `OPEN_FILES`.
 
 ## Device, 10:30
 
