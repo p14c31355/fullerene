@@ -1210,16 +1210,16 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                     // conversation; a separate fetch would be conversation #2
                     // and race the magic reset (measured: the 40 s fetch died
                     // with no OKAY on boot c6).
-                    let cnt = unsafe { core::ptr::read_volatile(0x348d_e800u64 as *const u32) };
-                    // v252: the trail grew to 32 slots (fs.rs vfs_step); the
-                    // old <= 16 reader cut the launchd-era markers off.
-                    if cnt > 0 && cnt <= 32 {
+                    // v252: the trail grew to 32 slots (now one owner,
+                    // blackbox::trail); the old <= 16 reader cut the
+                    // launchd-era markers off. `len()` clamps, so a torn count
+                    // cannot walk into the step marks.
+                    let cnt = crate::blackbox::trail::len();
+                    if cnt > 0 {
                         const HEX: &[u8; 16] = b"0123456789abcdef";
                         crate::blackbox::text_puts("SMK:");
                         for i in 0..cnt {
-                            let b = unsafe {
-                                core::ptr::read_volatile((0x348d_e804u64 + i as u64) as *const u8)
-                            };
+                            let b = crate::blackbox::trail::byte(i);
                             crate::blackbox::text_byte(HEX[(b >> 4) as usize]);
                             crate::blackbox::text_byte(HEX[(b & 0xf) as usize]);
                         }

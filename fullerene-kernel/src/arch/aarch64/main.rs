@@ -932,9 +932,7 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
     // attribution problem is solved by the reader's KEEP_TRAIL instead.
     #[cfg(fullerene_aarch64_ane)]
     if option_env!("FULLERENE_ANE_KEEP_TRAIL").is_none() {
-        unsafe {
-            core::ptr::write_volatile(0x348d_e800 as *mut u32, 0);
-        }
+        crate::blackbox::trail::reset();
     }
 
     #[cfg(feature = "aarch64-user-launchd")]

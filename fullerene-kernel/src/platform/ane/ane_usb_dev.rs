@@ -273,25 +273,21 @@ static FROZEN_TR: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64:
 /// last byte names the step the pass was in when it stopped. Packed as
 /// (count << 32) | the last eight trail bytes, newest byte low.
 fn trail_word() -> u64 {
-    const BASE: usize = 0x348d_e800;
-    const CAP: u32 = 32;
-    unsafe {
-        let cnt = core::ptr::read_volatile(BASE as *const u32).min(CAP) as u64;
-        // The newest step is what names the park, so pack the *tail* of the
-        // trail (the last eight bytes), newest byte in the low position.
-        let start = if cnt > 8 { cnt - 8 } else { 0 };
-        let mut bytes = 0u64;
-        let mut i = 0u64;
-        while i < 8 {
-            let at = start + i;
-            if at < cnt {
-                let b = core::ptr::read_volatile((BASE + 4 + at as usize) as *const u8) as u64;
-                bytes |= b << (8 * i);
-            }
-            i += 1;
+    // One owner for the base address and capacity (blackbox::trail): this
+    // reader used to carry its own copy of both, which is how a 16-slot
+    // writer and a 32-slot reader ended up disagreeing.
+    let cnt = crate::blackbox::trail::len();
+    // The newest step is what names the park, so pack the *tail* of the
+    // trail (the last eight bytes), newest byte in the low position.
+    let start = cnt.saturating_sub(8);
+    let mut bytes = 0u64;
+    for i in 0..8usize {
+        let at = start + i;
+        if at < cnt {
+            bytes |= (crate::blackbox::trail::byte(at) as u64) << (8 * i);
         }
-        (cnt << 32) | bytes
     }
+    ((cnt as u64) << 32) | bytes
 }
 
 /// Latch the park for the host. Called by the watchdog before it paints.

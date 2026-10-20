@@ -1261,20 +1261,65 @@ pub fn text_puts(message: &str) {
     }
 }
 
-/// v225: append a step byte to the ANE's private VFS trail block
-/// (0x348de800: count u32 @+0, bytes @+4, cap 16). A shared helper so both
-/// fs.rs and the contexts layer can mark progress around a suspected lock -
-/// plain stores survive even when the ring path is wedged.
+/// v225: the ANE's private step trail block (0x348de800: count u32 @+0,
+/// bytes @+4). A shared helper so both fs.rs and the contexts layer can mark
+/// progress around a suspected lock - plain stores survive even when the ring
+/// path is wedged.
+///
+/// This used to be written by four copies with three different capacities (16
+/// here, 32 in fs.rs, 32 in the reader), so a mark past slot 16 vanished
+/// depending on which copy ran and the trail read as if the boot had stopped
+/// earlier than it did. One owner, one capacity: every writer, the per-boot
+/// reset and the IRQ reader go through this module.
 #[cfg(fullerene_aarch64_ane)]
-pub fn step_probe(byte: u8) {
-    unsafe {
-        const BASE: usize = 0x348d_e800;
-        let cnt = core::ptr::read_volatile(BASE as *const u32);
-        if cnt < 16 {
-            core::ptr::write_volatile((BASE + 4 + cnt as usize) as *mut u8, byte);
-            core::ptr::write_volatile(BASE as *mut u32, cnt + 1);
+pub mod trail {
+    /// Start of the documented 4 KiB gap between the text block (ends
+    /// 0x348de00c) and the shared step marks (0x348df000). Layout is
+    /// [u32 count] then up to CAP bytes, so a reader that trusts `len()` can
+    /// never walk into the boot's own stage letters.
+    const BASE: usize = 0x348d_e800;
+    /// v252: capacity 16 -> 32. The '1'..'D' prologue exactly filled 16, so
+    /// every later marker was silently dropped and the trail read as saturated
+    /// residue. The 4 KiB gap holds 4092 bytes; 32 is far inside it.
+    pub const CAP: usize = 32;
+
+    /// Append one step byte. Never allocates, never takes a lock, and does
+    /// nothing once the trail is full - it must stay usable from a context
+    /// where the ring path is already wedged.
+    pub fn mark(byte: u8) {
+        unsafe {
+            let count = core::ptr::read_volatile(BASE as *const u32) as usize;
+            if count < CAP {
+                core::ptr::write_volatile((BASE + 4 + count) as *mut u8, byte);
+                core::ptr::write_volatile(BASE as *mut u32, (count + 1) as u32);
+            }
         }
     }
+
+    /// Steps actually written, clamped to CAP: a torn or over-long count from
+    /// a half-finished reset must not make a reader walk past the block.
+    pub fn len() -> usize {
+        unsafe { (core::ptr::read_volatile(BASE as *const u32) as usize).min(CAP) }
+    }
+
+    /// One step byte. `index` must be below CAP; `len()` guarantees that for
+    /// every index a reader iterates.
+    pub fn byte(index: usize) -> u8 {
+        debug_assert!(index < CAP, "trail index past capacity");
+        unsafe { core::ptr::read_volatile((BASE + 4 + index) as *const u8) }
+    }
+
+    /// Per-boot reset, so a trail read after a freeze names *this* boot.
+    pub fn reset() {
+        unsafe {
+            core::ptr::write_volatile(BASE as *mut u32, 0);
+        }
+    }
+}
+
+#[cfg(fullerene_aarch64_ane)]
+pub fn step_probe(byte: u8) {
+    trail::mark(byte);
 }
 
 /// v226: record a u64 (normally a static's address) into a probe slot; the

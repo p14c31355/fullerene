@@ -494,9 +494,7 @@ fn clear_property_area() -> bool {
         if frame == 0 {
             return false;
         }
-        unsafe {
-            core::ptr::write_bytes(frame as *mut u8, 0, 4096);
-        }
+        crate::blackbox::trail::reset();
     }
     true
 }
@@ -7641,15 +7639,7 @@ pub(super) fn android_system_mounted() -> bool {
 /// SMK trail covers boot + VFS + launchd in one durable line.
 #[cfg(fullerene_aarch64_ane)]
 pub(crate) fn vfs_step_mark(byte: u8) {
-    unsafe {
-        const BASE: usize = 0x348d_e800;
-        const CAP: u32 = 32;
-        let cnt = core::ptr::read_volatile(BASE as *const u32);
-        if cnt < CAP {
-            core::ptr::write_volatile((BASE + 4 + cnt as usize) as *mut u8, byte);
-            core::ptr::write_volatile(BASE as *mut u32, cnt + 1);
-        }
-    }
+    crate::blackbox::trail::mark(byte);
 }
 
 fn read_vfs_path(path: &str, destination: &mut [u8]) -> Result<usize, u64> {
@@ -7662,22 +7652,14 @@ fn read_vfs_path(path: &str, destination: &mut [u8]) -> Result<usize, u64> {
     /// 0x348de800 - the documented 4 KiB gap between the text block
     /// (ends 0x348de00c) and the step marks (0x348df000): [u32 count] then
     /// up to 16 bytes.
+    // v252: capacity 16 -> 32 (see `blackbox::trail`). The '1'..'D' prologue
+    // exactly filled 16, so every later marker (launchd-era, 'E'..) was
+    // silently dropped and the trail read as saturated "123456789aBCD"-class
+    // residue. The bound now lives in one place, so the IRQ restamp reader
+    // (exceptions.rs) cannot disagree with this writer again.
     #[cfg(fullerene_aarch64_ane)]
     fn vfs_step(byte: u8) {
-        unsafe {
-            const BASE: usize = 0x348d_e800;
-            // v252: capacity 16 -> 32. The '1'..'D' prologue exactly filled 16,
-            // so every later marker (launchd-era, 'E'..) was silently dropped
-            // and the trail read as saturated "123456789aBCD"-class residue.
-            // The 4 KiB gap holds 4092 bytes; 32 is far inside it. The IRQ
-            // restamp reader (exceptions.rs) and this bound must agree.
-            const CAP: u32 = 32;
-            let cnt = core::ptr::read_volatile(BASE as *const u32);
-            if cnt < CAP {
-                core::ptr::write_volatile((BASE + 4 + cnt as usize) as *mut u8, byte);
-                core::ptr::write_volatile(BASE as *mut u32, cnt + 1);
-            }
-        }
+        crate::blackbox::trail::mark(byte);
     }
     // Fine-grained durable marks (ANE): the v146 boot stalled inside the VFS
     // path lookup (find_fs_index_for_absolute_path, ELR frozen across
