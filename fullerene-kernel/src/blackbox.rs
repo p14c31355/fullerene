@@ -1061,6 +1061,12 @@ pub static IRQ_PC: AtomicU64 = AtomicU64::new(0);
 pub static EXEC_STAGE: core::sync::atomic::AtomicU32 =
     core::sync::atomic::AtomicU32::new(0xffff_ffff);
 
+/// v344: how many SVCs EL0 has issued, and the number of the last one. A
+/// frozen frame showing zero here proves the eret never landed; a non-zero
+/// count names the syscall launchd stalls in.
+pub static EL0_SYSCALLS: AtomicU64 = AtomicU64::new(0);
+pub static LAST_SYSCALL: AtomicU64 = AtomicU64::new(u64::MAX);
+
 /// The single watchdog instance.
 static PROGRESS_WATCHDOG: ProgressWatchdog = ProgressWatchdog {
     count: core::sync::atomic::AtomicU32::new(0),

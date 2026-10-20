@@ -45,6 +45,19 @@ static mut IMAGE_STAGING: [u8; MAX_SPAWN_IMAGE] = [0; MAX_SPAWN_IMAGE];
 
 /// Dispatch one user-origin SVC and leave its return value in x0.
 pub(super) fn dispatch(frame: &mut Aarch64TrapFrame) -> bool {
+    // v344: the handoff into EL0 was invisible. After "L6 enter el0" the ring
+    // went silent, so every statement about launchd's first action was a guess.
+    // Name the first eight syscalls and then go quiet, so a storm cannot flush
+    // the landing lines out of the frozen tail.
+    #[cfg(fullerene_aarch64_ane)]
+    {
+        let seen =
+            crate::blackbox::EL0_SYSCALLS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        crate::blackbox::LAST_SYSCALL.store(frame.x[8], core::sync::atomic::Ordering::Relaxed);
+        if seen < 8 {
+            uart::put_hex("el0: syscall nr=", frame.x[8]);
+        }
+    }
     if task::current_personality() == task::AbiPersonality::LinuxAarch64 {
         return linux::dispatch(frame);
     }
