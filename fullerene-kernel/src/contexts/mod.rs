@@ -1,8 +1,12 @@
 //! Unified Context System — replaces scattered statics with named structs.
 //!
 //! Every subsystem context lives inside [`KernelContext`], the single source of
-//! truth for kernel state.  There are no separate per-context global singletons;
-//! all access goes through `with_kernel(|k| k.vfs.open(…))` or `with_kernel_mut(…)`.
+//! truth for kernel state; all access goes through `with_kernel(…)`.
+//!
+//! Exception: `vfs` is self-owned. `contexts/vfs.rs` holds its own singleton
+//! (`VFS_CONTEXT` static + `init_vfs()`/`with_vfs()`), so both kernel roots —
+//! the x86/UEFI one and the aarch64 one — compile and use the same owner
+//! without dragging the kernel lock through every VFS call.
 //!
 //! # Adding a new context
 //!

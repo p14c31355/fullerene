@@ -35,13 +35,13 @@ pub use genome::vfs::{FileDescriptor, FileSystem, InodeType, MemFileSystem, VNod
 ///
 /// The `nitrogen::debug_status` ring is an x86-root facility (the ANE root
 /// has no taskbar); the ANE carries no trace here.
-#[cfg(not(fullerene_aarch64_ane))]
+#[cfg(not(target_arch = "aarch64"))]
 macro_rules! trace {
     ($fmt:literal $(, $arg:expr)* $(,)?) => {
         nitrogen::debug_status!("VFS", $fmt $(, $arg)*)
     };
 }
-#[cfg(fullerene_aarch64_ane)]
+#[cfg(target_arch = "aarch64")]
 macro_rules! trace {
     ($fmt:literal $(, $arg:expr)* $(,)?) => {{
         let _ = format_args!($fmt $(, $arg)*);
@@ -53,13 +53,13 @@ macro_rules! trace {
 // The x86 root routes diag lines through the kernel log ring; the ANE
 // root has no klog (its console is the blackbox ring), so the macro
 // compiles to nothing there.
-#[cfg(not(fullerene_aarch64_ane))]
+#[cfg(not(target_arch = "aarch64"))]
 macro_rules! klog_vfs_diag {
     ($fmt:literal $(, $arg:expr)* $(,)?) => {
         crate::klog_fmt!($fmt $(, $arg)*)
     };
 }
-#[cfg(fullerene_aarch64_ane)]
+#[cfg(target_arch = "aarch64")]
 macro_rules! klog_vfs_diag {
     ($fmt:literal $(, $arg:expr)* $(,)?) => {{
         let _ = format_args!($fmt $(, $arg)*);
@@ -68,13 +68,13 @@ macro_rules! klog_vfs_diag {
 
 /// One informational mount message. The `log` crate is an x86-root
 /// dependency; the ANE root carries no logger, so the line is dropped.
-#[cfg(not(fullerene_aarch64_ane))]
+#[cfg(not(target_arch = "aarch64"))]
 macro_rules! vfs_log_info {
     ($($arg:tt)*) => {
         log::info!($($arg)*)
     };
 }
-#[cfg(fullerene_aarch64_ane)]
+#[cfg(target_arch = "aarch64")]
 macro_rules! vfs_log_info {
     ($($arg:tt)*) => {{
         let _ = format_args!($($arg)*);
@@ -87,9 +87,9 @@ macro_rules! vfs_log_info {
 /// table for open file descriptors.
 ///
 /// ```ignore
-/// kernel_context().with_kernel(|k| {
-///     k.vfs.open("/etc/hostname", 0);
-///     k.vfs.readdir("/");
+/// crate::contexts::vfs::with_vfs(|vfs| {
+///     vfs.open("/etc/hostname", 0);
+///     vfs.readdir("/");
 /// });
 /// ```
 pub struct VfsContext {
@@ -102,6 +102,22 @@ pub struct VfsContext {
     /// Block-device source and its mount point. Genome remains generic while
     /// device-facing kernel code can expose only reachable storage.
     mounted_devices: Mutex<Vec<(String, String)>>,
+}
+
+impl VfsContext {
+    /// Run `f` with the inner `Vfs` dispatcher locked.
+    ///
+    /// The aarch64 root's syscall boundary reaches the shared owner through
+    /// this method: its own handle/capability layer sits on top of the
+    /// mount-local descriptors, so it needs the raw `Vfs`, not the
+    /// VfsContext-level fd table.
+    pub(crate) fn with_inner<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut Vfs) -> R,
+    {
+        let mut vfs = self.inner.lock();
+        f(&mut vfs)
+    }
 }
 
 /// Tracks which mount owns each VFS-global file descriptor.
@@ -260,9 +276,9 @@ impl VfsContext {
                 if let Some(device_name) = source.strip_prefix("/dev/") {
                     // Block-device leases exist only where devfs does; the
                     // ANE root's unmount path never has a lease to return.
-                    #[cfg(not(fullerene_aarch64_ane))]
+                    #[cfg(not(target_arch = "aarch64"))]
                     crate::devfs::return_block_device_lease(device_name);
-                    #[cfg(fullerene_aarch64_ane)]
+                    #[cfg(target_arch = "aarch64")]
                     let _ = device_name;
                 }
             }
@@ -650,6 +666,13 @@ fn with_context<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&VfsContext) -> R,
 {
+    // The slot lock is held for the whole closure. That is safe today — the
+    // spin::Mutex is only contended against init_vfs(), which runs once —
+    // and it keeps the fetch to a single uncontended lock per call. The
+    // re-entrancy rule that follows from it: a closure run through
+    // with_vfs/with_vfs_mut must NOT call back into either, or it will
+    // self-deadlock on this same slot lock. Re-entrant VFS work belongs
+    // inside the closure, not through a nested accessor.
     let guard = VFS_CONTEXT.lock();
     guard.as_ref().map(f)
 }
@@ -695,14 +718,14 @@ pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsErr
             Ok(())
         }
         "devfs" => {
-            #[cfg(fullerene_aarch64_ane)]
+            #[cfg(target_arch = "aarch64")]
             {
                 // The ANE root compiles no devfs (its /dev is the Android
                 // DevFs mounted by the boot path); this arm cannot run.
                 let _ = (device, mount_point);
                 Err(FsError::PermissionDenied)
             }
-            #[cfg(not(fullerene_aarch64_ane))]
+            #[cfg(not(target_arch = "aarch64"))]
             {
                 vfs.mount(mount_point, Box::new(crate::devfs::DevFs::new()))?;
                 vfs_log_info!("VFS: mounted devfs at {}", mount_point);
@@ -710,7 +733,7 @@ pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsErr
             }
         }
         "auto" | "fat32" => {
-            #[cfg(fullerene_aarch64_ane)]
+            #[cfg(target_arch = "aarch64")]
             {
                 // No devfs on the ANE root, so there is no block-device
                 // lease table to mount from; FAT/exFAT media on the phone
@@ -718,7 +741,7 @@ pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsErr
                 let _ = (device, mount_point, fs_type);
                 Err(FsError::PermissionDenied)
             }
-            #[cfg(not(fullerene_aarch64_ane))]
+            #[cfg(not(target_arch = "aarch64"))]
             {
                 let mount_point = vfs.inner.lock().resolve_path(mount_point);
                 let device_name = device

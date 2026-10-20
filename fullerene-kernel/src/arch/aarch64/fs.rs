@@ -42,7 +42,6 @@ use genome::vfs::{
     FileDescriptor, FileMetadata, FileSystem, FileSystemCapabilities, InodeType, MemFileSystem,
     VNode, Vfs,
 };
-use spin::Mutex;
 
 #[cfg(fullerene_aarch64_bramble)]
 use super::ufs;
@@ -2349,7 +2348,6 @@ impl TerminalSlot {
     };
 }
 
-static mut VFS: Option<Mutex<Vfs>> = None;
 static mut OPEN_FILES: [OpenFile; MAX_OPEN_FILES] = [OpenFile::EMPTY; MAX_OPEN_FILES];
 static mut LINUX_FDS: [LinuxFdEntry; MAX_LINUX_FD_ENTRIES] =
     [LinuxFdEntry::EMPTY; MAX_LINUX_FD_ENTRIES];
@@ -2394,15 +2392,14 @@ static mut NEXT_GENERATION: u64 = 1;
 /// is single-core, so the syscall boundary does not bake that temporary
 /// scheduling detail into its ownership contract.
 pub(crate) fn init() {
-    unsafe {
-        *core::ptr::addr_of_mut!(VFS) = Some(Mutex::new(Vfs::new(Box::new(MemFileSystem::new()))));
-    }
-    // v226: prove the assignment executed and record the static's identity.
+    // The shared owner first: every with_vfs() call (including the initramfs
+    // unpack below) routes through contexts/vfs.rs's singleton. The former
+    // local `static mut VFS` is gone — it allocated a second MemFileSystem
+    // that nothing read, and its VA/VB identity probe compared addresses of
+    // an owner no code used.
+    super::contexts_vfs::init_vfs();
     #[cfg(fullerene_aarch64_ane)]
-    {
-        crate::blackbox::step_probe(b'B');
-        crate::blackbox::addr_probe(0x348d_e840, core::ptr::addr_of!(VFS) as u64);
-    }
+    crate::blackbox::step_probe(b'B');
     let unpacked = with_vfs(|vfs| unpack_initramfs(vfs, INITRAMFS)).flatten();
     if let Some(count) = unpacked {
         uart::puts("aarch64 fs: initramfs entries=");
@@ -7986,24 +7983,22 @@ fn with_vfs<F, R>(function: F) -> Option<R>
 where
     F: FnOnce(&mut Vfs) -> R,
 {
-    unsafe {
+    // The shared owner: contexts/vfs.rs holds the one VfsContext both roots
+    // compile, and with_inner takes the inner Vfs lock — the same
+    // inner->handle_table order the contexts layer documents. The slot lock
+    // is held across the closure (see with_context), so `function` must not
+    // re-enter with_vfs; no caller does.
+    let context = super::contexts_vfs::with_vfs(|context| {
         #[cfg(fullerene_aarch64_ane)]
-        crate::blackbox::addr_probe(0x348d_e850, core::ptr::addr_of!(VFS) as u64);
-        let static_ref = (*core::ptr::addr_of!(VFS)).as_ref();
+        crate::blackbox::step_probe(b'l');
+        let result = context.with_inner(function);
         #[cfg(fullerene_aarch64_ane)]
-        if static_ref.is_none() {
-            crate::blackbox::step_probe(b'N');
-        }
-        static_ref.map(|vfs| {
-            // v225: mark the blocking lock's entrance/exit. If 'l' appears
-            // but 'L' does not, the spin::Mutex acquisition is the freeze
-            // (the launchd-era stall: the closure's first probe never ran).
-            #[cfg(fullerene_aarch64_ane)]
-            crate::blackbox::step_probe(b'l');
-            let mut guard = vfs.lock();
-            #[cfg(fullerene_aarch64_ane)]
-            crate::blackbox::step_probe(b'L');
-            function(&mut guard)
-        })
+        crate::blackbox::step_probe(b'L');
+        result
+    });
+    #[cfg(fullerene_aarch64_ane)]
+    if context.is_none() {
+        crate::blackbox::step_probe(b'N');
     }
+    context
 }

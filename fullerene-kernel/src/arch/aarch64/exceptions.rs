@@ -1271,6 +1271,9 @@ extern "C" fn aarch64_exception_irq(frame: *mut Aarch64TrapFrame) {
                     }
                     // v226: the VFS static's recorded identity at init ("VA") and
                     // at the read site ("VB"); printed once each marker is set.
+                    // v347: neither writer remains (the local VFS static was
+                    // retired for the shared contexts/vfs.rs owner), so both
+                    // slots stay zero and this prints nothing.
                     for (label, slot) in [(b"VA:", 0x348d_e840usize), (b"VB:", 0x348d_e850usize)] {
                         unsafe {
                             if core::ptr::read_volatile((slot + 8) as *const u8) != 0 {

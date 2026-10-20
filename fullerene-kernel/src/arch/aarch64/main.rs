@@ -15,11 +15,11 @@ pub(crate) mod exceptions;
 mod fdt;
 mod fs;
 // The contexts layer's VfsContext is the shared VFS owner: this root
-// compiles it alongside its own `mod fs` so a future merge of the two
-// VFS wrappers is compile-checked against both roots' expectations in
-// one build. The ANE kernel still routes its syscalls through `mod fs`;
-// nothing here runs yet, hence the dead-code allowance.
-#[cfg(fullerene_aarch64_ane)]
+// compiles it alongside its own `mod fs` so both roots use the same
+// owner in one build — the merge of the two former VFS namespaces.
+// Nothing outside `fs.rs` routes through it yet, hence the dead-code
+// allowance for the unused x86-facing free functions.
+#[cfg(any(feature = "aarch64-user-launchd", feature = "aarch64-linux-smoke", target_arch = "aarch64"))]
 #[allow(dead_code)]
 #[path = "../../contexts/vfs.rs"]
 mod contexts_vfs;
