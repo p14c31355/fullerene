@@ -387,6 +387,210 @@ pub fn touch_point() -> Option<(u32, u32)> {
     Some((x as u32, y as u32))
 }
 
+// ── v347: the on-screen keyboard ────────────────────────────────────────
+//
+// The dock's fourth tile is the Notes app: a full-screen text view over
+// the home screen with the lattice IME docked at the bottom. The shell
+// owns a `lattice::ime::Keyboard` + `Field` pair in a spin mutex (the
+// touch path is IRQ-adjacent, the render path is the boot thread), and
+// every touch inside the keyboard area goes through
+// `Keyboard::press_at` -> `Field::apply` -> repaint.
+
+use lattice::ime::{Field as ImeField, ImeStyle, Keyboard as ImeKeyboard};
+
+/// The keyboard's docked height, as a fraction of the panel: the lattice
+/// rows want ~340 px on a 1080-wide panel (4 rows at ~80 px + gaps).
+const IME_HEIGHT: u32 = 380;
+/// Notes text line pitch (the 3x5 digit font is too coarse for prose; the
+/// lattice bitmap font is 8x13 at this scale).
+const NOTES_LINE_PITCH: u32 = 40;
+
+/// The shell's IME state. A spin mutex because both the touch poller and
+/// the repaint path touch it and neither may sleep.
+static NOTES_IMES: spin::Mutex<NotesIme> = spin::Mutex::new(NotesIme::new());
+
+/// Notes app state: keyboard + text field, plus whether the app is open.
+/// The `Field` is `Option` because `String` has no const constructor; it
+/// is created on the first open (heap is live by then).
+pub struct NotesIme {
+    pub keyboard: ImeKeyboard,
+    pub field: Option<ImeField>,
+    /// True once the Notes tile has been tapped; the home screen renders
+    /// underneath otherwise.
+    pub open: bool,
+}
+
+impl NotesIme {
+    const fn new() -> Self {
+        Self {
+            keyboard: ImeKeyboard::new(),
+            field: None,
+            open: false,
+        }
+    }
+
+    /// The field, created on first use.
+    fn field_mut(&mut self) -> &mut ImeField {
+        self.field.get_or_insert_with(ImeField::new)
+    }
+}
+
+/// The keyboard rectangle on the canvas. A free function so the hit test,
+/// the renderer and the tests cannot disagree.
+pub fn ime_area(l: &HomeLayout) -> (u32, u32, u32, u32) {
+    let top = l.height.saturating_sub(IME_HEIGHT);
+    (0, top, l.width, IME_HEIGHT)
+}
+
+/// True when the point is inside the docked keyboard.
+fn in_ime(l: &HomeLayout, x: u32, y: u32) -> bool {
+    let (ax, ay, aw, ah) = ime_area(l);
+    x >= ax && x < ax + aw && y >= ay && y < ay + ah
+}
+
+/// Feed a tap (or a sample while pressed) into the keyboard. Called from
+/// the touch edge in the wait loop. Returns true when the state changed
+/// enough to want a repaint.
+pub fn ime_press(x: u32, y: u32) -> bool {
+    let width = crate::platform::ane_fb::WIDTH;
+    let height = crate::platform::ane_fb::HEIGHT;
+    let l = HomeLayout::new(width, height);
+    let (ax, ay, aw, ah) = ime_area(&l);
+    let mut ime = NOTES_IMES.lock();
+    let Some(action) = ime.keyboard.press_at(
+        lattice::ime::Rect::new(ax as i32, ay as i32, aw as i32, ah as i32),
+        x as i32,
+        y as i32,
+    ) else {
+        return false;
+    };
+    ime.field_mut().apply(action)
+}
+
+/// The finger left the panel: clear the pressed key.
+pub fn ime_release() {
+    NOTES_IMES.lock().keyboard.release();
+}
+
+/// Notes is open?
+pub fn notes_open() -> bool {
+    NOTES_IMES.lock().open
+}
+
+/// Open or close the Notes app (the dock tap). Returns true on a change.
+pub fn toggle_notes(open: bool) -> bool {
+    let mut ime = NOTES_IMES.lock();
+    if ime.open == open {
+        return false;
+    }
+    ime.open = open;
+    true
+}
+
+/// The notes text, copied out for tests / getvar.
+pub fn notes_text() -> alloc::string::String {
+    match NOTES_IMES.lock().field.as_ref() {
+        Some(f) => f.text().into(),
+        None => alloc::string::String::new(),
+    }
+}
+
+/// Draw a bitmap-font text line (the lattice font's 8-wide glyphs), clipped
+/// to the canvas.
+fn draw_text_line(fb: &mut [u32], fb_w: u32, fb_h: u32, x: u32, y: u32, text: &[u8], color: u32) {
+    lattice::font::render_text(fb, fb_w, fb_h, fb_w, x, y, text, color, 13);
+}
+
+/// Render the Notes app: the text field above, the IME docked below.
+/// Called instead of `render_home` while the app is open.
+pub fn render_notes() {
+    let width = crate::platform::ane_fb::WIDTH;
+    let height = crate::platform::ane_fb::HEIGHT;
+    let l = HomeLayout::new(width, height);
+    let canvas_ptr = crate::platform::ane_fb::CANVAS as *mut u32;
+    let count = (width as usize) * (height as usize);
+    let fb = unsafe { core::slice::from_raw_parts_mut(canvas_ptr, count) };
+
+    crate::platform::ane_fb::DESKTOP_OWNED.store(true, Ordering::Relaxed);
+
+    let bg: u32 = 0xFF10_14_18;
+    let bar: u32 = 0xFF1A_1E_24;
+    let text: u32 = 0xFFE8_E8_F0;
+    fill_rect(fb, width, height, 0, 0, width, height, bg);
+    // Title band, notch-aware like the status bar.
+    fill_rect(fb, width, height, 0, 0, width, l.bar_h, bar);
+    draw_text_line(fb, width, height, l.margin, l.notch_h + 8, b"Notes", text);
+
+    // The text field: the caret line plus the text above it, word-wrapped
+    // to the panel width (the IME owns the bottom band).
+    let ime_top = height.saturating_sub(IME_HEIGHT);
+    let mut ime = NOTES_IMES.lock();
+    let area = lattice::ime::Rect::new(0, ime_top as i32, width as i32, IME_HEIGHT as i32);
+    ime.keyboard.draw(
+        &mut lattice::painter::Painter::new(fb, width, height),
+        area,
+        &ImeStyle::dark(),
+    );
+
+    // Wrap the field's text into lines of (width - 2*margin) / 8 glyphs.
+    let cols = ((width - l.margin * 2) / 8) as usize;
+    let body_top = l.bar_h + 16;
+    let body_bottom = ime_top.saturating_sub(8);
+    let max_lines = body_bottom.saturating_sub(body_top) / NOTES_LINE_PITCH;
+    let mut line = [0u8; 64];
+    let mut line_len = 0usize;
+    let mut row = 0u32;
+    let empty = "";
+    let bytes = ime.field.as_ref().map_or(empty, |f| f.text()).as_bytes();
+    let caret = ime.field.as_ref().map_or(0, |f| f.caret());
+    let mut caret_row = 0u32;
+    let mut caret_col = 0usize;
+    for (bi, &b) in bytes.iter().enumerate() {
+        if bi == caret {
+            caret_row = row;
+            caret_col = line_len;
+        }
+        if b == b'\n' {
+            if row < max_lines {
+                draw_text_line(fb, width, height, l.margin, body_top + row * NOTES_LINE_PITCH, &line[..line_len], text);
+            }
+            row += 1;
+            line_len = 0;
+            continue;
+        }
+        if line_len == cols {
+            if row < max_lines {
+                draw_text_line(fb, width, height, l.margin, body_top + row * NOTES_LINE_PITCH, &line[..line_len], text);
+            }
+            row += 1;
+            line_len = 0;
+        }
+        if line_len < line.len() {
+            line[line_len] = b;
+            line_len += 1;
+        }
+    }
+    if bi_caret_after_loop(bytes.len(), caret) {
+        caret_row = row;
+        caret_col = line_len;
+    }
+    if row < max_lines {
+        draw_text_line(fb, width, height, l.margin, body_top + row * NOTES_LINE_PITCH, &line[..line_len], text);
+        // The caret: a block the width of one glyph on the caret cell.
+        if caret_row == row {
+            let cx = l.margin + caret_col as u32 * 8;
+            let cy = body_top + caret_row * NOTES_LINE_PITCH + 16;
+            fill_rect(fb, width, height, cx, cy, 8, 13, 0xFF4C_8D_FF);
+        }
+    }
+}
+
+/// The caret position is only known to be "after the last byte" when the
+/// loop never hit `bi == caret`; a free function so the condition is named.
+fn bi_caret_after_loop(len: usize, caret: usize) -> bool {
+    caret >= len
+}
+
 /// v331t: press feedback - repaint the tile the finger is on in the
 /// accent color. Returns the hit so the caller can decide what a
 /// release on it means, instead of the geometry being re-derived there.

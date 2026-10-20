@@ -1,9 +1,16 @@
-//! v331g: the ANE touchscreen bring-up (FocalTech on DesignWare I2C0).
+//! v331g: the ANE touchscreen bring-up (Goodix GT1x on DesignWare I2C0).
 //!
 //! The DTB inventory (all verified against the device's fdt.dtb):
 //! - I2C0 master: 0xFFD71000, 19.2 MHz input, reset ctrl 0xFFD7E000
 //!   bits@0x20/0x24/0x28 bit 3, IRQ SPI 118
-//! - Touch IC: FocalTech (chip_id 0x54) at slave 0x38, 1080x2280 native
+//! - Touch IC: Goodix GT1x family (GT1158, project anne54050), slave 0x14
+//!   per the stock kernel's ts_kit node (/ts_kit/ts_kit@14) AND the live
+//!   sysfs inventory (2026-10-20 stock-Android survey). The DTB also
+//!   carries an alternative `fts` (FocalTech) node at 0x38 with chip_id
+//!   0x54 - two vendors for different panel SKUs of the same board. The
+//!   probe answers whichever one is fitted: GT1x first (0x14, the vendor
+//!   this unit actually has), FocalTech second (0x38), by reading each
+//!   candidate's ID register before committing to a protocol.
 //! - Reset: PL061 gpio18 @0xE8A1D000 pin 1, active low, 200 ms settle
 //! - IRQ: PL061 ao_gpio6 @0xFFF1D000 pin 0
 //! - Pinmux: 0xE896C000 offsets 0x14/0x18 = func mode (0x1)
@@ -227,6 +234,65 @@ unsafe fn i2c0_write_read(register: u8, out: &mut [u8]) -> Result<(), u32> {
     Ok(())
 }
 
+/// One I2C write_read transaction with a 16-bit big-endian register
+/// pointer (the Goodix GT1x convention): two pointer bytes with STOP
+/// suppressed, RESTART on the first data byte, STOP on the last.
+unsafe fn i2c0_write_read16(register: u16, out: &mut [u8]) -> Result<(), u32> {
+    let base = ane::TOUCH_I2C0_BASE;
+    for _ in 0..100_000 {
+        if rd32(base, IC_TXFLR) < 8 {
+            break;
+        }
+        core::hint::spin_loop();
+    }
+    let [hi, lo] = register.to_be_bytes();
+    wr32(base, IC_DATA_CMD, hi as u32);
+    wr32(base, IC_DATA_CMD, lo as u32);
+    let n = out.len();
+    for (i, slot) in out.iter_mut().enumerate() {
+        let mut spins = 0u32;
+        while rd32(base, IC_TXFLR) >= 8 {
+            spins += 1;
+            if spins > 100_000 {
+                return Err(1);
+            }
+        }
+        let mut cmd = IC_DATA_CMD_READ;
+        if i == 0 {
+            cmd |= IC_DATA_CMD_RESTART;
+        }
+        if i + 1 == n {
+            cmd |= IC_DATA_CMD_STOP;
+        }
+        wr32(base, IC_DATA_CMD, cmd);
+        let mut spins = 0u32;
+        loop {
+            if rd32(base, IC_RXFLR) > 0 {
+                *slot = (rd32(base, IC_DATA_CMD) & 0xff) as u8;
+                break;
+            }
+            spins += 1;
+            if spins > 200_000 {
+                return Err(2);
+            }
+        }
+    }
+    let abrt = rd32(base, IC_TX_ABRT_SOURCE);
+    if abrt != 0 {
+        wr32(base, IC_CLR_TX_ABRT, 0);
+        return Err(abrt);
+    }
+    let mut spins = 0u32;
+    while rd32(base, IC_STATUS) & 0x21 != 0 {
+        spins += 1;
+        if spins > 200_000 {
+            return Err(3);
+        }
+        core::hint::spin_loop();
+    }
+    Ok(())
+}
+
 /// v331n: the touch point snapshot the shell reads. Up to 5 points
 /// (the FT5x06 class); each is (x, y, pressed). 0xFFFF = absent.
 pub struct TouchPoint {
@@ -291,26 +357,160 @@ pub fn touch_extent() -> (u16, u16, u32) {
     )
 }
 
-/// Poll the touch IC: one read of 0x00..0x1E carries TD_STATUS and all five
-/// six-byte point records. Called from the wait loop every pass; at a real
+/// Poll the touch IC. Called from the wait loop every pass; at a real
 /// bus speed the whole frame is under a millisecond, and the bus timing is
 /// programmed conservatively (see `i2c0_master_init`).
+///
+/// v347: the protocol recorded at probe time decides the wire format.
+/// b'F' (FocalTech) reads the FT5x06 frame at 0x00 through
+/// `touch_report::parse`, unchanged. b'G' (Goodix GT1x) reads the
+/// coordinate/status register 0x814e and parses through
+/// `resonance::touch::parse_gt1x_report` - the same source-grounded
+/// parser the public Linux driver uses. Both publish into the same
+/// TOUCH_POINTS snapshot the shell already reads.
 pub unsafe fn poll() {
     if TOUCH_STAGE.load(Ordering::Relaxed) != b'C' {
         return; // the chip never answered the probe
     }
-    // One transaction for the whole frame: the status byte and all five
-    // six-byte records are contiguous from 0x00, so a single START/STOP pair
-    // fetches everything. The protocol itself is parsed above the platform,
-    // where the host can test it (`crate::touch_report`).
+    match TOUCH_PROTOCOL.load(Ordering::Relaxed) {
+        b'G' => poll_gt1x(),
+        b'F' => poll_focaltech(),
+        _ => {}
+    }
+}
+
+/// Write one data byte to a 16-bit big-endian register pointer (the GT1x
+/// status-clear transaction: pointer bytes with no STOP, then the value
+/// with STOP).
+unsafe fn i2c0_write16_data(register: u16, data: &[u8]) -> Result<(), u32> {
+    let base = ane::TOUCH_I2C0_BASE;
+    for _ in 0..100_000 {
+        if rd32(base, IC_TXFLR) < 8 {
+            break;
+        }
+        core::hint::spin_loop();
+    }
+    let [hi, lo] = register.to_be_bytes();
+    wr32(base, IC_DATA_CMD, hi as u32);
+    wr32(base, IC_DATA_CMD, lo as u32);
+    for (i, &b) in data.iter().enumerate() {
+        let mut cmd = b as u32;
+        if i + 1 == data.len() {
+            cmd |= IC_DATA_CMD_STOP;
+        }
+        let mut spins = 0u32;
+        while rd32(base, IC_TXFLR) >= 8 {
+            spins += 1;
+            if spins > 100_000 {
+                return Err(1);
+            }
+            core::hint::spin_loop();
+        }
+        wr32(base, IC_DATA_CMD, cmd);
+    }
+    let mut spins = 0u32;
+    while rd32(base, IC_STATUS) & 0x21 != 0 {
+        spins += 1;
+        if spins > 200_000 {
+            return Err(3);
+        }
+        core::hint::spin_loop();
+    }
+    let abrt = rd32(base, IC_TX_ABRT_SOURCE);
+    if abrt != 0 {
+        wr32(base, IC_CLR_TX_ABRT, 0);
+        return Err(abrt);
+    }
+    Ok(())
+}
+
+/// The FocalTech poll path: one read of 0x00..0x1E carries TD_STATUS and
+/// all five six-byte point records.
+unsafe fn poll_focaltech() {
     let mut frame = [0u8; crate::touch_report::FRAME_LEN];
     if i2c0_write_read(crate::touch_report::FRAME_REG, &mut frame).is_err() {
         return;
     }
+    publish_points(crate::touch_report::parse(&frame));
+}
+
+/// The Goodix GT1x poll path: the status register at 0x814e carries the
+/// contact count in its low nibble and a buffer-valid bit (0x80); the
+/// 8-byte contact records follow from 0x8150. The frame is status +
+/// records + key byte + checksum.
+unsafe fn poll_gt1x() {
+    // The status byte: is a report ready?
+    let mut status = [0u8; 1];
+    if i2c0_write_read16(resonance::touch::GT1X_COORDINATE_REGISTER, &mut status).is_err() {
+        return;
+    }
+    if status[0] & resonance::touch::GT1X_STATUS_READY == 0 {
+        return;
+    }
+    let count = (status[0] & 0x0f) as usize;
+    if count == 0 {
+        // A clean lift: clear every slot and tell the controller we read.
+        for slot in TOUCH_POINTS.iter() {
+            slot.store(0xFFFF_FFFF, Ordering::Relaxed);
+        }
+        let _ = i2c0_write16_data(
+            resonance::touch::GT1X_COORDINATE_REGISTER,
+            &[resonance::touch::GT1X_STATUS_CLEAR],
+        );
+        return;
+    }
+    // The contact records follow the status register contiguously on this
+    // family: one read from 0x814e covers status + records + key byte +
+    // checksum (the parser's `needed` is 1 + count*8 + 2).
+    let needed = 1 + count * resonance::touch::GT1X_CONTACT_SIZE + 2;
+    let mut frame =
+        [0u8; 1 + resonance::touch::GT1X_MAX_CONTACTS * resonance::touch::GT1X_CONTACT_SIZE + 2];
+    if i2c0_write_read16(resonance::touch::GT1X_COORDINATE_REGISTER, &mut frame[..needed]).is_err()
+    {
+        return;
+    }
+    let mut contacts = [resonance::event::TouchContact {
+        id: 0,
+        x: 0,
+        y: 0,
+        pressure: 0,
+        phase: resonance::event::TouchPhase::Cancel,
+    }; resonance::touch::GT1X_MAX_CONTACTS];
+    match resonance::touch::parse_gt1x_report(&frame[..needed], &mut contacts) {
+        Ok(n) => {
+            for slot in TOUCH_POINTS.iter() {
+                slot.store(0xFFFF_FFFF, Ordering::Relaxed);
+            }
+            for (live, c) in contacts[..n].iter().enumerate() {
+                let pressed = c.phase != resonance::event::TouchPhase::Up;
+                let packed =
+                    (c.x as u32) | (c.y as u32) << 16 | if pressed { 1 << 31 } else { 0 };
+                TOUCH_POINTS[live.min(4)].store(packed, Ordering::Relaxed);
+                if pressed {
+                    let old = TOUCH_MAX.load(Ordering::Relaxed);
+                    let mx = ((old >> 16) as u16).max(c.x as u16);
+                    let my = ((old & 0xFFFF) as u16).max(c.y as u16);
+                    TOUCH_MAX.store((mx as u32) << 16 | my as u32, Ordering::Relaxed);
+                    TOUCH_SAMPLES.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            // Consume the report so the controller raises the next one.
+            let _ = i2c0_write16_data(
+                resonance::touch::GT1X_COORDINATE_REGISTER,
+                &[resonance::touch::GT1X_STATUS_CLEAR],
+            );
+        }
+        Err(_) => {}
+    }
+}
+
+/// Publish a parsed (count, points) pair into the TOUCH_POINTS snapshot.
+/// Shared by the FocalTech path; the GT1x path inlines its own because it
+/// also tracks per-contact ids.
+fn publish_points((n, points): (usize, [Option<crate::touch_report::Point>; crate::touch_report::MAX_POINTS])) {
     for slot in TOUCH_POINTS.iter() {
         slot.store(0xFFFF_FFFF, Ordering::Relaxed);
     }
-    let (n, points) = crate::touch_report::parse(&frame);
     for (live, point) in points[..n].iter().enumerate() {
         let Some(p) = point else { continue };
         let packed = (p.x as u32) | (p.y as u32) << 16 | if p.pressed { 1 << 31 } else { 0 };
@@ -343,6 +543,13 @@ pub unsafe fn frame() -> Option<(
 }
 
 /// The touch bring-up stage: returns true when the chip answered.
+///
+/// v347: the probe tries both touch vendors the DTB names. The board
+/// shipped with either a Goodix GT1x (ts_kit@14, the vendor this unit
+/// actually carries per the 2026-10-20 stock-Android survey) or a
+/// FocalTech fts (touchscreen@38). The candidate whose ID register
+/// answers is the one `poll()` then reads, and `TOUCH_PROTOCOL` records
+/// which protocol the points speak.
 pub unsafe fn probe() -> bool {
     TOUCH_STAGE.store(b'R', Ordering::Relaxed);
     // 0a. pclk_gpio18 gate (SCTRL+0x10 bit 18, the DTB's hi3xxx-clk-gate
@@ -382,37 +589,109 @@ pub unsafe fn probe() -> bool {
     touch_reset_toggle();
     crate::blackbox::text_puts("T6: rstdone\n");
     TOUCH_STAGE.store(b'T', Ordering::Relaxed);
-    // 3. Chip ID read. FocalTech keeps the firmware ID at 0xA3 (boot ID)
-    // and the panel/ chip version block at 0x00..0x03. Read 4 bytes from
-    // 0x00 (the FT5x06 class: gate 0x00 = 0x54 on the FT5446 family).
+    // 3. Identify the fitted controller. Candidate order: the GT1x at
+    // 0x14 first (the vendor the live sysfs inventory named), then the
+    // FocalTech at 0x38. A GT1x answers a 16-bit big-endian register
+    // pointer with its CONFIG VERSION at 0x8140 (= 0x14 on this family);
+    // a FocalTech answers an 8-bit pointer with the firmware ID at 0xA3.
     crate::blackbox::text_puts("T7: idread\n");
-    let mut id = [0u8; 4];
-    let r = i2c0_write_read(0x00, &mut id);
+    let mut answered = None;
+    for (index, &(slave, protocol)) in CANDIDATES.iter().enumerate() {
+        wr32(ane::TOUCH_I2C0_BASE, IC_TAR, (slave as u32) & 0x3ff);
+        let ok = match protocol {
+            b'G' => probe_gt1x(),
+            _ => probe_focaltech(),
+        };
+        if ok {
+            TOUCH_PROTOCOL.store(protocol, Ordering::Relaxed);
+            answered = Some(index);
+            break;
+        }
+    }
     crate::blackbox::text_puts("T8: iddone\n");
-    match r {
-        Ok(()) => {
-            let v =
-                (id[0] as u32) | (id[1] as u32) << 8 | (id[2] as u32) << 16 | (id[3] as u32) << 24;
-            CHIP_ID.store(v, Ordering::Relaxed);
+    match answered {
+        Some(_) => {
             TOUCH_STAGE.store(b'C', Ordering::Relaxed);
+            let v = CHIP_ID.load(Ordering::Relaxed);
             let mut hex = [0u8; 8];
             const HEXD: &[u8; 16] = b"0123456789ABCDEF";
             for (i, slot) in hex.iter_mut().enumerate() {
                 let nib = ((v >> (28 - 4 * i)) & 0xf) as usize;
                 *slot = HEXD[nib];
             }
-            let mut line = [0u8; 16];
+            let mut line = [0u8; 18];
             line[..6].copy_from_slice(b"TOUCH:");
             line[6..14].copy_from_slice(&hex);
-            line[14] = b'\n';
+            line[14] = b'/';
+            line[15] = TOUCH_PROTOCOL.load(Ordering::Relaxed);
+            line[16] = b'\n';
             let line = core::str::from_utf8(&line).unwrap_or("TOUCH: ????????\n");
             crate::blackbox::text_puts(line);
             true
         }
-        Err(e) => {
+        None => {
             TOUCH_STAGE.store(b'E', Ordering::Relaxed);
-            CHIP_ID.store(0xAA00_0000 | e, Ordering::Relaxed);
+            CHIP_ID.store(0xAA00_0000, Ordering::Relaxed);
             crate::blackbox::text_puts("TOUCH: NOANS\n");
+            false
+        }
+    }
+}
+
+/// Which controller protocol the poll path speaks: b'G' (Goodix GT1x,
+/// 16-bit registers, frame at 0x814e) or b'F' (FocalTech, 8-bit
+/// registers, frame at 0x00). b'.' until a probe answers.
+pub static TOUCH_PROTOCOL: core::sync::atomic::AtomicU8 =
+    core::sync::atomic::AtomicU8::new(b'.');
+
+/// (slave address, protocol) per candidate, tried in order.
+const CANDIDATES: [(u8, u8); 2] = [
+    (ane::TOUCH_I2C0_ADDRESS, b'G'),
+    (ane::TOUCH_I2C0_ADDRESS_ALT, b'F'),
+];
+
+/// Goodix GT1x identity read: CONFIG VERSION (16-bit register 0x8140).
+/// The GT1158 answers 0x14; any non-zero answer with a plausible family
+/// nibble (0x1x GT1x, 0x9x GT9x) counts. Errors store their code.
+unsafe fn probe_gt1x() -> bool {
+    let mut ver = [0u8; 2];
+    match i2c0_write_read16(0x8140, &mut ver) {
+        Ok(()) => {
+            let v = (ver[0] as u32) << 8 | ver[1] as u32;
+            // A dead bus reads zeros; a live GT1x answers 0x11..0x2x.
+            if v != 0 && v & 0xff00 == 0 {
+                CHIP_ID.store(0x1B00_0000 | v, Ordering::Relaxed);
+                true
+            } else {
+                CHIP_ID.store(0xBB00_0000 | v, Ordering::Relaxed);
+                false
+            }
+        }
+        Err(e) => {
+            CHIP_ID.store(0xBA00_0000 | e, Ordering::Relaxed);
+            false
+        }
+    }
+}
+
+/// FocalTech identity read: the 8-bit pointer protocol, firmware version
+/// at 0xA3 / gate at 0x00. Any non-zero answer counts.
+unsafe fn probe_focaltech() -> bool {
+    let mut id = [0u8; 4];
+    match i2c0_write_read(0x00, &mut id) {
+        Ok(()) => {
+            let v =
+                (id[0] as u32) | (id[1] as u32) << 8 | (id[2] as u32) << 16 | (id[3] as u32) << 24;
+            if v != 0 {
+                CHIP_ID.store(v, Ordering::Relaxed);
+                true
+            } else {
+                CHIP_ID.store(0xFB00_0000, Ordering::Relaxed);
+                false
+            }
+        }
+        Err(e) => {
+            CHIP_ID.store(0xFA00_0000 | e, Ordering::Relaxed);
             false
         }
     }

@@ -1,0 +1,44 @@
+{
+  "trees": [
+    {
+      "url": "https://github.com/hi6250-mainline/linux",
+      "notes": "Branch 7.0-develop (Linux 7.0 base), last push 2026-09-10. Only figo + agassi2 board dts.",
+      "value_for_us": "MOST COMPLETE public mainline effort for Kirin 659 (hi6250). SoC dtsi arch/arm64/boot/dts/hisilicon/hi6250.dtsi has PSCI/GIC/timer/PMU/hi6250-{ao,pmu,sys,crg}ctrl clocks/mailbox/reset/gpio25/pinctrl-single/PL011 uart0-6/dwmmc1 SD/dwmmc2 SDIO and full USB: usb_ahbif syscon + custom phy (drivers/phy/hisilicon/phy-hi6250-usb.c, compatible hisilicon,hi6250-usb-phy) + usb@ff100000 compatible \"hisilicon,hi6220-usb\",\"snps,dwc2\" dr_mode=peripheral with explicit g-*-fifo-size. dwc2 node is disabled in dtsi but enabled (&usb status=ok) in hi6250-huawei-agassi2.dts (MediaPad T5, same Kirin 659). No anne/figo dts exists yet for ANE; we would add hi6250-huawei-anne.dts here."
+    },
+    {
+      "url": "https://wiki.postmarketos.org/wiki/HiSilicon_Kirin_650/655/658/659_(Hi6250)",
+      "notes": "SoC page; lists anne (P20 Lite) as 'Booting: Yes' only via downstream 4.9.148 pmOS port (Nura wiki Huawei_P20_Lite_(huawei-anne)).",
+      "value_for_us": "Upstream effort hub: mainlining happens on hi6250-mainline/linux + tildeknown/linux-hi6250 (matrix #hi6250-dev). Known-working mainline configs ship in hi6250-mainline/linux arch/arm64/configs/hi6250_defconfig: CONFIG_USB_DWC2=y, CONFIG_USB_DWC2_PERIPHERAL=y, CONFIG_USB_CONFIGFS=m with RNDIS/NCM/F_FS, CONFIG_PHY_HI6250_USB=y, PHY_HI6220_USB=y, NOP_USB_XCEIV=y, EXTCON_USB_GPIO=y \u2014 that is the DWC2-gadget recipe to copy for hi6250; it matches upstream dwc2 which has dwc2_set_his_params for \"hisilicon,hi6220-usb\" (drivers/usb/dwc2/params.c). USB networking itself is still 'Untested' on pmOS figo/agassi2 pages, so treat as present-but-unproven."
+    },
+    {
+      "url": "https://github.com/tildeknown/linux-hi6250",
+      "notes": "Experimental forks (branches 7.0-usb/7.0-dwmmc/7.0-reboot/hi6250-next); phy-hi6250-usb.c authored by Tildeguy 2026. Homepage: pmos wiki User:Tildeguy/Hi6250_Notes.",
+      "value_for_us": "Second mainline tree with the same hi6250.dtsi + dwc2 node + custom hi6250 USB PHY driver; 7.0-usb branch is where the USB/PHY work is landing before it lands in hi6250-mainline/linux. Wiki mainlining table: USB = 'hisilicon,hi6220-usb' P (written, untested/broken - 'no regulators'), USB phy = Y, everything else Y except I2C/reset/PMIC/GPU/UART/DMA/eMMC/SD/SDIO which are N/P. No anne dts here either."
+    },
+    {
+      "url": "https://github.com/hisi-oss/android_kernel_huawei_hi6250-9",
+      "notes": "Local tree /home/placeless/dev/p20-root/hi6250-kernel is the -8 variant, same layout. No board-level anne dts in ANY downstream tree - anne's board dts ships in the phone's DT partition, not in the published kernel repos. Trees only contain SoC-level auto-generate/config/hi6250 dts (udp_*) plus anne LCD panel dtsis (lcdkit/ane, lcdkit/ane_lx3).",
+      "value_for_us": "Reference for the hi1102 (Hi1102A) WiFi/BT firmware-loading path on EMUI 9 (this is the tree LineageOS 17-20 for anne builds from, with device trees hisi-oss/android_device_huawei_anne + hi6250-9-common): driver = drivers/connectivity/hi11xx/hi1102a (CONFIG_HI1102_PLATFORM=y CONFIG_HI1102_WIFI=y in merge_hi6250_defconfig -> built into the kernel, obj-y; obj-m plumbing exists but is off; a 'plat'/'wifi' .ko is only produced via the separate CONFIG_HI110X_KERNEL_MODULES_BUILD_SUPPORT=out-of-tree flow). Firmware is loaded by platform/pm/plat_firmware.c which kernel_reads text config files from /vendor/firmware/{bfgx_and_wifi_cfg,wifi_cfg,bfgx_cfg,ram_reg_test_cfg} and pushes the patch over SDIO (wifi) and UART /dev/ttyAMA3 (bfgx=BT/GPS/NFC per hisi_connectivity.dtsi hi1102 node: power gpio4.3, wlan-wake gpio26.5, bfgx-wake gpio26.2); no request_firmware, no /lib/firmware. Blobs come from vendor: hisi-oss/android_device_huawei_hi6250-9-common proprietary-files.txt lists vendor/firmware/bfgx_and_wifi_cfg, bfgx_cfg, wifi_cfg + gps.hi1102.default.so + vendor/bin/start_connectivity_hisi. No mainline/out-of-tree hi110x port of this driver exists anywhere (searched GitHub; 'hsak' mainline driver does not exist publicly)."
+    },
+    {
+      "url": "https://github.com/Abdelhay-Ali/android_kernel_huawei_hi6250_KernelSU",
+      "notes": "4.9.148 anne-targeted KernelSU kernel; April 2023 changelog: 'Fix Wifi issues', 'Fix module load'. Branches main/Kernel-4.9.148.",
+      "value_for_us": "Anne-specific downstream fork with wifi working on EMUI9 base; a place to diff against hisi-oss/-9 if the stock hi1102a driver misbehaves on anne. Also confirms anne uses kernel 4.9.148 EMUI9 base, not the EMUI8 4.4 tree."
+    },
+    {
+      "url": "https://github.com/utkustnr/android_kernel_huawei_hi6250",
+      "notes": "'Phenix' kernel, KSU-backslashxx default branch, pushed 2025-10-18; branches EMUI8/HarmonyOs-Base/lineage-16.0/17.1. Tested on ANE-LX1 with LeaOS Lineage 20 (XDA Phenix thread).",
+      "value_for_us": "Most actively maintained downstream anne kernel (CI-built weekly). Same hi1102a driver + /vendor/firmware cfg loading. Useful for cherry-picking EMUI9-era anne fixes (wifi, EROFS, module loading)."
+    },
+    {
+      "url": "https://github.com/LineageOS/android_kernel_huawei_hi6250",
+      "notes": "lineage-17.1 branch, last push 2020; superseded by hisi-oss forks.",
+      "value_for_us": "Legacy anne Lineage kernel (EMUI8 4.4 base). Only relevant as history; no anne dts either."
+    },
+    {
+      "url": "https://github.com/torvalds/linux",
+      "notes": "arch/arm64/boot/dts/hisilicon/Makefile: only hikey960/970, poplar, hikey6220, hip0x \u2014 no hi6250/kirin659.",
+      "value_for_us": "Confirms zero mainline hi6250 support; everything must come from hi6250-mainline/linux (which tracks torvalds 7.0). Upstream dwc2 driver does carry the \"hisilicon,hi6220-usb\" param table we can reuse."
+    }
+  ]
+}

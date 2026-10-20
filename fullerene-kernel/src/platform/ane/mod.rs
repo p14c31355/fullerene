@@ -43,7 +43,11 @@ pub const TOUCH_I2C0_BASE: usize = 0xffd7_1000;
 pub const TOUCH_I2C0_BUS_ID: u32 = 0;
 pub const TOUCH_I2C0_STATUS_ENABLED: bool = false;
 pub const TOUCH_I2C0_IRQ: u32 = 118;
-pub const TOUCH_I2C0_ADDRESS: u8 = 0x38;
+pub const TOUCH_I2C0_ADDRESS: u8 = 0x14;
+/// The DTB's alternative touch node (FocalTech fts) - the second candidate
+/// the probe tries when the GT1x address does not answer. Both nodes exist
+/// in the same DTB because the board shipped with either vendor's panel.
+pub const TOUCH_I2C0_ADDRESS_ALT: u8 = 0x38;
 pub const TOUCH_RESET_GPIO: u32 = 145;
 pub const TOUCH_IRQ_GPIO: u32 = 224;
 pub const TOUCH_RESET_GPIO_PROVIDER: usize = 0xe8a1_d000;

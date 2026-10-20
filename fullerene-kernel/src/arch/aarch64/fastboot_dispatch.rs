@@ -675,6 +675,43 @@ pub fn poll(log: fn(&str, u64)) {
     }
 
     #[cfg(fullerene_aarch64_ane)]
+    if cmd == b"oem bl" || cmd.starts_with(b"oem bl ") {
+        // `oem bl [<level>]`: read or set the panel brightness through the
+        // generic backlight contract. Bare `oem bl` answers the current
+        // level plus a present flag; `oem bl <level>` clamps to 0..2047,
+        // writes the LM36923 and answers the applied value. The first call
+        // also runs the chip's init (idempotent: the vendor's resume
+        // sequence rewrites every control register).
+        const HEX: [u8; 16] = *b"0123456789ABCDEF";
+        let arg = cmd.strip_prefix(b"oem bl ");
+        if let Some(arg) = arg {
+            let level = crate::adb_dispatch::parse_hex(arg.trim_ascii()) as u32;
+            let applied = crate::platform::ane_backlight::set(level.min(2047));
+            let mut line = [b'0'; 12];
+            line[..4].copy_from_slice(b"bl =");
+            line[4] = HEX[((applied >> 8) & 0xF) as usize];
+            line[5] = HEX[((applied >> 4) & 0xF) as usize];
+            line[6] = HEX[(applied & 0xF) as usize];
+            crate::platform::ane_usb_dev::fb_send_info(&line[..7]);
+            let mut ok = [0u8; 32];
+            let n = crate::adb_dispatch::fmt_okay_hex(applied as u64, &mut ok);
+            crate::platform::ane_usb_dev::ep1_send(&ok[..n]);
+        } else {
+            let level = crate::platform::ane_backlight::level();
+            let mut line = [b'0'; 12];
+            line[..3].copy_from_slice(b"bl ");
+            line[3] = HEX[((level >> 8) & 0xF) as usize];
+            line[4] = HEX[((level >> 4) & 0xF) as usize];
+            line[5] = HEX[(level & 0xF) as usize];
+            crate::platform::ane_usb_dev::fb_send_info(&line[..6]);
+            let mut ok = [0u8; 32];
+            let n = crate::adb_dispatch::fmt_okay_hex(level as u64, &mut ok);
+            crate::platform::ane_usb_dev::ep1_send(&ok[..n]);
+        }
+        return;
+    }
+
+    #[cfg(fullerene_aarch64_ane)]
     if cmd == b"oem sensors" {
         // `oem sensors`: one INFO line per candidate in the DTS table, with
         // the id byte that came back. A part that reads its expected id is

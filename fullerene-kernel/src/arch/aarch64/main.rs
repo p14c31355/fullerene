@@ -1605,13 +1605,55 @@ extern "C" fn aarch64_rust_entry(boot_context: *const entry::Aarch64BootContext)
             if pressed != 2
                 && PREV_PRESSED.swap(pressed, core::sync::atomic::Ordering::Relaxed) != pressed
             {
-                // Press: light the tile under the finger and show it.
-                // Release on a tile: the launcher's one action for now -
-                // open the desktop on that canvas.
-                let hit = mobile_home::touch_feedback();
-                if pressed == 0 && hit != mobile_home::HomeHit::None {
-                    desktop::tick_input();
+                // v347: the Notes app owns the touch edges while it is
+                // open - taps inside its keyboard feed the IME, a tap on
+                // the title band closes it. The home screen only sees
+                // edges when Notes is closed.
+                if mobile_home::notes_open() {
+                    if pressed == 1 {
+                        if let Some((x, y)) = mobile_home::touch_point() {
+                            let l = mobile_home::HomeLayout::new(
+                                platform::ane_fb::WIDTH,
+                                platform::ane_fb::HEIGHT,
+                            );
+                            if y < l.bar_h {
+                                // Title band: close the app.
+                                mobile_home::toggle_notes(false);
+                                mobile_home::render_home();
+                                unsafe { platform::ane_fb::flush_panel_rotated() };
+                            } else if mobile_home::ime_press(x, y) {
+                                mobile_home::render_notes();
+                                unsafe { platform::ane_fb::flush_panel_rotated() };
+                            }
+                        }
+                    } else {
+                        mobile_home::ime_release();
+                        mobile_home::render_notes();
+                        unsafe { platform::ane_fb::flush_panel_rotated() };
+                    }
+                } else if pressed == 1 {
+                    if let Some((x, y)) = mobile_home::touch_point() {
+                        let l = mobile_home::HomeLayout::new(
+                            platform::ane_fb::WIDTH,
+                            platform::ane_fb::HEIGHT,
+                        );
+                        // The dock's fourth tile opens Notes (dock tiles
+                        // are 120 px with the same 5-gap pitch as the hit
+                        // test in HomeLayout).
+                        if let mobile_home::HomeHit::Dock(3) = l.hit_test(x, y) {
+                            mobile_home::toggle_notes(true);
+                            mobile_home::render_notes();
+                            unsafe { platform::ane_fb::flush_panel_rotated() };
+                        } else {
+                            let _hit = mobile_home::touch_feedback();
+                            unsafe { platform::ane_fb::flush_panel_rotated() };
+                        }
+                    }
                 } else {
+                    let _hit = mobile_home::touch_feedback();
+                    if mobile_home::notes_open() {
+                        mobile_home::render_notes();
+                    }
                     unsafe { platform::ane_fb::flush_panel_rotated() };
                 }
             }

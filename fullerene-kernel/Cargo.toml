@@ -167,6 +167,7 @@ lattice = { path = "../lattice" }
 petroleum = { path = "../petroleum" }
 solvent = { path = "../solvent", features = ["fullerene_ane_stage_probe"] }
 spin = { workspace = true, features = ["mutex", "spin_mutex"] }
+resonance = { path = "../resonance" }
 
 [target.'cfg(target_arch = "xtensa")'.dependencies]
 fullerene-abi = { path = "abi" }
